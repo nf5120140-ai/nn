@@ -1,14 +1,11 @@
-const CACHE_NAME = "warehouse-app-v1";
-self.addEventListener("install", (e) => { self.skipWaiting(); });
-self.addEventListener("activate", (e) => { self.clients.claim(); });
-self.addEventListener("fetch", (event) => {
-  event.respondWith(
-    fetch(event.request)
-      .then((res) => {
-        const resClone = res.clone();
-        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, resClone));
-        return res;
-      })
-      .catch(() => caches.match(event.request))
-  );
-});
+מצאתי את הבעיה! ה-service worker שהוספתי כדי לאפשר עבודה גם בלי אינטרנט, בטעות "תפס" גם את הבקשות לשמירת נתונים ל-Supabase - וזה שבר את השמירה אחרי שהתקנת את האפליקציה. אני מתקן את זה כך שהוא יתעסק רק בקבצי האתר עצמו, ולא יתערב בכלל בבקשות השמירה:
+
+**עדכן את `public/sw.js` ב-GitHub** (פתח אותו, לחץ על העיפרון, מחק הכל, הדבק את התוכן החדש שלמעלה, Commit).
+
+**חשוב:** מכיוון שה-service worker הישן כבר "נתקע" בטלפון שלך, ייתכן שהוא ימשיך להשתמש בגרסה השבורה גם אחרי העדכון. כדי לוודא שהגרסה החדשה נטענת:
+
+1. **מחק את האפליקציה** שהתקנת (לחיצה ארוכה על האייקון → הסר/מחק)
+2. חכה שה-Deploy ב-Vercel יסתיים (בדוק שיש ✓ ירוק ליד ה-commit האחרון)
+3. **התקן מחדש** מהאתר (אותם צעדים כמו קודם - "הוסף למסך הבית")
+
+זה יבטיח שתקבל את הגרסה המתוקנת של ה-service worker מההתחלה. נסה אחר כך לעדכן כמות מוצר ולוודא שזה נשמר.
