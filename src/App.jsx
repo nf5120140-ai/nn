@@ -416,6 +416,7 @@ export default function App() {
   const [scanResult, setScanResult] = useState(null); // { code, product|null }
   const [toast, setToast] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
+  const [showMenu, setShowMenu] = useState(false);
 
   useEffect(() => {
     if (!currentUser) return;
@@ -585,10 +586,20 @@ export default function App() {
 
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3" style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "0 0 24px 24px" }}>
-        <div>
-          <div className="wh-display font-black text-lg" style={{ color: C.paper }}>מחסן המטבח</div>
-          <div className="text-xs" style={{ color: C.kraft }}>
-            {currentUser.name} · {currentUser.role === "manager" ? "מנהל" : "עובד"}
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowMenu(true)}
+            className="text-xl px-2 py-1 rounded-full"
+            style={{ background: "rgba(255,255,255,0.25)", color: "#fff" }}
+            aria-label="תפריט"
+          >
+            ☰
+          </button>
+          <div>
+            <div className="wh-display font-black text-lg" style={{ color: C.paper }}>מחסן המטבח</div>
+            <div className="text-xs" style={{ color: C.kraft }}>
+              {currentUser.name} · {currentUser.role === "manager" ? "מנהל" : "עובד"}
+            </div>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -606,13 +617,6 @@ export default function App() {
                 {unreadCount}
               </span>
             )}
-          </button>
-          <button
-            onClick={() => setCurrentUser(null)}
-            className="text-xs px-3 py-1 rounded-2xl"
-            style={{ background: C.kraft, color: C.ink }}
-          >
-            יציאה
           </button>
         </div>
       </div>
@@ -664,7 +668,7 @@ export default function App() {
       )}
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto px-4 py-4 pb-24">
+      <div className="flex-1 overflow-y-auto px-4 py-4">
         {tab === "inventory" && (
           <InventoryTab
             products={products}
@@ -718,36 +722,58 @@ export default function App() {
         )}
       </div>
 
-      {/* Bottom tab bar */}
-      <div
-        className="fixed bottom-0 left-0 right-0 flex justify-around items-stretch"
-        style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "24px 24px 0 0" }}
-      >
-        {(currentUser.role === "manager" || currentUser.permissions?.inventory !== false) && (
-          <TabButton label="מלאי" active={tab === "inventory"} onClick={() => setTab("inventory")} />
-        )}
-        {(currentUser.role === "manager" || currentUser.permissions?.order !== false) && (
-          <TabButton
-            label="הזמנה"
-            active={tab === "order"}
-            onClick={() => setTab("order")}
-            badge={lowStock.length > 0 ? lowStock.length : null}
-            badgeColor={C.stamp}
+      {/* Side drawer menu */}
+      {showMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            style={{ background: "rgba(35,31,61,0.4)" }}
+            onClick={() => setShowMenu(false)}
           />
-        )}
-        {(currentUser.role === "manager" || currentUser.permissions?.tasks !== false) && (
-          <TabButton
-            label="משימות"
-            active={tab === "tasks"}
-            onClick={() => setTab("tasks")}
-            badge={myOpenTasks.length > 0 ? myOpenTasks.length : null}
-            badgeColor={C.mustard}
-          />
-        )}
-        {currentUser.role === "manager" && (
-          <TabButton label="ניהול" active={tab === "admin"} onClick={() => setTab("admin")} />
-        )}
-      </div>
+          <div
+            className="fixed top-0 right-0 bottom-0 z-50 flex flex-col wh-body"
+            style={{ width: "78%", maxWidth: 300, background: C.paper, boxShadow: "-8px 0 24px rgba(35,31,61,0.25)", borderRadius: "24px 0 0 24px" }}
+          >
+            <div className="p-4" style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "24px 0 0 0" }}>
+              <div className="wh-display font-black text-lg" style={{ color: "#fff" }}>מחסן המטבח</div>
+              <div className="text-xs" style={{ color: "#fff" }}>{currentUser.name} · {currentUser.role === "manager" ? "מנהל" : "עובד"}</div>
+            </div>
+            <div className="flex flex-col p-3 gap-2 flex-1">
+              {(currentUser.role === "manager" || currentUser.permissions?.inventory !== false) && (
+                <DrawerItem label="מלאי" active={tab === "inventory"} onClick={() => { setTab("inventory"); setShowMenu(false); }} />
+              )}
+              {(currentUser.role === "manager" || currentUser.permissions?.order !== false) && (
+                <DrawerItem
+                  label="הזמנה"
+                  active={tab === "order"}
+                  onClick={() => { setTab("order"); setShowMenu(false); }}
+                  badge={lowStock.length > 0 ? lowStock.length : null}
+                  badgeColor={C.stamp}
+                />
+              )}
+              {(currentUser.role === "manager" || currentUser.permissions?.tasks !== false) && (
+                <DrawerItem
+                  label="משימות"
+                  active={tab === "tasks"}
+                  onClick={() => { setTab("tasks"); setShowMenu(false); }}
+                  badge={myOpenTasks.length > 0 ? myOpenTasks.length : null}
+                  badgeColor={C.mustard}
+                />
+              )}
+              {currentUser.role === "manager" && (
+                <DrawerItem label="ניהול" active={tab === "admin"} onClick={() => { setTab("admin"); setShowMenu(false); }} />
+              )}
+            </div>
+            <button
+              onClick={() => { setCurrentUser(null); setShowMenu(false); }}
+              className="m-3 py-2 rounded-2xl font-bold text-sm"
+              style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              יציאה
+            </button>
+          </div>
+        </>
+      )}
 
       {scannerOpen && (
         <BarcodeScanner onDetected={handleScanDetected} onClose={() => setScannerOpen(false)} />
@@ -767,6 +793,29 @@ function TabButton({ label, active, onClick, badge, badgeColor }) {
       {badge && (
         <span
           className="absolute top-1 left-1/2 translate-x-3 rounded-full text-[10px] px-1.5 py-0.5 font-bold"
+          style={{ background: badgeColor, color: "#fff", minWidth: 16 }}
+        >
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function DrawerItem({ label, active, onClick, badge, badgeColor }) {
+  return (
+    <button
+      onClick={onClick}
+      className="relative flex items-center justify-between px-4 py-3 rounded-2xl wh-display text-sm font-bold text-right"
+      style={{
+        background: active ? C.ink : "transparent",
+        color: active ? "#fff" : C.ink,
+      }}
+    >
+      <span>{label}</span>
+      {badge && (
+        <span
+          className="rounded-full text-[10px] px-1.5 py-0.5 font-bold"
           style={{ background: badgeColor, color: "#fff", minWidth: 16 }}
         >
           {badge}
@@ -1963,6 +2012,31 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
   const empty = { name: "", phone: "" };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
+  const contactsSupported = typeof navigator !== "undefined" && "contacts" in navigator && "ContactsManager" in window;
+
+  function normalizePhone(raw) {
+    let digits = String(raw || "").replace(/\D/g, "");
+    if (digits.startsWith("0")) digits = "972" + digits.slice(1);
+    return digits;
+  }
+
+  async function pickContact() {
+    if (!contactsSupported) {
+      showToast("הדפדפן הזה לא תומך בייבוא מאנשי קשר (זמין כרגע רק ב-Chrome באנדרואיד)");
+      return;
+    }
+    try {
+      const contacts = await navigator.contacts.select(["name", "tel"], { multiple: false });
+      if (!contacts || contacts.length === 0) return;
+      const c = contacts[0];
+      const name = c.name?.[0] || "";
+      const phone = normalizePhone(c.tel?.[0] || "");
+      setForm({ ...form, name: name || form.name, phone: phone || form.phone });
+      showToast("פרטי איש הקשר יובאו - אפשר לערוך ולשמור");
+    } catch (err) {
+      console.error(err);
+    }
+  }
 
   async function save() {
     if (!form.name.trim() || !form.phone.trim()) return showToast("יש להזין שם וטלפון");
@@ -1988,6 +2062,18 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
         <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>
           {editingId ? "עריכת ספק" : "הוספת ספק"}
         </div>
+        <button
+          onClick={pickContact}
+          className="py-2 rounded-2xl font-bold text-sm"
+          style={{ background: contactsSupported ? C.accent : C.kraft, color: contactsSupported ? "#fff" : C.steel, border: `1px solid ${C.kraftDark}` }}
+        >
+          📇 ייבוא מאנשי קשר
+        </button>
+        {!contactsSupported && (
+          <p className="text-xs" style={{ color: C.steel }}>
+            זמין כרגע רק ב-Chrome באנדרואיד. בדפדפנים אחרים אפשר להזין ידנית למטה.
+          </p>
+        )}
         <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם הספק</label>
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
