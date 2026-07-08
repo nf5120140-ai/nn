@@ -340,8 +340,20 @@ function Login({ users, onLogin, onFirstRun }) {
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
 
-  function submit() {
-    const u = users.find((u) => u.name === name.trim() && u.password === password);
+  function submit(e) {
+    if (e) e.preventDefault();
+    let finalName = name;
+    let finalPassword = password;
+    if (e?.target) {
+      try {
+        const fd = new FormData(e.target);
+        finalName = (fd.get("username") || name || "").toString();
+        finalPassword = (fd.get("password") || password || "").toString();
+      } catch (err) {
+        // fall back to React state if FormData isn't available
+      }
+    }
+    const u = users.find((u) => u.name === finalName.trim() && u.password === finalPassword);
     if (!u) {
       setErr("שם משתמש או סיסמה שגויים");
       return;
@@ -360,35 +372,38 @@ function Login({ users, onLogin, onFirstRun }) {
         <p className="text-center text-sm mb-6" style={{ color: C.steel }}>
           כניסה למערכת ניהול המלאי
         </p>
-        <ShelfTag accent={C.sage} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
-            placeholder="שם משתמש"
-            className="p-3 rounded-2xl border"
-            style={{ borderColor: C.kraftDark, background: C.paper }}
-            autoFocus
-          />
-          <input
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && submit()}
-            type="password"
-            placeholder="סיסמה"
-            className="p-3 rounded-2xl border"
-            style={{ borderColor: C.kraftDark, background: C.paper }}
-          />
-          {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
-          <button
-            type="button"
-            onClick={submit}
-            className="p-3 rounded-2xl font-bold wh-display"
-            style={{ background: C.ink, color: C.paper, cursor: "pointer" }}
-          >
-            כניסה
-          </button>
-        </ShelfTag>
+        <form onSubmit={submit} autoComplete="on">
+          <ShelfTag accent={C.sage} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="שם משתמש"
+              name="username"
+              autoComplete="username"
+              className="p-3 rounded-2xl border"
+              style={{ borderColor: C.kraftDark, background: C.paper }}
+              autoFocus
+            />
+            <input
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              placeholder="סיסמה"
+              name="password"
+              autoComplete="current-password"
+              className="p-3 rounded-2xl border"
+              style={{ borderColor: C.kraftDark, background: C.paper }}
+            />
+            {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
+            <button
+              type="submit"
+              className="p-3 rounded-2xl font-bold wh-display"
+              style={{ background: C.ink, color: C.paper, cursor: "pointer" }}
+            >
+              כניסה
+            </button>
+          </ShelfTag>
+        </form>
         {onFirstRun && (
           <p className="text-xs text-center mt-4" style={{ color: C.steel }}>
             משתמש ברירת מחדל: <b>מנהל</b> / סיסמה <b>1234</b> (ניתן לשנות בהגדרות לאחר הכניסה)
@@ -411,7 +426,7 @@ export default function App() {
   const [weeklyMenu, setWeeklyMenu] = useState({});
   const [reminders, setReminders] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
-  const [tab, setTab] = useState("inventory");
+  const [tab, setTab] = useState("tasks");
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scanResult, setScanResult] = useState(null); // { code, product|null }
   const [toast, setToast] = useState("");
@@ -422,7 +437,10 @@ export default function App() {
     if (!currentUser) return;
     if (currentUser.role === "manager") return;
     const perms = currentUser.permissions || { inventory: true, order: true, tasks: true };
-    if (tab === "inventory" && perms.inventory === false) {
+    if (tab === "tasks" && perms.tasks === false) {
+      if (perms.inventory !== false) setTab("inventory");
+      else if (perms.order !== false) setTab("order");
+    } else if (tab === "inventory" && perms.inventory === false) {
       if (perms.order !== false) setTab("order");
       else if (perms.tasks !== false) setTab("tasks");
     }
