@@ -2026,15 +2026,29 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
       return;
     }
     try {
-      const contacts = await navigator.contacts.select(["name", "tel"], { multiple: false });
-      if (!contacts || contacts.length === 0) return;
-      const c = contacts[0];
-      const name = c.name?.[0] || "";
-      const phone = normalizePhone(c.tel?.[0] || "");
-      setForm({ ...form, name: name || form.name, phone: phone || form.phone });
-      showToast("פרטי איש הקשר יובאו - אפשר לערוך ולשמור");
+      const contacts = await navigator.contacts.select(["name", "tel"], { multiple: true });
+      if (!contacts || contacts.length === 0) {
+        showToast("לא נבחרו אנשי קשר");
+        return;
+      }
+      const newSuppliers = contacts
+        .map((c) => ({
+          id: genId(),
+          name: c.name?.[0] || "ללא שם",
+          phone: normalizePhone(c.tel?.[0] || ""),
+        }))
+        .filter((s) => s.phone);
+
+      if (newSuppliers.length === 0) {
+        showToast("לאנשי הקשר שנבחרו אין מספרי טלפון שמורים");
+        return;
+      }
+
+      await persistSettings({ ...settings, suppliers: [...suppliers, ...newSuppliers] });
+      showToast(`נוספו ${newSuppliers.length} ספקים מאנשי הקשר`);
     } catch (err) {
       console.error(err);
+      showToast("שגיאה בייבוא אנשי קשר: " + (err?.message || "לא ידועה"));
     }
   }
 
@@ -2067,7 +2081,7 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
           className="py-2 rounded-2xl font-bold text-sm"
           style={{ background: contactsSupported ? C.accent : C.kraft, color: contactsSupported ? "#fff" : C.steel, border: `1px solid ${C.kraftDark}` }}
         >
-          📇 ייבוא מאנשי קשר
+          📇 ייבוא ספקים מאנשי קשר (אפשר לבחור כמה)
         </button>
         {!contactsSupported && (
           <p className="text-xs" style={{ color: C.steel }}>
