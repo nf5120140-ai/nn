@@ -1142,6 +1142,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [weekPortions, setWeekPortions] = useState(1);
   const [menuQtys, setMenuQtys] = useState({});
   const [weekQtys, setWeekQtys] = useState({});
+  const [openPicker, setOpenPicker] = useState(null);
 
   useEffect(() => {
     setQtys(Object.fromEntries(lowStock.map((p) => [p.id, qtys[p.id] ?? Math.max(1, Number(p.threshold) * 2 - Number(p.quantity))])));
@@ -1487,20 +1488,18 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           </ShelfTag>
         ) : (
           <>
-            <div className="mb-3 flex items-end gap-2">
-              <div>
-                <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מספר מנות/סועדים (לכל ארוחה משובצת)</label>
-                <input
-                  type="number"
-                  value={weekPortions}
-                  onChange={(e) => setWeekPortions(Math.max(1, Number(e.target.value)))}
-                  className="w-24 p-2 rounded-2xl border text-center"
-                  style={{ borderColor: C.kraftDark }}
-                />
-              </div>
+            <div className="mb-3">
+              <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מספר מנות/סועדים (לכל ארוחה משובצת)</label>
+              <input
+                type="number"
+                value={weekPortions}
+                onChange={(e) => setWeekPortions(Math.max(1, Number(e.target.value)))}
+                className="w-24 p-2 rounded-2xl border text-center mb-2"
+                style={{ borderColor: C.kraftDark }}
+              />
               <button
                 onClick={printWeeklyMenu}
-                className="px-4 py-2 rounded-2xl text-sm font-bold"
+                className="w-full py-3 rounded-2xl text-sm font-bold"
                 style={{ background: C.accent, color: "#fff" }}
               >
                 🖨️ הדפס תפריט שבועי
@@ -1511,37 +1510,90 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               {WEEK_DAYS.map(([dayKey, dayLabel]) => (
                 <ShelfTag key={dayKey} accent={C.accent}>
                   <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>{dayLabel}</div>
-                  <div className="flex flex-col gap-3">
-                    {MEAL_SLOTS.map(([slotKey, slotLabel]) => (
-                      <div key={slotKey}>
-                        <div className="text-xs font-bold mb-1" style={{ color: C.accent }}>{slotLabel}</div>
-                        <div className="flex flex-col gap-1">
-                          {DISH_TYPES.map(([typeKey, typeLabel]) => {
-                            const options = menuItems.filter((m) => (m.dishType || "main") === typeKey);
-                            return (
-                              <div key={typeKey} className="flex items-center gap-2">
-                                <span className="text-xs w-24" style={{ color: C.steel }}>{typeLabel}</span>
-                                <select
-                                  value={weeklyMenu[dayKey]?.[slotKey]?.[typeKey] || ""}
-                                  onChange={(e) => setWeekSlot(dayKey, slotKey, typeKey, e.target.value)}
-                                  className="flex-1 p-2 rounded-2xl border text-sm"
-                                  style={{ borderColor: C.kraftDark }}
-                                >
-                                  <option value="">— ללא —</option>
-                                  {options.map((m) => (
-                                    <option key={m.id} value={m.id}>{m.name}</option>
-                                  ))}
-                                </select>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    ))}
+                  <div className="flex flex-col gap-2">
+                    {MEAL_SLOTS.map(([slotKey, slotLabel]) => {
+                      const slotSelections = weeklyMenu[dayKey]?.[slotKey] || {};
+                      const chosenNames = DISH_TYPES.map(([typeKey]) => {
+                        const id = slotSelections[typeKey];
+                        return id ? menuItems.find((m) => m.id === id)?.name : null;
+                      }).filter(Boolean);
+                      return (
+                        <button
+                          key={slotKey}
+                          onClick={() => setOpenPicker({ dayKey, dayLabel, slotKey, slotLabel })}
+                          className="text-right p-3 rounded-2xl"
+                          style={{ background: "#fff", border: `1.5px solid ${C.kraftDark}` }}
+                        >
+                          <div className="text-xs font-bold mb-1" style={{ color: C.accent }}>{slotLabel}</div>
+                          <div className="text-sm" style={{ color: C.ink }}>
+                            {chosenNames.length > 0 ? chosenNames.join(" · ") : "לחץ לבחירת מנות"}
+                          </div>
+                        </button>
+                      );
+                    })}
                   </div>
                 </ShelfTag>
               ))}
             </div>
+
+            {openPicker && (
+              <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.5)" }} onClick={() => setOpenPicker(null)}>
+                <div
+                  className="w-full wh-body"
+                  style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "85vh", overflowY: "auto", padding: 16 }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex justify-between items-center mb-3">
+                    <div className="wh-display font-bold" style={{ color: C.ink }}>
+                      {openPicker.dayLabel} · {openPicker.slotLabel}
+                    </div>
+                    <button onClick={() => setOpenPicker(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>
+                      סיימתי
+                    </button>
+                  </div>
+                  {DISH_TYPES.map(([typeKey, typeLabel]) => {
+                    const options = menuItems.filter((m) => (m.dishType || "main") === typeKey);
+                    const currentId = weeklyMenu[openPicker.dayKey]?.[openPicker.slotKey]?.[typeKey] || "";
+                    return (
+                      <div key={typeKey} className="mb-4">
+                        <div className="text-sm font-bold mb-2" style={{ color: C.accent }}>{typeLabel}</div>
+                        {options.length === 0 ? (
+                          <p className="text-xs" style={{ color: C.steel }}>אין עדיין מנות מהסוג הזה - הוסף במסך ניהול ← תפריט</p>
+                        ) : (
+                          <div className="flex flex-col gap-2">
+                            <button
+                              onClick={() => setWeekSlot(openPicker.dayKey, openPicker.slotKey, typeKey, "")}
+                              className="text-right p-2 rounded-2xl text-sm"
+                              style={{
+                                background: currentId === "" ? C.ink : "#fff",
+                                color: currentId === "" ? "#fff" : C.steel,
+                                border: `1px solid ${C.kraftDark}`,
+                              }}
+                            >
+                              — ללא —
+                            </button>
+                            {options.map((m) => (
+                              <button
+                                key={m.id}
+                                onClick={() => setWeekSlot(openPicker.dayKey, openPicker.slotKey, typeKey, m.id)}
+                                className="text-right p-2 rounded-2xl text-sm font-bold"
+                                style={{
+                                  background: currentId === m.id ? categoryColor(m.category) : "#fff",
+                                  color: currentId === m.id ? "#fff" : C.ink,
+                                  border: `1.5px solid ${categoryColor(m.category)}`,
+                                }}
+                              >
+                                {m.name}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {weekNeeds.chosenDishNames.length > 0 && (
               <>
