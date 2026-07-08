@@ -367,7 +367,7 @@ function Login({ users, onLogin, onFirstRun }) {
       <style>{FONTS}</style>
       <div className="w-full max-w-xs">
         <h1 className="wh-display text-2xl font-black mb-1 text-center" style={{ color: C.ink }}>
-          מחסן המטבח
+          ניהול משימות ומלאי מוסדי
         </h1>
         <p className="text-center text-sm mb-6" style={{ color: C.steel }}>
           כניסה למערכת ניהול המלאי
@@ -614,7 +614,7 @@ export default function App() {
             ☰
           </button>
           <div>
-            <div className="wh-display font-black text-lg" style={{ color: C.paper }}>מחסן המטבח</div>
+            <div className="wh-display font-black text-lg" style={{ color: C.paper }}>ניהול משימות ומלאי מוסדי</div>
             <div className="text-xs" style={{ color: C.kraft }}>
               {currentUser.name} · {currentUser.role === "manager" ? "מנהל" : "עובד"}
             </div>
@@ -753,7 +753,7 @@ export default function App() {
             style={{ width: "78%", maxWidth: 300, background: C.paper, boxShadow: "-8px 0 24px rgba(35,31,61,0.25)", borderRadius: "24px 0 0 24px" }}
           >
             <div className="p-4" style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "24px 0 0 0" }}>
-              <div className="wh-display font-black text-lg" style={{ color: "#fff" }}>מחסן המטבח</div>
+              <div className="wh-display font-black text-lg" style={{ color: "#fff" }}>ניהול משימות ומלאי מוסדי</div>
               <div className="text-xs" style={{ color: "#fff" }}>{currentUser.name} · {currentUser.role === "manager" ? "מנהל" : "עובד"}</div>
             </div>
             <div className="flex flex-col p-3 gap-2 flex-1">
@@ -2365,14 +2365,11 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
 }
 
 const PRODUCT_CATEGORIES = [
-  "מוצרים יבשים",
-  "קירור וחלב",
-  "בשר ועוף",
-  "ירקות ופירות",
+  "יבשים",
+  "מוצרי ניקיון",
+  "חד פעמי",
   "קפואים",
-  "אפייה",
-  "משקאות",
-  "חד פעמי וחומרי ניקוי",
+  "קירור / ירקות",
   "אחר",
 ];
 
