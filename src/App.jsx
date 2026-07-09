@@ -350,6 +350,7 @@ function BarcodeScanner({ onDetected, onClose }) {
 /* ---------- Organization Gate ---------- */
 function AuthGate({ onAuthed }) {
   const [mode, setMode] = useState("choose"); // choose | create | join | login
+  const [showTerms, setShowTerms] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -501,6 +502,24 @@ function AuthGate({ onAuthed }) {
             <button onClick={() => setMode("choose")} className="text-xs" style={{ color: C.steel }}>חזרה</button>
           </ShelfTag>
         )}
+        <p className="text-center text-xs mt-6" style={{ color: C.steel }}>
+          © כל הזכויות שמורות לנפתלי קמפה · ת.ז. 313****31
+        </p>
+        <p className="text-center text-xs" style={{ color: C.steel }}>
+          המלצות/פניות לפיתוח: 0585120140
+        </p>
+        <div className="text-center mt-2">
+          <button onClick={() => setShowTerms((v) => !v)} className="text-xs underline" style={{ color: C.accent }}>
+            תנאי שימוש
+          </button>
+          {showTerms && (
+            <div className="mt-2 p-3 rounded-2xl text-xs text-right" style={{ background: C.kraft, color: C.steel, border: `1px solid ${C.kraftDark}` }}>
+              <p className="mb-1">האפליקציה נמצאת כרגע <b>בשלבי פיתוח</b> וניתנת לשימוש <b>ללא עלות בשלב זה</b>.</p>
+              <p className="mb-1">ייתכנו שינויים, תקלות, ואי-זמינות זמנית תוך כדי הפיתוח. אין התחייבות לזמינות רציפה או לשמירת נתונים באופן מוחלט.</p>
+              <p>השימוש באפליקציה הוא באחריות המשתמש. לשאלות או הצעות אפשר לפנות למספר שמופיע למעלה.</p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -1041,6 +1060,12 @@ export default function App() {
             >
               יציאה
             </button>
+            <p className="text-center text-xs" style={{ color: C.steel }}>
+              © כל הזכויות שמורות לנפתלי קמפה · ת.ז. 313****31
+            </p>
+            <p className="text-center text-xs pb-3" style={{ color: C.steel }}>
+              המלצות/פניות לפיתוח: 0585120140
+            </p>
           </div>
         </>
       )}
