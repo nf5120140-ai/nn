@@ -1178,6 +1178,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [weekPortions, setWeekPortions] = useState(1);
   const [menuQtys, setMenuQtys] = useState({});
   const [weekQtys, setWeekQtys] = useState({});
+  const [orderSearch, setOrderSearch] = useState("");
+  const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
   const [openPicker, setOpenPicker] = useState(null);
 
   useEffect(() => {
@@ -1394,38 +1396,73 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
         )}
       </div>
 
-      {orderMode === "stock" && (
-        lowStock.length === 0 ? (
+      {orderMode === "stock" && (() => {
+        const bySupplier = orderSupplierFilter === "all"
+          ? lowStock
+          : lowStock.filter((p) => (p.supplierId || "__unassigned__") === orderSupplierFilter);
+        const filteredLowStock = orderSearch
+          ? bySupplier.filter((p) => p.name.includes(orderSearch))
+          : bySupplier;
+        const supplierOptionsInList = Array.from(new Set(lowStock.map((p) => p.supplierId || "__unassigned__")));
+
+        return lowStock.length === 0 ? (
           <ShelfTag accent={C.sage}>
             <p style={{ color: C.sage }} className="font-bold text-center">כל המלאי תקין ✓</p>
           </ShelfTag>
         ) : (
           <>
-            <div className="flex flex-col gap-3 mb-4">
-              {lowStock.map((p) => (
-                <ShelfTag key={p.id} accent={C.stamp}>
-                  <div className="flex justify-between items-center">
-                    <div>
-                      <div className="wh-display font-bold" style={{ color: C.ink }}>{p.name}</div>
-                      <div className="text-xs" style={{ color: C.steel }}>יש במלאי: {p.quantity} {p.unit} (סף: {p.threshold})</div>
-                    </div>
-                    <input
-                      type="number"
-                      value={qtys[p.id] || 1}
-                      onChange={(e) => setQtys((q) => ({ ...q, [p.id]: Math.max(1, Number(e.target.value)) }))}
-                      className="w-16 text-center p-2 rounded-2xl border"
-                      style={{ borderColor: C.kraftDark }}
-                    />
-                  </div>
-                </ShelfTag>
-              ))}
+            <div className="flex gap-2 mb-3">
+              <input
+                value={orderSearch}
+                onChange={(e) => setOrderSearch(e.target.value)}
+                placeholder="חיפוש מוצר..."
+                className="flex-1 p-2 rounded-2xl border"
+                style={{ borderColor: C.kraftDark }}
+              />
+              <select
+                value={orderSupplierFilter}
+                onChange={(e) => setOrderSupplierFilter(e.target.value)}
+                className="flex-1 p-2 rounded-2xl border text-sm"
+                style={{ borderColor: C.kraftDark }}
+              >
+                <option value="all">כל הספקים</option>
+                {supplierOptionsInList.map((sid) => (
+                  <option key={sid} value={sid}>
+                    {sid === "__unassigned__" ? "ללא ספק משויך" : suppliers.find((s) => s.id === sid)?.name || "ספק"}
+                  </option>
+                ))}
+              </select>
             </div>
+
+            {filteredLowStock.length === 0 ? (
+              <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין מוצרים תואמים לחיפוש/סינון</p>
+            ) : (
+              <div className="flex flex-col gap-3 mb-4">
+                {filteredLowStock.map((p) => (
+                  <ShelfTag key={p.id} accent={C.stamp}>
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <div className="wh-display font-bold" style={{ color: C.ink }}>{p.name}</div>
+                        <div className="text-xs" style={{ color: C.steel }}>יש במלאי: {p.quantity} {p.unit} (סף: {p.threshold})</div>
+                      </div>
+                      <input
+                        type="number"
+                        value={qtys[p.id] || 1}
+                        onChange={(e) => setQtys((q) => ({ ...q, [p.id]: Math.max(1, Number(e.target.value)) }))}
+                        className="w-16 text-center p-2 rounded-2xl border"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                    </div>
+                  </ShelfTag>
+                ))}
+              </div>
+            )}
             <button onClick={sendOrder} className="w-full py-3 rounded-2xl wh-display font-bold" style={{ background: "#25D366", color: "#fff" }}>
               שלח הזמנה בוואטסאפ
             </button>
           </>
-        )
-      )}
+        );
+      })()}
 
       {orderMode === "menu" && (
         menuItems.length === 0 ? (
