@@ -1462,8 +1462,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                         </div>
                         <input
                           type="number"
-                          value={qtys[p.id] ?? defaultQty}
-                          onChange={(e) => setQtys((q) => ({ ...q, [p.id]: Math.max(0, Number(e.target.value)) }))}
+                          value={(qtys[p.id] ?? defaultQty) === 0 ? "" : (qtys[p.id] ?? defaultQty)}
+                          onChange={(e) => setQtys((q) => ({ ...q, [p.id]: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)) }))}
                           className="w-16 text-center p-2 rounded-2xl border"
                           style={{ borderColor: C.kraftDark }}
                         />
