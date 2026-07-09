@@ -723,6 +723,7 @@ export default function App() {
             menuItems={menuItems}
             weeklyMenu={weeklyMenu}
             persistWeeklyMenu={persistWeeklyMenu}
+            showToast={showToast}
           />
         )}
         {tab === "tasks" && (
@@ -1165,7 +1166,7 @@ function ScanResultCard({ scanResult, onAdjust, onClose, isManager }) {
 }
 
 /* ---------- Order Tab ---------- */
-function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu }) {
+function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast }) {
   const suppliers = settings.suppliers || [];
   const [selectedSupplierId, setSelectedSupplierId] = useState(suppliers[0]?.id || "");
   const [manualPhone, setManualPhone] = useState(settings.supplierPhone || "");
@@ -1180,10 +1181,20 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [weekQtys, setWeekQtys] = useState({});
   const [orderSearch, setOrderSearch] = useState("");
   const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
+  const [selectedForOrder, setSelectedForOrder] = useState([]);
   const [openPicker, setOpenPicker] = useState(null);
 
   useEffect(() => {
     setQtys(Object.fromEntries(lowStock.map((p) => [p.id, qtys[p.id] ?? Math.max(1, Number(p.threshold) * 2 - Number(p.quantity))])));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lowStock.length]);
+
+  useEffect(() => {
+    setSelectedForOrder((cur) => {
+      const lowIds = lowStock.map((p) => p.id);
+      const merged = Array.from(new Set([...cur, ...lowIds]));
+      return merged;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lowStock.length]);
 
@@ -1255,11 +1266,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   }
 
   function buildStockMessage() {
-    const lowStockIds = new Set(lowStock.map((p) => p.id));
-    const extraIds = Object.keys(qtys).filter((id) => Number(qtys[id]) > 0 && !lowStockIds.has(id));
-    const extraProducts = products.filter((p) => extraIds.includes(p.id));
-    const allItems = [...lowStock, ...extraProducts];
-    const lines = allItems
+    const lines = products
+      .filter((p) => selectedForOrder.includes(p.id))
       .map((p) => ({ p, qty: qtys[p.id] ?? 1 }))
       .filter(({ qty }) => Number(qty) > 0)
       .map(({ p, qty }) => `- ${qty} ${p.unit} ${p.name}`);
@@ -1273,6 +1281,10 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   }
 
   async function sendOrder() {
+    if (selectedForOrder.length === 0) {
+      if (showToast) showToast("סמן קודם לפחות מוצר אחד לשליחה");
+      return;
+    }
     const cleanPhone = resolvedPhone().replace(/\D/g, "");
     const msg = encodeURIComponent(buildStockMessage());
     const url = cleanPhone ? `https://wa.me/${cleanPhone}?text=${msg}` : `https://wa.me/?text=${msg}`;
@@ -1442,36 +1454,69 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
             </div>
             {orderSupplierFilter !== "all" && (
               <p className="text-xs mb-2" style={{ color: C.steel }}>
-                מוצג כאן כל המלאי של הספק הזה (גם מה שיש ממנו מספיק) - הקלד כמות רק למה שבאמת רוצה להזמין.
+                מוצג כאן כל המלאי של הספק הזה (גם מה שיש ממנו מספיק) - סמן ✔ והקלד כמות רק למה שבאמת רוצה להזמין.
               </p>
             )}
 
             {filteredLowStock.length === 0 ? (
               <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין מוצרים תואמים לחיפוש/סינון</p>
             ) : (
-              <div className="flex flex-col gap-3 mb-4">
-                {filteredLowStock.map((p) => {
-                  const isLow = Number(p.quantity) <= Number(p.threshold);
-                  const defaultQty = isLow ? Math.max(1, Number(p.threshold) * 2 - Number(p.quantity)) : 0;
-                  return (
-                    <ShelfTag key={p.id} accent={isLow ? C.stamp : C.sage}>
-                      <div className="flex justify-between items-center">
-                        <div>
-                          <div className="wh-display font-bold" style={{ color: C.ink }}>{p.name}</div>
-                          <div className="text-xs" style={{ color: C.steel }}>יש במלאי: {p.quantity} {p.unit} (סף: {p.threshold})</div>
+              <>
+                <div className="flex gap-2 mb-2">
+                  <button
+                    onClick={() => setSelectedForOrder((cur) => Array.from(new Set([...cur, ...filteredLowStock.map((p) => p.id)])))}
+                    className="text-xs font-bold px-3 py-1 rounded-full"
+                    style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                  >
+                    סמן הכל
+                  </button>
+                  <button
+                    onClick={() => setSelectedForOrder((cur) => cur.filter((id) => !filteredLowStock.some((p) => p.id === id)))}
+                    className="text-xs font-bold px-3 py-1 rounded-full"
+                    style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                  >
+                    בטל סימון
+                  </button>
+                  <span className="text-xs self-center" style={{ color: C.steel }}>
+                    {selectedForOrder.length} מסומנים
+                  </span>
+                </div>
+                <div className="flex flex-col gap-3 mb-4">
+                  {filteredLowStock.map((p) => {
+                    const isLow = Number(p.quantity) <= Number(p.threshold);
+                    const defaultQty = isLow ? Math.max(1, Number(p.threshold) * 2 - Number(p.quantity)) : 0;
+                    const checked = selectedForOrder.includes(p.id);
+                    return (
+                      <ShelfTag key={p.id} accent={isLow ? C.stamp : C.sage}>
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() =>
+                                setSelectedForOrder((cur) =>
+                                  cur.includes(p.id) ? cur.filter((id) => id !== p.id) : [...cur, p.id]
+                                )
+                              }
+                            />
+                            <div>
+                              <div className="wh-display font-bold" style={{ color: C.ink }}>{p.name}</div>
+                              <div className="text-xs" style={{ color: C.steel }}>יש במלאי: {p.quantity} {p.unit} (סף: {p.threshold})</div>
+                            </div>
+                          </div>
+                          <input
+                            type="number"
+                            value={(qtys[p.id] ?? defaultQty) === 0 ? "" : (qtys[p.id] ?? defaultQty)}
+                            onChange={(e) => setQtys((q) => ({ ...q, [p.id]: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)) }))}
+                            className="w-16 text-center p-2 rounded-2xl border"
+                            style={{ borderColor: C.kraftDark }}
+                          />
                         </div>
-                        <input
-                          type="number"
-                          value={(qtys[p.id] ?? defaultQty) === 0 ? "" : (qtys[p.id] ?? defaultQty)}
-                          onChange={(e) => setQtys((q) => ({ ...q, [p.id]: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)) }))}
-                          className="w-16 text-center p-2 rounded-2xl border"
-                          style={{ borderColor: C.kraftDark }}
-                        />
-                      </div>
-                    </ShelfTag>
-                  );
-                })}
-              </div>
+                      </ShelfTag>
+                    );
+                  })}
+                </div>
+              </>
             )}
             <button onClick={sendOrder} className="w-full py-3 rounded-2xl wh-display font-bold" style={{ background: "#25D366", color: "#fff" }}>
               שלח הזמנה בוואטסאפ
