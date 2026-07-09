@@ -2532,6 +2532,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
   const [importing, setImporting] = useState(false);
   const [pasteMode, setPasteMode] = useState(false);
   const [pasteText, setPasteText] = useState("");
+  const [adminSearch, setAdminSearch] = useState("");
 
   const formRef = useRef(null);
 
@@ -2763,13 +2764,23 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
       </ShelfTag>
       </div>
 
+      <input
+        value={adminSearch}
+        onChange={(e) => setAdminSearch(e.target.value)}
+        placeholder="חיפוש מוצר..."
+        className="p-2 rounded-2xl border w-full mb-4"
+        style={{ borderColor: C.kraftDark, background: "#fff" }}
+      />
+
       <div className="flex flex-col gap-4">
         {Object.entries(
-          products.reduce((acc, p) => {
-            const cat = p.category || "ללא קטגוריה";
-            (acc[cat] = acc[cat] || []).push(p);
-            return acc;
-          }, {})
+          products
+            .filter((p) => !adminSearch || p.name.includes(adminSearch) || (p.barcode || "").includes(adminSearch))
+            .reduce((acc, p) => {
+              const cat = p.category || "ללא קטגוריה";
+              (acc[cat] = acc[cat] || []).push(p);
+              return acc;
+            }, {})
         ).map(([cat, items]) => (
           <div key={cat}>
             <div className="wh-display font-bold text-sm mb-2" style={{ color: C.steel }}>{cat} ({items.length})</div>
