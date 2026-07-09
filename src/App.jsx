@@ -44,6 +44,18 @@ const KEYS = {
   stockLog: "kitchen-stock-log",
 };
 
+const SETUP_SQL = `create table kv_store (
+  key text not null,
+  shared boolean not null default true,
+  value jsonb not null,
+  updated_at timestamptz default now(),
+  primary key (key, shared)
+);
+
+alter table kv_store enable row level security;
+
+create policy allow_all on kv_store for all using (true) with check (true);`;
+
 const WEEK_DAYS = [
   ["sunday", "יום ראשון"],
   ["monday", "יום שני"],
@@ -335,8 +347,168 @@ function BarcodeScanner({ onDetected, onClose }) {
   );
 }
 
+/* ---------- Organization Gate ---------- */
+function AuthGate({ onAuthed }) {
+  const [mode, setMode] = useState("choose"); // choose | create | join | login
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [orgName, setOrgName] = useState("");
+  const [joinOrgId, setJoinOrgId] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirmNotice, setConfirmNotice] = useState(false);
+
+  async function doCreate() {
+    if (!email.trim() || !password.trim() || !orgName.trim() || !displayName.trim()) {
+      setErr("יש למלא את כל השדות");
+      return;
+    }
+    setErr("");
+    setBusy(true);
+    try {
+      const data = await window.auth.signUpCreateOrg({ email: email.trim(), password, orgName: orgName.trim(), displayName: displayName.trim(), phone: phone.trim() });
+      if (data?.session) onAuthed();
+      else setConfirmNotice(true);
+    } catch (e) {
+      setErr(e?.message || "שגיאה בהרשמה");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doJoin() {
+    if (!email.trim() || !password.trim() || !joinOrgId.trim() || !displayName.trim()) {
+      setErr("יש למלא את כל השדות");
+      return;
+    }
+    setErr("");
+    setBusy(true);
+    try {
+      const data = await window.auth.signUpJoinOrg({ email: email.trim(), password, orgId: joinOrgId.trim(), displayName: displayName.trim(), phone: phone.trim() });
+      if (data?.session) onAuthed();
+      else setConfirmNotice(true);
+    } catch (e) {
+      setErr(e?.message || "שגיאה בהרשמה");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doLogin() {
+    if (!email.trim() || !password.trim()) {
+      setErr("יש להזין מייל וסיסמה");
+      return;
+    }
+    setErr("");
+    setBusy(true);
+    try {
+      await window.auth.signIn(email.trim(), password);
+      onAuthed();
+    } catch (e) {
+      setErr(e?.message || "מייל או סיסמה שגויים");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (confirmNotice) {
+    return (
+      <div className="min-h-screen flex items-center justify-center wh-body" style={{ background: C.paper }} dir="rtl">
+        <style>{FONTS}</style>
+        <div className="w-full max-w-xs text-center">
+          <ShelfTag accent={C.sage}>
+            <p className="font-bold mb-2" style={{ color: C.ink }}>נשלח מייל אימות</p>
+            <p className="text-sm" style={{ color: C.steel }}>
+              בדוק את תיבת הדואר שלך ({email}) ולחץ על הקישור לאימות, ואז חזור לכאן ותתחבר.
+            </p>
+          </ShelfTag>
+          <button onClick={() => { setMode("login"); setConfirmNotice(false); }} className="mt-3 text-sm underline" style={{ color: C.accent }}>
+            עבור להתחברות
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center wh-body py-8" style={{ background: C.paper }} dir="rtl">
+      <style>{FONTS}</style>
+      <div className="w-full max-w-xs">
+        <h1 className="wh-display text-2xl font-black mb-1 text-center" style={{ color: C.ink }}>
+          ניהול משימות ומלאי מוסדי
+        </h1>
+        <p className="text-center text-sm mb-6" style={{ color: C.steel }}>
+          כל ארגון מקבל מרחב נתונים נפרד ומאובטח משלו
+        </p>
+
+        {mode === "choose" && (
+          <div className="flex flex-col gap-3">
+            <button onClick={() => setMode("create")} className="p-4 rounded-2xl font-bold wh-display text-right" style={{ background: C.accent, color: "#fff" }}>
+              🏢 צור ארגון חדש
+              <div className="text-xs font-normal mt-1 opacity-90">אם זו הפעם הראשונה שלך כאן</div>
+            </button>
+            <button onClick={() => setMode("join")} className="p-4 rounded-2xl font-bold wh-display text-right" style={{ background: C.kraft, color: C.ink, border: `1.5px solid ${C.kraftDark}` }}>
+              🔑 הצטרף לארגון קיים
+              <div className="text-xs font-normal mt-1" style={{ color: C.steel }}>אם קיבלת קוד ארגון ממנהל</div>
+            </button>
+            <button onClick={() => setMode("login")} className="p-3 rounded-2xl font-bold text-sm text-center" style={{ background: "transparent", color: C.accent }}>
+              כבר יש לי חשבון - התחבר
+            </button>
+          </div>
+        )}
+
+        {mode === "create" && (
+          <ShelfTag accent={C.accent} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <input value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="שם הארגון/המטבח" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} autoFocus />
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="השם שלך" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="טלפון (אופציונלי)" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+            <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
+            <button onClick={doCreate} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
+              {busy ? "יוצר..." : "צור ארגון והירשם"}
+            </button>
+            <button onClick={() => setMode("choose")} className="text-xs" style={{ color: C.steel }}>חזרה</button>
+          </ShelfTag>
+        )}
+
+        {mode === "join" && (
+          <ShelfTag accent={C.sage} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <p className="text-xs" style={{ color: C.steel }}>בקש מהמנהל שלך את קוד/מזהה הארגון (Org ID) שיש לו במסך ניהול.</p>
+            <input value={joinOrgId} onChange={(e) => setJoinOrgId(e.target.value)} placeholder="Org ID" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} autoFocus />
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="השם שלך" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="טלפון (אופציונלי)" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+            <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
+            <button onClick={doJoin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
+              {busy ? "מצטרף..." : "הצטרף והירשם"}
+            </button>
+            <button onClick={() => setMode("choose")} className="text-xs" style={{ color: C.steel }}>חזרה</button>
+          </ShelfTag>
+        )}
+
+        {mode === "login" && (
+          <ShelfTag accent={C.ink} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} autoFocus />
+            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
+            <button onClick={doLogin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
+              {busy ? "מתחבר..." : "התחבר"}
+            </button>
+            <button onClick={() => setMode("choose")} className="text-xs" style={{ color: C.steel }}>חזרה</button>
+          </ShelfTag>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
 /* ---------- Login ---------- */
-function Login({ users, onLogin, onFirstRun }) {
+function Login({ users, onLogin, onFirstRun, onDisconnect }) {
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
@@ -410,6 +582,9 @@ function Login({ users, onLogin, onFirstRun }) {
             משתמש ברירת מחדל: <b>מנהל</b> / סיסמה <b>1234</b> (ניתן לשנות בהגדרות לאחר הכניסה)
           </p>
         )}
+        <p className="text-xs text-center mt-4" style={{ color: C.steel }}>
+          <button onClick={onDisconnect} className="underline" style={{ color: C.accent }}>זה לא מסד הנתונים שלי / התחבר למסד אחר</button>
+        </p>
       </div>
     </div>
   );
@@ -417,6 +592,8 @@ function Login({ users, onLogin, onFirstRun }) {
 
 /* ---------- Main App ---------- */
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authProfile, setAuthProfile] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [users, setUsers] = useState([]);
   const [products, setProducts] = useState([]);
@@ -436,6 +613,37 @@ export default function App() {
   const [showMenu, setShowMenu] = useState(false);
 
   useEffect(() => {
+    (async () => {
+      try {
+        const session = await window.auth.getSession();
+        if (session) {
+          const profile = await window.auth.getMyProfile();
+          if (profile) setAuthProfile(profile);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+      setAuthChecked(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (authProfile) {
+      setCurrentUser({
+        id: authProfile.id,
+        name: authProfile.display_name || authProfile.email || "משתמש",
+        email: authProfile.email,
+        phone: authProfile.phone || "",
+        role: authProfile.role,
+        orgId: authProfile.org_id,
+        permissions: authProfile.permissions || { inventory: true, order: true, tasks: true },
+      });
+    } else {
+      setCurrentUser(null);
+    }
+  }, [authProfile]);
+
+  useEffect(() => {
     if (!currentUser) return;
     if (currentUser.role === "manager") return;
     const perms = currentUser.permissions || { inventory: true, order: true, tasks: true };
@@ -449,9 +657,11 @@ export default function App() {
   }, [currentUser]);
 
   useEffect(() => {
+    if (!currentUser) return;
+    setLoaded(false);
     (async () => {
-      const [u, p, t, s, n, m, w, r, sl] = await Promise.all([
-        loadKey(KEYS.users, []),
+      const [orgProfiles, p, t, s, n, m, w, r, sl] = await Promise.all([
+        window.auth.getOrgProfiles(),
         loadKey(KEYS.products, []),
         loadKey(KEYS.tasks, []),
         loadKey(KEYS.settings, { supplierPhone: "" }),
@@ -461,11 +671,13 @@ export default function App() {
         loadKey(KEYS.reminders, []),
         loadKey(KEYS.stockLog, []),
       ]);
-      let finalUsers = u;
-      if (!u || u.length === 0) {
-        finalUsers = [{ id: genId(), name: "מנהל", password: "1234", role: "manager", phone: "" }];
-        await saveKey(KEYS.users, finalUsers);
-      }
+      const finalUsers = (orgProfiles || []).map((prof) => ({
+        id: prof.id,
+        name: prof.display_name || "משתמש",
+        phone: prof.phone || "",
+        role: prof.role,
+        permissions: prof.permissions || { inventory: true, order: true, tasks: true },
+      }));
 
       // Check recurring reminders: if a reminder's scheduled weekday has passed
       // since it last fired, spawn a task + notification for it now.
@@ -528,7 +740,7 @@ export default function App() {
       setStockLog(sl || []);
       setLoaded(true);
     })();
-  }, []);
+  }, [currentUser?.id]);
 
   function showToast(msg) {
     setToast(msg);
@@ -539,9 +751,9 @@ export default function App() {
     setProducts(next);
     await saveKey(KEYS.products, next);
   }
-  async function persistUsers(next) {
-    setUsers(next);
-    await saveKey(KEYS.users, next);
+  async function updateUserProfile(id, fields) {
+    await window.auth.updateProfile(id, fields);
+    setUsers((cur) => cur.map((u) => (u.id === id ? { ...u, ...fields, name: fields.display_name ?? u.name } : u)));
   }
   async function persistTasks(next) {
     setTasks(next);
@@ -593,7 +805,7 @@ export default function App() {
     : [];
   const unreadCount = myNotifications.filter((n) => !n.read).length;
 
-  if (!loaded) {
+  if (!authChecked) {
     return (
       <div className="min-h-screen flex items-center justify-center" style={{ background: C.paper }}>
         <p className="wh-body" style={{ color: C.steel }}>טוען...</p>
@@ -602,7 +814,22 @@ export default function App() {
   }
 
   if (!currentUser) {
-    return <Login users={users} onLogin={setCurrentUser} onFirstRun={users.length === 1} />;
+    return (
+      <AuthGate
+        onAuthed={async () => {
+          const profile = await window.auth.getMyProfile();
+          if (profile) setAuthProfile(profile);
+        }}
+      />
+    );
+  }
+
+  if (!loaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: C.paper }}>
+        <p className="wh-body" style={{ color: C.steel }}>טוען...</p>
+      </div>
+    );
   }
 
   function handleScanDetected(code) {
@@ -739,7 +966,8 @@ export default function App() {
         {tab === "admin" && currentUser.role === "manager" && (
           <AdminTab
             users={users}
-            persistUsers={persistUsers}
+            updateUserProfile={updateUserProfile}
+            currentUser={currentUser}
             products={products}
             persistProducts={persistProducts}
             settings={settings}
@@ -798,8 +1026,16 @@ export default function App() {
                 <DrawerItem label="ניהול" active={tab === "admin"} onClick={() => { setTab("admin"); setShowMenu(false); }} />
               )}
             </div>
+            {currentUser.role === "manager" && (
+              <div className="mx-3 mb-2 p-3 rounded-2xl" style={{ background: C.paper }}>
+                <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>לחיבור עובד חדש למסד הזה:</div>
+                <div className="text-xs" style={{ color: C.steel }}>
+                  שתף איתו את מזהה הארגון (זמין למנהל במסך ניהול ← עובדים) - הוא יזין אותו ב"הצטרף לארגון קיים" בהרשמה הראשונה שלו.
+                </div>
+              </div>
+            )}
             <button
-              onClick={() => { setCurrentUser(null); setShowMenu(false); }}
+              onClick={async () => { await window.auth.signOut(); setAuthProfile(null); setShowMenu(false); }}
               className="m-3 py-2 rounded-2xl font-bold text-sm"
               style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
             >
@@ -1807,6 +2043,12 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
     }
   }
 
+  async function deleteTask(task) {
+    const next = tasks.filter((t) => t.id !== task.id);
+    await persistTasks(next);
+    showToast("המשימה נמחקה");
+  }
+
   async function addTask(newTask) {
     const created = { ...newTask, id: genId(), createdAt: Date.now(), createdBy: currentUser.name, status: "open" };
     const next = [...tasks, created];
@@ -1928,6 +2170,13 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
                 <button onClick={() => notifyWhatsapp(t)} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: "#25D366", color: "#fff" }}>
                   עדכן בוואטסאפ
                 </button>
+                <button
+                  onClick={() => { if (window.confirm("למחוק את המשימה הזו?")) deleteTask(t); }}
+                  className="px-3 py-1 rounded-2xl text-sm font-bold"
+                  style={{ background: C.stamp, color: "#fff" }}
+                >
+                  מחק
+                </button>
               </div>
             </ShelfTag>
           );
@@ -2047,7 +2296,7 @@ function NewTaskForm({ users, onSubmit, onCancel }) {
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, persistUsers, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog }) {
+function AdminTab({ users, updateUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog }) {
   const [section, setSection] = useState("products");
 
   return (
@@ -2066,10 +2315,10 @@ function AdminTab({ users, persistUsers, products, persistProducts, settings, pe
       </div>
 
       {section === "products" && (
-        <ProductsAdmin products={products} persistProducts={persistProducts} showToast={showToast} settings={settings} />
+        <ProductsAdmin products={products} persistProducts={persistProducts} showToast={showToast} settings={settings} persistSettings={persistSettings} />
       )}
       {section === "users" && (
-        <UsersAdmin users={users} persistUsers={persistUsers} showToast={showToast} />
+        <UsersAdmin users={users} updateUserProfile={updateUserProfile} showToast={showToast} currentUser={currentUser} />
       )}
       {section === "menu" && (
         <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} />
@@ -2584,7 +2833,7 @@ const PRODUCT_CATEGORIES = [
   "אחר",
 ];
 
-function ProductsAdmin({ products, persistProducts, showToast, settings }) {
+function ProductsAdmin({ products, persistProducts, showToast, settings, persistSettings }) {
   const suppliers = settings?.suppliers || [];
   const empty = { name: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "" };
   const [form, setForm] = useState(empty);
@@ -2648,6 +2897,22 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
   }
 
   async function applyImportedRows(rows) {
+    const suppliers = settings?.suppliers || [];
+    const newSuppliersFound = [];
+
+    function resolveSupplierId(supplierName) {
+      if (!supplierName) return "";
+      const clean = supplierName.trim();
+      if (!clean) return "";
+      const existing = suppliers.find((s) => s.name.trim() === clean);
+      if (existing) return existing.id;
+      const alreadyQueued = newSuppliersFound.find((s) => s.name === clean);
+      if (alreadyQueued) return alreadyQueued.id;
+      const id = genId();
+      newSuppliersFound.push({ id, name: clean, phone: "" });
+      return id;
+    }
+
     const imported = rows
       .map((row) => {
         const name = pickField(row, ["name", "שם", "שם מוצר", "מוצר"]);
@@ -2659,7 +2924,9 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
         const unit = String(pickField(row, ["unit", "יחידה", "יח׳"]) || "יח׳");
         const unitsPerCarton = Number(pickField(row, ["unitspercarton", "יחידות בקרטון", "בקרטון", "יח בקרטון"]) || 0);
         const category = String(pickField(row, ["category", "קטגוריה", "קטגוריא"]) || "");
-        return { name: String(name), barcode, quantity, threshold, price, unit, unitsPerCarton, category };
+        const supplierName = String(pickField(row, ["supplier", "ספק"]) || "");
+        const supplierId = resolveSupplierId(supplierName);
+        return { name: String(name), barcode, quantity, threshold, price, unit, unitsPerCarton, category, supplierId };
       })
       .filter(Boolean);
 
@@ -2667,10 +2934,18 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
       showToast("לא נמצאו שורות עם שם מוצר תקין");
       return;
     }
+
+    if (newSuppliersFound.length > 0 && persistSettings) {
+      await persistSettings({ ...settings, suppliers: [...suppliers, ...newSuppliersFound] });
+    }
+
     let next = [...products];
     let added = 0, updated = 0;
     for (const item of imported) {
-      const existingIdx = item.barcode ? next.findIndex((p) => p.barcode && p.barcode === item.barcode) : -1;
+      const normName = (s) => String(s).trim().toLowerCase();
+      const existingIdx = item.barcode
+        ? next.findIndex((p) => p.barcode && p.barcode === item.barcode)
+        : next.findIndex((p) => normName(p.name) === normName(item.name));
       if (existingIdx >= 0) {
         next[existingIdx] = { ...next[existingIdx], ...item };
         updated++;
@@ -2680,7 +2955,8 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
       }
     }
     await persistProducts(next);
-    showToast(`יובאו ${added} מוצרים חדשים, עודכנו ${updated}`);
+    const supplierNote = newSuppliersFound.length > 0 ? ` (נוצרו ${newSuppliersFound.length} ספקים חדשים - הוסף להם טלפון בהגדרות)` : "";
+    showToast(`יובאו ${added} מוצרים חדשים, עודכנו ${updated}${supplierNote}`);
   }
 
   async function handleFile(e) {
@@ -2720,6 +2996,35 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
     }
   }
 
+  function exportToExcel() {
+    const rows = products.map((p) => ({
+      "שם מוצר": p.name,
+      "ברקוד": p.barcode || "",
+      "כמות": p.quantity,
+      "יחידות בקרטון": p.unitsPerCarton || "",
+      "סף מינימום": p.threshold,
+      "מחיר": p.price,
+      "יחידה": p.unit,
+      "קטגוריה": p.category || "",
+      "ספק": suppliers.find((s) => s.id === p.supplierId)?.name || "",
+    }));
+    if (rows.length === 0) {
+      rows.push({
+        "שם מוצר": "", "ברקוד": "", "כמות": "", "יחידות בקרטון": "",
+        "סף מינימום": "", "מחיר": "", "יחידה": "", "קטגוריה": "", "ספק": "",
+      });
+    }
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    sheet["!cols"] = [
+      { wch: 26 }, { wch: 20 }, { wch: 10 }, { wch: 16 },
+      { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 18 }, { wch: 20 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, "מוצרים");
+    XLSX.writeFile(wb, "מוצרים.xlsx");
+    showToast("הקובץ יורד עכשיו");
+  }
+
   return (
     <div>
       <div className="mb-4">
@@ -2730,6 +3035,15 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
           onChange={handleFile}
           className="hidden"
         />
+        <div className="flex gap-2 mb-2">
+          <button
+            onClick={exportToExcel}
+            className="flex-1 py-2 rounded-2xl font-bold text-sm"
+            style={{ background: C.accent, color: "#fff" }}
+          >
+            📤 ייצוא טבלה לאקסל
+          </button>
+        </div>
         <div className="flex gap-2">
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -2748,7 +3062,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
           </button>
         </div>
         <p className="text-xs mt-1 text-center" style={{ color: C.steel }}>
-          עמודות מזוהות: שם מוצר, ברקוד, כמות, סף מינימום, מחיר, יחידה (התאמה לפי ברקוד מעדכנת מוצר קיים)
+          עמודות מזוהות: שם מוצר, ברקוד, כמות, סף מינימום, מחיר, יחידה. אם יש ברקוד - מתאים לפיו; אם אין ברקוד - מתאים לפי שם מדויק. במקרה של התאמה, המוצר מתעדכן ולא מתווסף כפול.
         </p>
 
         {pasteMode && (
@@ -2915,92 +3229,98 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
   );
 }
 
-function UsersAdmin({ users, persistUsers, showToast }) {
-  const empty = { name: "", password: "", phone: "", role: "staff", permissions: { inventory: true, order: true, tasks: true } };
-  const [form, setForm] = useState(empty);
+function UsersAdmin({ users, updateUserProfile, showToast, currentUser }) {
   const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(null);
+  const [copied, setCopied] = useState(false);
 
-  async function save() {
-    if (!form.name.trim() || !form.password.trim()) return showToast("יש להזין שם וסיסמה");
-    let next;
-    if (editingId) {
-      next = users.map((u) => (u.id === editingId ? { ...form, id: editingId } : u));
-    } else {
-      next = [...users, { ...form, id: genId() }];
-    }
-    await persistUsers(next);
-    setForm(empty);
-    setEditingId(null);
-    showToast("העובד נשמר");
+  function startEdit(u) {
+    setForm({ ...u });
+    setEditingId(u.id);
   }
 
-  async function remove(id) {
-    if (users.length <= 1) return showToast("חייב להישאר לפחות משתמש אחד");
-    await persistUsers(users.filter((u) => u.id !== id));
+  async function save() {
+    await updateUserProfile(editingId, {
+      display_name: form.name,
+      phone: form.phone,
+      role: form.role,
+      permissions: form.permissions,
+    });
+    setEditingId(null);
+    setForm(null);
+    showToast("העובד עודכן");
+  }
+
+  function copyOrgId() {
+    navigator.clipboard?.writeText(currentUser.orgId).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
   }
 
   return (
     <div>
-      <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 }}>
-        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>
-          {editingId ? "עריכת עובד" : "הוספת עובד"}
+      <ShelfTag accent={C.accent} style={{ marginBottom: 16 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>הזמנת עובד חדש</div>
+        <p className="text-xs mb-2" style={{ color: C.steel }}>
+          עובדים לא נוצרים כאן - כל אחד נרשם בעצמו במסך הכניסה עם "הצטרף לארגון קיים" ומזין את מזהה הארגון הזה:
+        </p>
+        <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.ink, color: "#fff", direction: "ltr", wordBreak: "break-all", fontFamily: "monospace" }}>
+          {currentUser.orgId}
         </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם</label>
-          <input placeholder="שם" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>סיסמה</label>
-          <input placeholder="סיסמה" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>טלפון (לוואטסאפ, לדוגמה 972501234567)</label>
-          <input placeholder="972501234567" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תפקיד</label>
-          <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
-            <option value="staff">עובד</option>
-            <option value="manager">מנהל</option>
-          </select>
-        </div>
-        {form.role === "staff" && (
-          <div>
-            <label className="text-xs font-bold block mb-2" style={{ color: C.steel }}>מה העובד יראה באפליקציה</label>
-            <div className="flex flex-col gap-2">
-              {[
-                ["inventory", "מלאי"],
-                ["order", "הזמנה"],
-                ["tasks", "משימות"],
-              ].map(([key, label]) => {
-                const perms = form.permissions || { inventory: true, order: true, tasks: true };
-                return (
-                  <label key={key} className="flex items-center gap-2 text-sm" style={{ color: C.ink }}>
-                    <input
-                      type="checkbox"
-                      checked={perms[key] !== false}
-                      onChange={(e) =>
-                        setForm({ ...form, permissions: { ...perms, [key]: e.target.checked } })
-                      }
-                    />
-                    {label}
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-        )}
-        <div className="flex gap-2">
-          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
-            {editingId ? "שמור שינויים" : "הוסף עובד"}
-          </button>
-          {editingId && (
-            <button onClick={() => { setForm(empty); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
-              ביטול
-            </button>
-          )}
-        </div>
+        <button onClick={copyOrgId} className="w-full py-1.5 rounded-xl text-xs font-bold" style={{ background: C.paper, color: C.ink }}>
+          {copied ? "הועתק ✓" : "העתק מזהה ארגון"}
+        </button>
       </ShelfTag>
+
+      {editingId && form && (
+        <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>עריכת עובד</div>
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם</label>
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+          </div>
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>טלפון (לוואטסאפ)</label>
+            <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+          </div>
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תפקיד</label>
+            <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+              <option value="staff">עובד</option>
+              <option value="manager">מנהל</option>
+            </select>
+          </div>
+          {form.role === "staff" && (
+            <div>
+              <label className="text-xs font-bold block mb-2" style={{ color: C.steel }}>מה העובד יראה באפליקציה</label>
+              <div className="flex flex-col gap-2">
+                {[
+                  ["inventory", "מלאי"],
+                  ["order", "הזמנה"],
+                  ["tasks", "משימות"],
+                ].map(([key, label]) => {
+                  const perms = form.permissions || { inventory: true, order: true, tasks: true };
+                  return (
+                    <label key={key} className="flex items-center gap-2 text-sm" style={{ color: C.ink }}>
+                      <input
+                        type="checkbox"
+                        checked={perms[key] !== false}
+                        onChange={(e) => setForm({ ...form, permissions: { ...perms, [key]: e.target.checked } })}
+                      />
+                      {label}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+          <div className="flex gap-2">
+            <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>שמור שינויים</button>
+            <button onClick={() => { setForm(null); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
+          </div>
+        </ShelfTag>
+      )}
 
       <div className="flex flex-col gap-2">
         {users.map((u) => (
@@ -3009,10 +3329,7 @@ function UsersAdmin({ users, persistUsers, showToast }) {
               <div className="font-bold text-sm" style={{ color: C.ink }}>{u.name} {u.role === "manager" && "👑"}</div>
               <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>{u.phone || "ללא טלפון"}</div>
             </div>
-            <div className="flex gap-2">
-              <button onClick={() => { setForm(u); setEditingId(u.id); }} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
-              <button onClick={() => remove(u.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
-            </div>
+            <button onClick={() => startEdit(u)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
           </div>
         ))}
       </div>
