@@ -1255,7 +1255,14 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   }
 
   function buildStockMessage() {
-    const lines = lowStock.map((p) => `- ${qtys[p.id] || 1} ${p.unit} ${p.name}`);
+    const lowStockIds = new Set(lowStock.map((p) => p.id));
+    const extraIds = Object.keys(qtys).filter((id) => Number(qtys[id]) > 0 && !lowStockIds.has(id));
+    const extraProducts = products.filter((p) => extraIds.includes(p.id));
+    const allItems = [...lowStock, ...extraProducts];
+    const lines = allItems
+      .map((p) => ({ p, qty: qtys[p.id] ?? 1 }))
+      .filter(({ qty }) => Number(qty) > 0)
+      .map(({ p, qty }) => `- ${qty} ${p.unit} ${p.name}`);
     return lines.join("\n");
   }
 
@@ -1397,15 +1404,15 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       </div>
 
       {orderMode === "stock" && (() => {
-        const bySupplier = orderSupplierFilter === "all"
+        const baseList = orderSupplierFilter === "all"
           ? lowStock
-          : lowStock.filter((p) => (p.supplierId || "__unassigned__") === orderSupplierFilter);
+          : products.filter((p) => (p.supplierId || "__unassigned__") === orderSupplierFilter);
         const filteredLowStock = orderSearch
-          ? bySupplier.filter((p) => p.name.includes(orderSearch))
-          : bySupplier;
-        const supplierOptionsInList = Array.from(new Set(lowStock.map((p) => p.supplierId || "__unassigned__")));
+          ? baseList.filter((p) => p.name.includes(orderSearch))
+          : baseList;
+        const supplierOptionsInList = Array.from(new Set(products.map((p) => p.supplierId || "__unassigned__")));
 
-        return lowStock.length === 0 ? (
+        return lowStock.length === 0 && orderSupplierFilter === "all" && !orderSearch ? (
           <ShelfTag accent={C.sage}>
             <p style={{ color: C.sage }} className="font-bold text-center">כל המלאי תקין ✓</p>
           </ShelfTag>
@@ -1425,7 +1432,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 className="flex-1 p-2 rounded-2xl border text-sm"
                 style={{ borderColor: C.kraftDark }}
               >
-                <option value="all">כל הספקים</option>
+                <option value="all">מתחת לסף בלבד</option>
                 {supplierOptionsInList.map((sid) => (
                   <option key={sid} value={sid}>
                     {sid === "__unassigned__" ? "ללא ספק משויך" : suppliers.find((s) => s.id === sid)?.name || "ספק"}
@@ -1433,28 +1440,37 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 ))}
               </select>
             </div>
+            {orderSupplierFilter !== "all" && (
+              <p className="text-xs mb-2" style={{ color: C.steel }}>
+                מוצג כאן כל המלאי של הספק הזה (גם מה שיש ממנו מספיק) - הקלד כמות רק למה שבאמת רוצה להזמין.
+              </p>
+            )}
 
             {filteredLowStock.length === 0 ? (
               <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין מוצרים תואמים לחיפוש/סינון</p>
             ) : (
               <div className="flex flex-col gap-3 mb-4">
-                {filteredLowStock.map((p) => (
-                  <ShelfTag key={p.id} accent={C.stamp}>
-                    <div className="flex justify-between items-center">
-                      <div>
-                        <div className="wh-display font-bold" style={{ color: C.ink }}>{p.name}</div>
-                        <div className="text-xs" style={{ color: C.steel }}>יש במלאי: {p.quantity} {p.unit} (סף: {p.threshold})</div>
+                {filteredLowStock.map((p) => {
+                  const isLow = Number(p.quantity) <= Number(p.threshold);
+                  const defaultQty = isLow ? Math.max(1, Number(p.threshold) * 2 - Number(p.quantity)) : 0;
+                  return (
+                    <ShelfTag key={p.id} accent={isLow ? C.stamp : C.sage}>
+                      <div className="flex justify-between items-center">
+                        <div>
+                          <div className="wh-display font-bold" style={{ color: C.ink }}>{p.name}</div>
+                          <div className="text-xs" style={{ color: C.steel }}>יש במלאי: {p.quantity} {p.unit} (סף: {p.threshold})</div>
+                        </div>
+                        <input
+                          type="number"
+                          value={qtys[p.id] ?? defaultQty}
+                          onChange={(e) => setQtys((q) => ({ ...q, [p.id]: Math.max(0, Number(e.target.value)) }))}
+                          className="w-16 text-center p-2 rounded-2xl border"
+                          style={{ borderColor: C.kraftDark }}
+                        />
                       </div>
-                      <input
-                        type="number"
-                        value={qtys[p.id] || 1}
-                        onChange={(e) => setQtys((q) => ({ ...q, [p.id]: Math.max(1, Number(e.target.value)) }))}
-                        className="w-16 text-center p-2 rounded-2xl border"
-                        style={{ borderColor: C.kraftDark }}
-                      />
-                    </div>
-                  </ShelfTag>
-                ))}
+                    </ShelfTag>
+                  );
+                })}
               </div>
             )}
             <button onClick={sendOrder} className="w-full py-3 rounded-2xl wh-display font-bold" style={{ background: "#25D366", color: "#fff" }}>
@@ -2533,8 +2549,26 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
   const [pasteMode, setPasteMode] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [adminSearch, setAdminSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [bulkThreshold, setBulkThreshold] = useState("");
 
   const formRef = useRef(null);
+
+  function toggleSelect(id) {
+    setSelectedIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  }
+
+  async function applyBulkThreshold() {
+    if (selectedIds.length === 0) return showToast("בחר לפחות מוצר אחד");
+    if (bulkThreshold === "" || Number(bulkThreshold) < 0) return showToast("הזן סף מינימום תקין");
+    const next = products.map((p) =>
+      selectedIds.includes(p.id) ? { ...p, threshold: Number(bulkThreshold) } : p
+    );
+    await persistProducts(next);
+    showToast(`עודכן סף מינימום ל-${bulkThreshold} עבור ${selectedIds.length} מוצרים`);
+    setSelectedIds([]);
+    setBulkThreshold("");
+  }
 
   function startEdit(p) {
     setForm(p);
@@ -2768,9 +2802,33 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
         value={adminSearch}
         onChange={(e) => setAdminSearch(e.target.value)}
         placeholder="חיפוש מוצר..."
-        className="p-2 rounded-2xl border w-full mb-4"
+        className="p-2 rounded-2xl border w-full mb-3"
         style={{ borderColor: C.kraftDark, background: "#fff" }}
       />
+
+      {selectedIds.length > 0 && (
+        <ShelfTag accent={C.accent} style={{ marginBottom: 16 }}>
+          <div className="text-sm font-bold mb-2" style={{ color: C.ink }}>
+            {selectedIds.length} מוצרים נבחרו - עדכן להם סף מינימום אחד
+          </div>
+          <div className="flex gap-2">
+            <input
+              type="number"
+              value={bulkThreshold}
+              onChange={(e) => setBulkThreshold(e.target.value)}
+              placeholder="סף מינימום חדש"
+              className="flex-1 p-2 rounded-2xl border text-center"
+              style={{ borderColor: C.kraftDark }}
+            />
+            <button onClick={applyBulkThreshold} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+              עדכן
+            </button>
+            <button onClick={() => setSelectedIds([])} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+              נקה בחירה
+            </button>
+          </div>
+        </ShelfTag>
+      )}
 
       <div className="flex flex-col gap-4">
         {Object.entries(
@@ -2787,9 +2845,16 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
             <div className="flex flex-col gap-2">
               {items.map((p) => (
                 <div key={p.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
-                  <div>
-                    <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
-                    <div className="text-xs" style={{ color: C.steel }}>₪{Number(p.price).toFixed(2)} · {p.quantity} {p.unit}</div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(p.id)}
+                      onChange={() => toggleSelect(p.id)}
+                    />
+                    <div>
+                      <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
+                      <div className="text-xs" style={{ color: C.steel }}>₪{Number(p.price).toFixed(2)} · {p.quantity} {p.unit} · סף: {p.threshold}</div>
+                    </div>
                   </div>
                   <div className="flex gap-2">
                     <button onClick={() => startEdit(p)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
