@@ -41,6 +41,7 @@ const KEYS = {
   menuItems: "kitchen-menu-items",
   weeklyMenu: "kitchen-weekly-menu",
   reminders: "kitchen-reminders",
+  stockLog: "kitchen-stock-log",
 };
 
 const WEEK_DAYS = [
@@ -425,6 +426,7 @@ export default function App() {
   const [menuItems, setMenuItems] = useState([]);
   const [weeklyMenu, setWeeklyMenu] = useState({});
   const [reminders, setReminders] = useState([]);
+  const [stockLog, setStockLog] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [tab, setTab] = useState("tasks");
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -448,7 +450,7 @@ export default function App() {
 
   useEffect(() => {
     (async () => {
-      const [u, p, t, s, n, m, w, r] = await Promise.all([
+      const [u, p, t, s, n, m, w, r, sl] = await Promise.all([
         loadKey(KEYS.users, []),
         loadKey(KEYS.products, []),
         loadKey(KEYS.tasks, []),
@@ -457,6 +459,7 @@ export default function App() {
         loadKey(KEYS.menuItems, []),
         loadKey(KEYS.weeklyMenu, {}),
         loadKey(KEYS.reminders, []),
+        loadKey(KEYS.stockLog, []),
       ]);
       let finalUsers = u;
       if (!u || u.length === 0) {
@@ -522,6 +525,7 @@ export default function App() {
       setMenuItems(m || []);
       setWeeklyMenu(w || {});
       setReminders(finalReminders);
+      setStockLog(sl || []);
       setLoaded(true);
     })();
   }, []);
@@ -562,6 +566,15 @@ export default function App() {
   async function persistReminders(next) {
     setReminders(next);
     await saveKey(KEYS.reminders, next);
+  }
+  async function persistStockLog(next) {
+    setStockLog(next);
+    await saveKey(KEYS.stockLog, next);
+  }
+  async function logStockChange(productId, delta, userName) {
+    if (!delta) return;
+    const next = [...stockLog, { id: genId(), productId, delta, userName, timestamp: Date.now() }];
+    await persistStockLog(next);
   }
   async function notifyUser(userId, message) {
     const next = [
@@ -697,6 +710,7 @@ export default function App() {
             currentUser={currentUser}
             showToast={showToast}
             isManager={currentUser.role === "manager"}
+            logStockChange={logStockChange}
           />
         )}
         {tab === "order" && (
@@ -736,6 +750,7 @@ export default function App() {
             persistWeeklyMenu={persistWeeklyMenu}
             reminders={reminders}
             persistReminders={persistReminders}
+            stockLog={stockLog}
           />
         )}
       </div>
@@ -844,7 +859,7 @@ function DrawerItem({ label, active, onClick, badge, badgeColor }) {
 }
 
 /* ---------- Inventory Tab ---------- */
-function InventoryTab({ products, persistProducts, openScanner, scanResult, clearScanResult, currentUser, showToast, isManager }) {
+function InventoryTab({ products, persistProducts, openScanner, scanResult, clearScanResult, currentUser, showToast, isManager, logStockChange }) {
   const [search, setSearch] = useState("");
   const [showSummary, setShowSummary] = useState(false);
   const [viewMode, setViewMode] = useState("category"); // "category" | "name"
@@ -862,12 +877,15 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
       p.id === product.id ? { ...p, quantity: Math.max(0, Number(p.quantity) + delta) } : p
     );
     await persistProducts(next);
+    if (logStockChange) logStockChange(product.id, delta, currentUser.name);
     showToast(`${product.name}: ${delta > 0 ? "+" : ""}${delta} (${currentUser.name})`);
   }
 
   async function setQty(product, newQty) {
     const next = products.map((p) => (p.id === product.id ? { ...p, quantity: newQty } : p));
     await persistProducts(next);
+    const delta = Number(newQty) - Number(product.quantity);
+    if (logStockChange) logStockChange(product.id, delta, currentUser.name);
     showToast(`${product.name}: עודכן ל-${newQty} (${currentUser.name})`);
   }
 
@@ -1931,13 +1949,13 @@ function NewTaskForm({ users, onSubmit, onCancel }) {
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, persistUsers, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders }) {
+function AdminTab({ users, persistUsers, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog }) {
   const [section, setSection] = useState("products");
 
   return (
     <div>
       <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
-        {[["products", "מוצרים"], ["users", "עובדים"], ["menu", "תפריט"], ["reminders", "תזכורות"], ["settings", "הגדרות"]].map(([val, label]) => (
+        {[["products", "מוצרים"], ["users", "עובדים"], ["menu", "תפריט"], ["reminders", "תזכורות"], ["analytics", "ניתוח"], ["settings", "הגדרות"]].map(([val, label]) => (
           <button
             key={val}
             onClick={() => setSection(val)}
@@ -1960,6 +1978,9 @@ function AdminTab({ users, persistUsers, products, persistProducts, settings, pe
       )}
       {section === "reminders" && (
         <RemindersAdmin reminders={reminders} persistReminders={persistReminders} products={products} users={users} showToast={showToast} />
+      )}
+      {section === "analytics" && (
+        <AnalyticsAdmin products={products} stockLog={stockLog} />
       )}
       {section === "settings" && (
         <SuppliersAdmin settings={settings} persistSettings={persistSettings} showToast={showToast} />
@@ -2423,328 +2444,4 @@ function ProductsAdmin({ products, persistProducts, showToast, settings }) {
         const name = pickField(row, ["name", "שם", "שם מוצר", "מוצר"]);
         if (!name) return null;
         const barcode = String(pickField(row, ["barcode", "ברקוד", "קוד"]) || "");
-        const quantity = Number(pickField(row, ["quantity", "כמות", "מלאי"]) || 0);
-        const threshold = Number(pickField(row, ["threshold", "סף", "סף מינימום", "סף מינ׳"]) || 1);
-        const price = Number(pickField(row, ["price", "מחיר"]) || 0);
-        const unit = String(pickField(row, ["unit", "יחידה", "יח׳"]) || "יח׳");
-        const unitsPerCarton = Number(pickField(row, ["unitspercarton", "יחידות בקרטון", "בקרטון", "יח בקרטון"]) || 0);
-        const category = String(pickField(row, ["category", "קטגוריה", "קטגוריא"]) || "");
-        return { name: String(name), barcode, quantity, threshold, price, unit, unitsPerCarton, category };
-      })
-      .filter(Boolean);
-
-    if (imported.length === 0) {
-      showToast("לא נמצאו שורות עם שם מוצר תקין");
-      return;
-    }
-    let next = [...products];
-    let added = 0, updated = 0;
-    for (const item of imported) {
-      const existingIdx = item.barcode ? next.findIndex((p) => p.barcode && p.barcode === item.barcode) : -1;
-      if (existingIdx >= 0) {
-        next[existingIdx] = { ...next[existingIdx], ...item };
-        updated++;
-      } else {
-        next.push({ ...item, id: genId() });
-        added++;
-      }
-    }
-    await persistProducts(next);
-    showToast(`יובאו ${added} מוצרים חדשים, עודכנו ${updated}`);
-  }
-
-  async function handleFile(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImporting(true);
-    try {
-      const buf = await file.arrayBuffer();
-      const wb = XLSX.read(buf, { type: "array" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      await applyImportedRows(rows);
-    } catch (err) {
-      console.error(err);
-      showToast("שגיאה בקריאת הקובץ. ודא שזה קובץ Excel או CSV תקין");
-    } finally {
-      setImporting(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
-  }
-
-  async function handlePasteImport() {
-    if (!pasteText.trim()) return showToast("הדבק קודם נתונים בתיבה");
-    setImporting(true);
-    try {
-      const wb = XLSX.read(pasteText, { type: "string" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
-      await applyImportedRows(rows);
-      setPasteText("");
-      setPasteMode(false);
-    } catch (err) {
-      console.error(err);
-      showToast("שגיאה בפענוח הטקסט שהודבק");
-    } finally {
-      setImporting(false);
-    }
-  }
-
-  return (
-    <div>
-      <div className="mb-4">
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".xlsx,.xls,.csv"
-          onChange={handleFile}
-          className="hidden"
-        />
-        <div className="flex gap-2">
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={importing}
-            className="flex-1 py-2 rounded-2xl font-bold text-sm"
-            style={{ background: C.mustard, color: C.ink }}
-          >
-            {importing ? "מייבא..." : "📥 בחר קובץ אקסל/CSV"}
-          </button>
-          <button
-            onClick={() => setPasteMode((v) => !v)}
-            className="flex-1 py-2 rounded-2xl font-bold text-sm"
-            style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
-          >
-            📋 הדבקת נתונים
-          </button>
-        </div>
-        <p className="text-xs mt-1 text-center" style={{ color: C.steel }}>
-          עמודות מזוהות: שם מוצר, ברקוד, כמות, סף מינימום, מחיר, יחידה (התאמה לפי ברקוד מעדכנת מוצר קיים)
-        </p>
-
-        {pasteMode && (
-          <div className="mt-2 flex flex-col gap-2">
-            <p className="text-xs" style={{ color: C.steel }}>
-              פתח את קובץ האקסל, סמן את כל הטבלה כולל שורת הכותרות, העתק (Ctrl+C), והדבק כאן:
-            </p>
-            <textarea
-              value={pasteText}
-              onChange={(e) => setPasteText(e.target.value)}
-              placeholder={"שם מוצר\tברקוד\tכמות\tסף מינימום\tמחיר\tיחידה\nאורז\t123456\t20\t5\t24.9\tשק"}
-              rows={6}
-              className="p-2 rounded-2xl border text-xs"
-              style={{ borderColor: C.kraftDark, direction: "ltr", fontFamily: "monospace" }}
-            />
-            <button
-              onClick={handlePasteImport}
-              disabled={importing}
-              className="py-2 rounded-2xl font-bold text-sm"
-              style={{ background: C.sage, color: "#fff" }}
-            >
-              {importing ? "מייבא..." : "ייבא מהטקסט שהודבק"}
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div ref={formRef}>
-      <ShelfTag accent={C.sage} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
-        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>
-          {editingId ? "עריכת מוצר" : "הוספת מוצר חדש"}
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם מוצר</label>
-          <input placeholder="שם מוצר" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>ברקוד</label>
-          <input placeholder="ברקוד" value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
-        </div>
-        <div className="flex gap-2">
-          <div className="flex-1">
-            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>כמות במלאי</label>
-            <input type="number" placeholder="כמות" value={form.quantity === 0 ? "" : form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value === "" ? 0 : Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
-          </div>
-          <div className="flex-1">
-            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>סף מינימום</label>
-            <input type="number" placeholder="סף מינ׳" value={form.threshold === 0 ? "" : form.threshold} onChange={(e) => setForm({ ...form, threshold: e.target.value === "" ? 0 : Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
-          </div>
-        </div>
-        <div className="flex gap-2">
-          <div className="flex-1">
-            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מחיר ליחידה (₪)</label>
-            <input type="number" placeholder="מחיר ליחידה" value={form.price === 0 ? "" : form.price} onChange={(e) => setForm({ ...form, price: e.target.value === "" ? 0 : Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
-          </div>
-          <div className="flex-1">
-            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>יחידת מידה</label>
-            <input placeholder="ק״ג, יח׳..." value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
-          </div>
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>יחידות בקרטון (אופציונלי)</label>
-          <input type="number" placeholder="יחידות בקרטון" value={form.unitsPerCarton || ""} onChange={(e) => setForm({ ...form, unitsPerCarton: Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>קטגוריה</label>
-          <select value={form.category || ""} onChange={(e) => setForm({ ...form, category: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
-            <option value="">ללא קטגוריה</option>
-            {PRODUCT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
-          </select>
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>ספק קבוע למוצר (אופציונלי)</label>
-          <select value={form.supplierId || ""} onChange={(e) => setForm({ ...form, supplierId: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
-            <option value="">ללא ספק קבוע</option>
-            {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-          {suppliers.length === 0 && (
-            <p className="text-xs mt-1" style={{ color: C.steel }}>הוסף ספקים במסך ניהול ← הגדרות כדי לבחור כאן.</p>
-          )}
-        </div>
-        <div className="flex gap-2">
-          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
-            {editingId ? "שמור שינויים" : "הוסף מוצר"}
-          </button>
-          {editingId && (
-            <button onClick={() => { setForm(empty); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
-              ביטול
-            </button>
-          )}
-        </div>
-      </ShelfTag>
-      </div>
-
-      <div className="flex flex-col gap-4">
-        {Object.entries(
-          products.reduce((acc, p) => {
-            const cat = p.category || "ללא קטגוריה";
-            (acc[cat] = acc[cat] || []).push(p);
-            return acc;
-          }, {})
-        ).map(([cat, items]) => (
-          <div key={cat}>
-            <div className="wh-display font-bold text-sm mb-2" style={{ color: C.steel }}>{cat} ({items.length})</div>
-            <div className="flex flex-col gap-2">
-              {items.map((p) => (
-                <div key={p.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
-                  <div>
-                    <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
-                    <div className="text-xs" style={{ color: C.steel }}>₪{Number(p.price).toFixed(2)} · {p.quantity} {p.unit}</div>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => startEdit(p)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
-                    <button onClick={() => remove(p.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function UsersAdmin({ users, persistUsers, showToast }) {
-  const empty = { name: "", password: "", phone: "", role: "staff", permissions: { inventory: true, order: true, tasks: true } };
-  const [form, setForm] = useState(empty);
-  const [editingId, setEditingId] = useState(null);
-
-  async function save() {
-    if (!form.name.trim() || !form.password.trim()) return showToast("יש להזין שם וסיסמה");
-    let next;
-    if (editingId) {
-      next = users.map((u) => (u.id === editingId ? { ...form, id: editingId } : u));
-    } else {
-      next = [...users, { ...form, id: genId() }];
-    }
-    await persistUsers(next);
-    setForm(empty);
-    setEditingId(null);
-    showToast("העובד נשמר");
-  }
-
-  async function remove(id) {
-    if (users.length <= 1) return showToast("חייב להישאר לפחות משתמש אחד");
-    await persistUsers(users.filter((u) => u.id !== id));
-  }
-
-  return (
-    <div>
-      <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 }}>
-        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>
-          {editingId ? "עריכת עובד" : "הוספת עובד"}
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם</label>
-          <input placeholder="שם" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>סיסמה</label>
-          <input placeholder="סיסמה" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>טלפון (לוואטסאפ, לדוגמה 972501234567)</label>
-          <input placeholder="972501234567" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תפקיד</label>
-          <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
-            <option value="staff">עובד</option>
-            <option value="manager">מנהל</option>
-          </select>
-        </div>
-        {form.role === "staff" && (
-          <div>
-            <label className="text-xs font-bold block mb-2" style={{ color: C.steel }}>מה העובד יראה באפליקציה</label>
-            <div className="flex flex-col gap-2">
-              {[
-                ["inventory", "מלאי"],
-                ["order", "הזמנה"],
-                ["tasks", "משימות"],
-              ].map(([key, label]) => {
-                const perms = form.permissions || { inventory: true, order: true, tasks: true };
-                return (
-                  <label key={key} className="flex items-center gap-2 text-sm" style={{ color: C.ink }}>
-                    <input
-                      type="checkbox"
-                      checked={perms[key] !== false}
-                      onChange={(e) =>
-                        setForm({ ...form, permissions: { ...perms, [key]: e.target.checked } })
-                      }
-                    />
-                    {label}
-                  </label>
-                );
-              })}
-            </div>
-          </div>
-        )}
-        <div className="flex gap-2">
-          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
-            {editingId ? "שמור שינויים" : "הוסף עובד"}
-          </button>
-          {editingId && (
-            <button onClick={() => { setForm(empty); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
-              ביטול
-            </button>
-          )}
-        </div>
-      </ShelfTag>
-
-      <div className="flex flex-col gap-2">
-        {users.map((u) => (
-          <div key={u.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
-            <div>
-              <div className="font-bold text-sm" style={{ color: C.ink }}>{u.name} {u.role === "manager" && "👑"}</div>
-              <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>{u.phone || "ללא טלפון"}</div>
-            </div>
-            <div className="flex gap-2">
-              <button onClick={() => { setForm(u); setEditingId(u.id); }} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
-              <button onClick={() => remove(u.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
+     
