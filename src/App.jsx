@@ -42,6 +42,7 @@ const KEYS = {
   weeklyMenu: "kitchen-weekly-menu",
   reminders: "kitchen-reminders",
   stockLog: "kitchen-stock-log",
+  locations: "kitchen-locations",
 };
 
 const SETUP_SQL = `create table kv_store (
@@ -103,53 +104,42 @@ function range(from, to) {
   for (let i = from; i <= to; i++) arr.push(String(i));
   return arr;
 }
-const LOCATIONS = [
-  {
-    group: "בניין ישן - קומה 1",
-    rooms: [...range(101, 113), "שירותים קומה 1", "מקלחות קומה 1"],
-  },
-  {
-    group: "בניין ישן - קומה 2",
-    rooms: [...range(201, 212), "שירותים קומה 2", "מקלחות קומה 2"],
-  },
-  {
-    group: "בניין ישן - קומה 3",
-    rooms: [...range(301, 313), "שירותים קומה 3", "מקלחות קומה 3"],
-  },
-  {
-    group: "בניין ישן - קומה 4",
-    rooms: [...range(401, 412), "שירותים קומה 4", "מקלחות קומה 4"],
-  },
-  { group: "בניין חדש - קומה 1", rooms: range(501, 509) },
-  { group: "בניין חדש - קומה 2", rooms: range(601, 609) },
-  { group: "בניין חדש - קומה 3", rooms: ["מרפסת", "חדר כביסה"] },
-  {
-    group: "דירות רבנים",
-    rooms: ["דירת רבנים חדשה - ימין", "דירת רבנים חדשה - שמאל", "דירת רבנים ישנה"],
-  },
-  {
-    group: "בית מדרש",
-    rooms: [
-      "בית מדרש",
-      ...range(1, 5).map((n) => `שירותים בית מדרש - ימין ${n}`),
-      ...range(1, 5).map((n) => `שירותים בית מדרש - שמאל ${n}`),
-    ],
-  },
-  {
-    group: "מטבחים וחדרי אוכל",
-    rooms: ["מטבח בשרי", "מטבח חלבי", "חדר אוכל גדול", "חדר אוכל רבנים", "חדר אוכל קטן"],
-  },
-  {
-    group: "מעון ילדים",
-    rooms: [
-      "כיתת תינוקות - ימין (חדר כחול)",
-      "כיתת פעוטות - שמאל (חדר ורוד)",
-      "כיתת בוגרים - למעלה (חדר ירוק)",
-      "כיתת תינוקות - קומה מינוס (חדר סגול)",
-      "מטבח מעון",
-    ],
-  },
-];
+function buildDefaultLocations() {
+  const groups = [
+    { group: "בניין ישן - קומה 1", rooms: [...range(101, 113), "שירותים קומה 1", "מקלחות קומה 1"] },
+    { group: "בניין ישן - קומה 2", rooms: [...range(201, 212), "שירותים קומה 2", "מקלחות קומה 2"] },
+    { group: "בניין ישן - קומה 3", rooms: [...range(301, 313), "שירותים קומה 3", "מקלחות קומה 3"] },
+    { group: "בניין ישן - קומה 4", rooms: [...range(401, 412), "שירותים קומה 4", "מקלחות קומה 4"] },
+    { group: "בניין חדש - קומה 1", rooms: range(501, 509) },
+    { group: "בניין חדש - קומה 2", rooms: range(601, 609) },
+    { group: "בניין חדש - קומה 3", rooms: ["מרפסת", "חדר כביסה"] },
+    { group: "דירות רבנים", rooms: ["דירת רבנים חדשה - ימין", "דירת רבנים חדשה - שמאל", "דירת רבנים ישנה"] },
+    {
+      group: "בית מדרש",
+      rooms: [
+        "בית מדרש",
+        ...range(1, 5).map((n) => `שירותים בית מדרש - ימין ${n}`),
+        ...range(1, 5).map((n) => `שירותים בית מדרש - שמאל ${n}`),
+      ],
+    },
+    { group: "מטבחים וחדרי אוכל", rooms: ["מטבח בשרי", "מטבח חלבי", "חדר אוכל גדול", "חדר אוכל רבנים", "חדר אוכל קטן"] },
+    {
+      group: "מעון ילדים",
+      rooms: [
+        "כיתת תינוקות - ימין (חדר כחול)",
+        "כיתת פעוטות - שמאל (חדר ורוד)",
+        "כיתת בוגרים - למעלה (חדר ירוק)",
+        "כיתת תינוקות - קומה מינוס (חדר סגול)",
+        "מטבח מעון",
+      ],
+    },
+  ];
+  const flat = [];
+  groups.forEach((g) => {
+    g.rooms.forEach((r) => flat.push({ id: genId(), name: r, group: g.group, imageData: null }));
+  });
+  return flat;
+}
 
 /* ---------- Shelf-tag card (signature element) ---------- */
 function ShelfTag({ children, accent = C.steel, style = {} }) {
@@ -815,6 +805,7 @@ export default function App() {
   const [weeklyMenu, setWeeklyMenu] = useState({});
   const [reminders, setReminders] = useState([]);
   const [stockLog, setStockLog] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [tab, setTab] = useState("tasks");
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -873,7 +864,7 @@ export default function App() {
     if (!currentUser) return;
     setLoaded(false);
     (async () => {
-      const [orgProfiles, p, t, s, n, m, w, r, sl] = await Promise.all([
+      const [orgProfiles, p, t, s, n, m, w, r, sl, loc] = await Promise.all([
         window.auth.getOrgProfiles(),
         loadKey(KEYS.products, []),
         loadKey(KEYS.tasks, []),
@@ -883,7 +874,9 @@ export default function App() {
         loadKey(KEYS.weeklyMenu, {}),
         loadKey(KEYS.reminders, []),
         loadKey(KEYS.stockLog, []),
+        loadKey(KEYS.locations, null),
       ]);
+      const finalLocations = loc || [];
       const finalUsers = (orgProfiles || []).map((prof) => ({
         id: prof.id,
         name: prof.display_name || "משתמש",
@@ -951,6 +944,7 @@ export default function App() {
       setWeeklyMenu(w || {});
       setReminders(finalReminders);
       setStockLog(sl || []);
+      setLocations(finalLocations || []);
       setLoaded(true);
     })();
   }, [currentUser?.id]);
@@ -1009,6 +1003,10 @@ export default function App() {
     if (!delta) return;
     const next = [...stockLog, { id: genId(), productId, delta, userName, timestamp: Date.now() }];
     await persistStockLog(next);
+  }
+  async function persistLocations(next) {
+    setLocations(next);
+    await saveKey(KEYS.locations, next);
   }
   async function notifyUser(userId, message) {
     const next = [
@@ -1197,6 +1195,7 @@ export default function App() {
             currentUser={currentUser}
             showToast={showToast}
             notifyUser={notifyUser}
+            locations={locations}
           />
         )}
         {tab === "admin" && currentUser.role === "manager" && (
@@ -1216,6 +1215,8 @@ export default function App() {
             reminders={reminders}
             persistReminders={persistReminders}
             stockLog={stockLog}
+            locations={locations}
+            persistLocations={persistLocations}
           />
         )}
       </div>
@@ -1579,14 +1580,19 @@ function ProductCard({ p, onSetQty }) {
   return (
     <ShelfTag accent={low ? C.stamp : C.sage}>
       <div className="flex justify-between items-start">
-        <div>
-          <div className="wh-display font-bold" style={{ color: C.ink }}>{p.name}</div>
-          <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>
-            ברקוד: {p.barcode || "—"}
-          </div>
-          <div className="text-xs mt-1" style={{ color: C.steel }}>
-            ₪{Number(p.price).toFixed(2)} ליחידה · סף מינ׳ {p.threshold} {p.unit}
-            {p.unitsPerCarton > 0 && ` · ${p.unitsPerCarton} ביחידה בקרטון`}
+        <div className="flex gap-2">
+          {p.imageData && (
+            <img src={p.imageData} alt="" className="rounded-xl flex-shrink-0" style={{ width: 56, height: 56, objectFit: "cover" }} />
+          )}
+          <div>
+            <div className="wh-display font-bold" style={{ color: C.ink }}>{p.name}</div>
+            <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>
+              ברקוד: {p.barcode || "—"}
+            </div>
+            <div className="text-xs mt-1" style={{ color: C.steel }}>
+              ₪{Number(p.price).toFixed(2)} ליחידה · סף מינ׳ {p.threshold} {p.unit}
+              {p.unitsPerCarton > 0 && ` · ${p.unitsPerCarton} ביחידה בקרטון`}
+            </div>
           </div>
         </div>
         <div className="text-left">
@@ -2300,7 +2306,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 }
 
 /* ---------- Tasks Tab ---------- */
-function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUser }) {
+function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUser, locations }) {
   const [showNew, setShowNew] = useState(false);
   const [filter, setFilter] = useState("open");
   const [employeeFilter, setEmployeeFilter] = useState("all");
@@ -2392,7 +2398,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
       </div>
 
       {showNew && (
-        <NewTaskForm users={users} onSubmit={addTask} onCancel={() => setShowNew(false)} />
+        <NewTaskForm users={users} onSubmit={addTask} onCancel={() => setShowNew(false)} locations={locations} />
       )}
 
       <div className="flex flex-col gap-3">
@@ -2411,8 +2417,15 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
                   {t.location && (
                     <div className="text-xs mt-1 font-bold" style={{ color: C.ink }}>📍 {t.location}</div>
                   )}
-                  {t.imageData && (
+                  {t.imageData ? (
                     <img src={t.imageData} alt="" className="mt-2 rounded-2xl" style={{ maxHeight: 120, maxWidth: 180 }} />
+                  ) : (
+                    (() => {
+                      const loc = (locations || []).find((l) => l.id === t.locationId);
+                      return loc?.imageData ? (
+                        <img src={loc.imageData} alt="" className="mt-2 rounded-2xl" style={{ maxHeight: 120, maxWidth: 180 }} />
+                      ) : null;
+                    })()
                   )}
                   <div className="text-xs mt-2 flex items-center gap-2">
                     <span style={{ color: C.steel }}>שויך ל:</span>
@@ -2494,12 +2507,12 @@ function resizeImageToDataUrl(file, maxDim = 900, quality = 0.7) {
   });
 }
 
-function NewTaskForm({ users, onSubmit, onCancel }) {
+function NewTaskForm({ users, onSubmit, onCancel, locations }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [assignedToId, setAssignedToId] = useState(users[0]?.id || "");
   const [priority, setPriority] = useState("normal");
-  const [location, setLocation] = useState("");
+  const [locationId, setLocationId] = useState("");
   const [imageData, setImageData] = useState(null);
   const [imageBusy, setImageBusy] = useState(false);
 
@@ -2517,20 +2530,34 @@ function NewTaskForm({ users, onSubmit, onCancel }) {
     }
   }
 
+  const locationGroups = Object.entries(
+    (locations || []).reduce((acc, loc) => {
+      const g = loc.group || "אחר";
+      (acc[g] = acc[g] || []).push(loc);
+      return acc;
+    }, {})
+  );
+
   return (
     <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
       <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="כותרת" className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }} autoFocus />
       <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="פירוט (אופציונלי)" className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }} rows={2} />
-      <select value={location} onChange={(e) => setLocation(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
+      <select value={locationId} onChange={(e) => setLocationId(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
         <option value="">בחר מקום (אופציונלי)</option>
-        {LOCATIONS.map((g) => (
-          <optgroup key={g.group} label={g.group}>
-            {g.rooms.map((r) => (
-              <option key={g.group + r} value={`${g.group} · ${r}`}>{r}</option>
+        {locationGroups.map(([g, items]) => (
+          <optgroup key={g} label={g}>
+            {items.map((loc) => (
+              <option key={loc.id} value={loc.id}>{loc.name}</option>
             ))}
           </optgroup>
         ))}
       </select>
+      {locationId && (() => {
+        const loc = (locations || []).find((l) => l.id === locationId);
+        return loc?.imageData ? (
+          <img src={loc.imageData} alt="" className="rounded-2xl" style={{ maxHeight: 100 }} />
+        ) : null;
+      })()}
       <select value={assignedToId} onChange={(e) => setAssignedToId(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
         {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
       </select>
@@ -2561,7 +2588,12 @@ function NewTaskForm({ users, onSubmit, onCancel }) {
 
       <div className="flex gap-2">
         <button
-          onClick={() => title.trim() && onSubmit({ title, description, assignedToId, priority, location, imageData })}
+          onClick={() => {
+            if (!title.trim()) return;
+            const loc = (locations || []).find((l) => l.id === locationId);
+            const locationLabel = loc ? `${loc.group || "אחר"} · ${loc.name}` : "";
+            onSubmit({ title, description, assignedToId, priority, location: locationLabel, locationId, imageData });
+          }}
           className="flex-1 py-2 rounded-2xl font-bold"
           style={{ background: C.ink, color: C.paper }}
         >
@@ -2576,13 +2608,13 @@ function NewTaskForm({ users, onSubmit, onCancel }) {
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog }) {
+function AdminTab({ users, updateUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations }) {
   const [section, setSection] = useState("products");
 
   return (
     <div>
       <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
-        {[["products", "מוצרים"], ["users", "עובדים"], ["menu", "תפריט"], ["reminders", "תזכורות"], ["analytics", "ניתוח"], ["settings", "הגדרות"]].map(([val, label]) => (
+        {[["products", "מוצרים"], ["users", "עובדים"], ["menu", "תפריט"], ["locations", "מקומות"], ["reminders", "תזכורות"], ["analytics", "ניתוח"], ["settings", "הגדרות"]].map(([val, label]) => (
           <button
             key={val}
             onClick={() => setSection(val)}
@@ -2602,6 +2634,9 @@ function AdminTab({ users, updateUserProfile, currentUser, products, persistProd
       )}
       {section === "menu" && (
         <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} />
+      )}
+      {section === "locations" && (
+        <LocationsAdmin locations={locations} persistLocations={persistLocations} showToast={showToast} />
       )}
       {section === "reminders" && (
         <RemindersAdmin reminders={reminders} persistReminders={persistReminders} products={products} users={users} showToast={showToast} />
@@ -2704,6 +2739,228 @@ function AnalyticsAdmin({ products, stockLog }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function LocationsAdmin({ locations, persistLocations, showToast }) {
+  const empty = { name: "", group: "", imageData: null };
+  const [form, setForm] = useState(empty);
+  const [editingId, setEditingId] = useState(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const fileInputRef = useRef(null);
+  const [importing, setImporting] = useState(false);
+
+  async function handleImage(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImageBusy(true);
+    try {
+      const dataUrl = await resizeImageToDataUrl(file);
+      setForm((f) => ({ ...f, imageData: dataUrl }));
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setImageBusy(false);
+    }
+  }
+
+  function downloadTemplate() {
+    const rows = [
+      { "שם מקום/חדר": "חדר 101", "קבוצה/אזור": "קומה 1" },
+      { "שם מקום/חדר": "מטבח בשרי", "קבוצה/אזור": "מטבחים" },
+    ];
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    sheet["!cols"] = [{ wch: 26 }, { wch: 22 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, "מקומות");
+    XLSX.writeFile(wb, "תבנית-מקומות.xlsx");
+  }
+
+  function exportLocations() {
+    const rows = locations.map((l) => ({ "שם מקום/חדר": l.name, "קבוצה/אזור": l.group || "" }));
+    const sheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ "שם מקום/חדר": "", "קבוצה/אזור": "" }]);
+    sheet["!cols"] = [{ wch: 26 }, { wch: 22 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, "מקומות");
+    XLSX.writeFile(wb, "מקומות.xlsx");
+    showToast("הקובץ יורד עכשיו");
+  }
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      const norm = (s) => String(s).trim().toLowerCase();
+      function pick(row, keys) {
+        for (const k of Object.keys(row)) {
+          if (keys.includes(norm(k))) return row[k];
+        }
+        return "";
+      }
+      const imported = rows
+        .map((row) => {
+          const name = pick(row, ["name", "שם", "שם מקום", "שם מקום/חדר", "חדר"]);
+          if (!name) return null;
+          const group = String(pick(row, ["group", "קבוצה", "קבוצה/אזור", "אזור", "קומה"]) || "");
+          return { name: String(name), group };
+        })
+        .filter(Boolean);
+
+      if (imported.length === 0) {
+        showToast("לא נמצאו שורות עם שם מקום תקין");
+        return;
+      }
+      let next = [...locations];
+      let added = 0, updated = 0;
+      for (const item of imported) {
+        const idx = next.findIndex((l) => l.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+        if (idx >= 0) {
+          next[idx] = { ...next[idx], ...item };
+          updated++;
+        } else {
+          next.push({ ...item, id: genId(), imageData: null });
+          added++;
+        }
+      }
+      await persistLocations(next);
+      showToast(`נוספו ${added} מקומות, עודכנו ${updated}`);
+    } catch (err) {
+      console.error(err);
+      showToast("שגיאה בקריאת הקובץ");
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function save() {
+    if (!form.name.trim()) return showToast("יש להזין שם מקום/חדר");
+    let next;
+    if (editingId) {
+      next = locations.map((l) => (l.id === editingId ? { ...form, id: editingId } : l));
+    } else {
+      next = [...locations, { ...form, id: genId() }];
+    }
+    await persistLocations(next);
+    setForm(empty);
+    setEditingId(null);
+    showToast("המקום נשמר");
+  }
+
+  async function remove(id) {
+    await persistLocations(locations.filter((l) => l.id !== id));
+  }
+
+  const filtered = locations.filter((l) => !search || l.name.includes(search) || (l.group || "").includes(search));
+  const grouped = Object.entries(
+    filtered.reduce((acc, l) => {
+      const g = l.group || "אחר";
+      (acc[g] = acc[g] || []).push(l);
+      return acc;
+    }, {})
+  );
+
+  return (
+    <div>
+      <div className="mb-4">
+        <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} className="hidden" />
+        <div className="flex gap-2 mb-2">
+          <button onClick={downloadTemplate} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+            📄 הורד תבנית ריקה
+          </button>
+          <button onClick={exportLocations} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
+            📤 ייצא רשימה קיימת
+          </button>
+        </div>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={importing}
+          className="w-full py-2 rounded-2xl font-bold text-sm"
+          style={{ background: C.mustard, color: C.ink }}
+        >
+          {importing ? "מייבא..." : "📥 ייבוא מקומות מקובץ אקסל/CSV"}
+        </button>
+        <p className="text-xs mt-1 text-center" style={{ color: C.steel }}>
+          עמודות: שם מקום/חדר, קבוצה/אזור. התאמה לפי שם מעדכנת מקום קיים במקום ליצור כפול.
+        </p>
+      </div>
+
+      <ShelfTag accent={C.accent} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>
+          {editingId ? "עריכת מקום" : "הוספת מקום/חדר"}
+        </div>
+        <p className="text-xs" style={{ color: C.steel }}>
+          כל מוסד שונה - הרשימה הזו שלך לגמרי, אפשר להוסיף, לערוך ולמחוק חדרים/מקומות כרצונך.
+        </p>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם המקום/חדר</label>
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} placeholder="לדוגמה: חדר 105" />
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>קבוצה/אזור (לארגון ברשימה)</label>
+          <input value={form.group} onChange={(e) => setForm({ ...form, group: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} placeholder="לדוגמה: קומה 1" />
+        </div>
+        <div>
+          <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
+            {imageBusy ? "טוען תמונה..." : form.imageData ? "📷 החלף תמונה" : "📷 צרף תמונה של המקום"}
+            <input type="file" accept="image/*" capture="environment" onChange={handleImage} className="hidden" />
+          </label>
+          {form.imageData && (
+            <div className="mt-2 relative inline-block">
+              <img src={form.imageData} alt="" className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%" }} />
+              <button onClick={() => setForm({ ...form, imageData: null })} className="absolute -top-2 -left-2 w-6 h-6 rounded-full font-bold text-xs" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+            </div>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
+            {editingId ? "שמור שינויים" : "הוסף מקום"}
+          </button>
+          {editingId && (
+            <button onClick={() => { setForm(empty); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
+          )}
+        </div>
+      </ShelfTag>
+
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="חיפוש מקום..."
+        className="p-2 rounded-2xl border w-full mb-3"
+        style={{ borderColor: C.kraftDark, background: "#fff" }}
+      />
+
+      <div className="flex flex-col gap-4">
+        {locations.length === 0 && (
+          <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין עדיין מקומות - הוסף למעלה</p>
+        )}
+        {grouped.map(([g, items]) => (
+          <div key={g}>
+            <div className="wh-display font-bold text-sm mb-2" style={{ color: C.steel }}>{g} ({items.length})</div>
+            <div className="flex flex-col gap-2">
+              {items.map((l) => (
+                <div key={l.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+                  <div className="flex items-center gap-2">
+                    {l.imageData && <img src={l.imageData} alt="" className="rounded-xl" style={{ width: 40, height: 40, objectFit: "cover" }} />}
+                    <div className="font-bold text-sm" style={{ color: C.ink }}>{l.name}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => { setForm(l); setEditingId(l.id); }} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+                    <button onClick={() => remove(l.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -3115,7 +3372,7 @@ const PRODUCT_CATEGORIES = [
 
 function ProductsAdmin({ products, persistProducts, showToast, settings, persistSettings }) {
   const suppliers = settings?.suppliers || [];
-  const empty = { name: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "" };
+  const empty = { name: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "", imageData: null };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
   const fileInputRef = useRef(null);
@@ -3125,8 +3382,23 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
   const [adminSearch, setAdminSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkThreshold, setBulkThreshold] = useState("");
+  const [photoBusy, setPhotoBusy] = useState(false);
 
   const formRef = useRef(null);
+
+  async function handleProductPhoto(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPhotoBusy(true);
+    try {
+      const dataUrl = await resizeImageToDataUrl(file);
+      setForm((f) => ({ ...f, imageData: dataUrl }));
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
 
   function toggleSelect(id) {
     setSelectedIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
@@ -3424,6 +3696,18 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
             <p className="text-xs mt-1" style={{ color: C.steel }}>הוסף ספקים במסך ניהול ← הגדרות כדי לבחור כאן.</p>
           )}
         </div>
+        <div>
+          <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
+            {photoBusy ? "טוען תמונה..." : form.imageData ? "📷 החלף תמונת מוצר" : "📷 צרף תמונת מוצר"}
+            <input type="file" accept="image/*" capture="environment" onChange={handleProductPhoto} className="hidden" />
+          </label>
+          {form.imageData && (
+            <div className="mt-2 relative inline-block">
+              <img src={form.imageData} alt="" className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%" }} />
+              <button onClick={() => setForm({ ...form, imageData: null })} className="absolute -top-2 -left-2 w-6 h-6 rounded-full font-bold text-xs" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+            </div>
+          )}
+        </div>
         <div className="flex gap-2">
           <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
             {editingId ? "שמור שינויים" : "הוסף מוצר"}
@@ -3490,6 +3774,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
                       checked={selectedIds.includes(p.id)}
                       onChange={() => toggleSelect(p.id)}
                     />
+                    {p.imageData && <img src={p.imageData} alt="" className="rounded-xl" style={{ width: 40, height: 40, objectFit: "cover" }} />}
                     <div>
                       <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
                       <div className="text-xs" style={{ color: C.steel }}>₪{Number(p.price).toFixed(2)} · {p.quantity} {p.unit} · סף: {p.threshold}</div>
