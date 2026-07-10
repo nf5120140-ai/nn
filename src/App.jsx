@@ -43,6 +43,7 @@ const KEYS = {
   reminders: "kitchen-reminders",
   stockLog: "kitchen-stock-log",
   locations: "kitchen-locations",
+  dishTypes: "kitchen-dish-types",
 };
 
 const SETUP_SQL = `create table kv_store (
@@ -69,13 +70,6 @@ const WEEK_DAYS = [
 const MEAL_SLOTS = [
   ["lunch", "צהריים"],
   ["dinner", "ערב"],
-];
-const DISH_TYPES = [
-  ["main", "מנה עיקרית"],
-  ["side", "תוספת"],
-  ["salad", "סלט"],
-  ["vegetable", "ירקנית"],
-  ["glutenFree", "תוספת ללא גלוטן"],
 ];
 
 async function loadKey(key, fallback) {
@@ -806,6 +800,7 @@ export default function App() {
   const [reminders, setReminders] = useState([]);
   const [stockLog, setStockLog] = useState([]);
   const [locations, setLocations] = useState([]);
+  const [dishTypes, setDishTypes] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [tab, setTab] = useState("tasks");
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -864,7 +859,7 @@ export default function App() {
     if (!currentUser) return;
     setLoaded(false);
     (async () => {
-      const [orgProfiles, p, t, s, n, m, w, r, sl, loc] = await Promise.all([
+      const [orgProfiles, p, t, s, n, m, w, r, sl, loc, dt] = await Promise.all([
         window.auth.getOrgProfiles(),
         loadKey(KEYS.products, []),
         loadKey(KEYS.tasks, []),
@@ -875,8 +870,18 @@ export default function App() {
         loadKey(KEYS.reminders, []),
         loadKey(KEYS.stockLog, []),
         loadKey(KEYS.locations, null),
+        loadKey(KEYS.dishTypes, null),
       ]);
       const finalLocations = loc || [];
+      let finalDishTypes = dt;
+      if (finalDishTypes === null) {
+        finalDishTypes = [
+          { id: genId(), name: "מנה עיקרית" },
+          { id: genId(), name: "תוספת" },
+          { id: genId(), name: "ירקנית" },
+        ];
+        await saveKey(KEYS.dishTypes, finalDishTypes);
+      }
       const finalUsers = (orgProfiles || []).map((prof) => ({
         id: prof.id,
         name: prof.display_name || "משתמש",
@@ -945,6 +950,7 @@ export default function App() {
       setReminders(finalReminders);
       setStockLog(sl || []);
       setLocations(finalLocations || []);
+      setDishTypes(finalDishTypes || []);
       setLoaded(true);
     })();
   }, [currentUser?.id]);
@@ -1007,6 +1013,10 @@ export default function App() {
   async function persistLocations(next) {
     setLocations(next);
     await saveKey(KEYS.locations, next);
+  }
+  async function persistDishTypes(next) {
+    setDishTypes(next);
+    await saveKey(KEYS.dishTypes, next);
   }
   async function notifyUser(userId, message) {
     const next = [
@@ -1185,6 +1195,7 @@ export default function App() {
             weeklyMenu={weeklyMenu}
             persistWeeklyMenu={persistWeeklyMenu}
             showToast={showToast}
+            dishTypes={dishTypes}
           />
         )}
         {tab === "tasks" && (
@@ -1217,6 +1228,8 @@ export default function App() {
             stockLog={stockLog}
             locations={locations}
             persistLocations={persistLocations}
+            dishTypes={dishTypes}
+            persistDishTypes={persistDishTypes}
           />
         )}
       </div>
@@ -1688,7 +1701,75 @@ function ScanResultCard({ scanResult, onAdjust, onClose, isManager }) {
 }
 
 /* ---------- Order Tab ---------- */
-function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast }) {
+function useHebrewHolidays() {
+  const [holidays, setHolidays] = useState([]);
+  const [loadingHolidays, setLoadingHolidays] = useState(true);
+
+  useEffect(() => {
+    const start = new Date();
+    const end = new Date();
+    end.setDate(end.getDate() + 90);
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    const url = `https://www.hebcal.com/hebcal?v=1&cfg=json&maj=on&min=on&mod=on&start=${fmt(start)}&end=${fmt(end)}&lg=he`;
+    fetch(url)
+      .then((r) => r.json())
+      .then((data) => {
+        const items = (data.items || [])
+          .filter((it) => it.category === "holiday")
+          .map((it) => ({ date: it.date, title: it.hebrew || it.title }));
+        setHolidays(items);
+      })
+      .catch(() => setHolidays([]))
+      .finally(() => setLoadingHolidays(false));
+  }, []);
+
+  return { holidays, loadingHolidays };
+}
+
+function HebrewCalendarWidget() {
+  const { holidays, loadingHolidays } = useHebrewHolidays();
+  const [open, setOpen] = useState(false);
+
+  function formatHebrewDate(iso) {
+    try {
+      return new Date(iso).toLocaleDateString("he-IL", { weekday: "short", day: "numeric", month: "short" });
+    } catch (e) {
+      return iso;
+    }
+  }
+
+  return (
+    <div className="mb-4">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full py-2 rounded-2xl font-bold text-sm"
+        style={{ background: C.accent2, color: "#fff" }}
+      >
+        📅 חגים ואירועים קרובים בלוח העברי {open ? "▲" : "▼"}
+      </button>
+      {open && (
+        <ShelfTag accent={C.accent2} style={{ marginTop: 8 }}>
+          {loadingHolidays ? (
+            <p className="text-sm text-center" style={{ color: C.steel }}>טוען...</p>
+          ) : holidays.length === 0 ? (
+            <p className="text-sm text-center" style={{ color: C.steel }}>לא נמצאו אירועים קרובים</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {holidays.map((h, i) => (
+                <div key={i} className="flex justify-between text-sm">
+                  <span className="font-bold" style={{ color: C.ink }}>{h.title}</span>
+                  <span style={{ color: C.steel }}>{formatHebrewDate(h.date)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </ShelfTag>
+      )}
+    </div>
+  );
+}
+
+function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes }) {
   const suppliers = settings.suppliers || [];
   const [selectedSupplierId, setSelectedSupplierId] = useState(suppliers[0]?.id || "");
   const [manualPhone, setManualPhone] = useState(settings.supplierPhone || "");
@@ -1705,6 +1786,19 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
   const [selectedForOrder, setSelectedForOrder] = useState([]);
   const [openPicker, setOpenPicker] = useState(null);
+  const { holidays } = useHebrewHolidays();
+
+  function dateForWeekdayIndex(idx) {
+    const now = new Date();
+    const diff = idx - now.getDay();
+    const d = new Date(now);
+    d.setDate(now.getDate() + diff);
+    return d;
+  }
+  function holidayForDate(d) {
+    const iso = d.toISOString().slice(0, 10);
+    return holidays.find((h) => h.date.slice(0, 10) === iso);
+  }
 
   useEffect(() => {
     setQtys(Object.fromEntries(lowStock.map((p) => [p.id, qtys[p.id] ?? Math.max(1, Number(p.threshold) * 2 - Number(p.quantity))])));
@@ -1760,8 +1854,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     const chosenDishNames = [];
     WEEK_DAYS.forEach(([dayKey]) => {
       MEAL_SLOTS.forEach(([slotKey]) => {
-        DISH_TYPES.forEach(([typeKey]) => {
-          const menuItemId = weeklyMenu[dayKey]?.[slotKey]?.[typeKey];
+        (dishTypes || []).forEach((dt) => {
+          const menuItemId = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
           if (!menuItemId) return;
           const m = menuItems.find((mi) => mi.id === menuItemId);
           if (!m) return;
@@ -1844,8 +1938,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   function printWeeklyMenu() {
     const rows = WEEK_DAYS.map(([dayKey, dayLabel]) => {
       const cells = MEAL_SLOTS.map(([slotKey]) => {
-        const names = DISH_TYPES.map(([typeKey]) => {
-          const id = weeklyMenu[dayKey]?.[slotKey]?.[typeKey];
+        const names = (dishTypes || []).map((dt) => {
+          const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
           const m = menuItems.find((mi) => mi.id === id);
           return m ? m.name : null;
         }).filter(Boolean);
@@ -2144,6 +2238,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           </ShelfTag>
         ) : (
           <>
+            <HebrewCalendarWidget />
             <div className="mb-3">
               <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מספר מנות/סועדים (לכל ארוחה משובצת)</label>
               <input
@@ -2163,14 +2258,25 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
             </div>
 
             <div className="flex flex-col gap-2 mb-4">
-              {WEEK_DAYS.map(([dayKey, dayLabel]) => (
-                <ShelfTag key={dayKey} accent={C.accent}>
-                  <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>{dayLabel}</div>
+              {WEEK_DAYS.map(([dayKey, dayLabel], dayIdx) => {
+                const dateObj = dateForWeekdayIndex(dayIdx);
+                const holiday = holidayForDate(dateObj);
+                const dateStr = dateObj.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+                return (
+                <ShelfTag key={dayKey} accent={holiday ? C.stamp : C.accent}>
+                  <div className="flex justify-between items-center mb-2">
+                    <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>{dayLabel} · {dateStr}</div>
+                    {holiday && (
+                      <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: C.stamp, color: "#fff" }}>
+                        🕎 {holiday.title}
+                      </span>
+                    )}
+                  </div>
                   <div className="flex flex-col gap-2">
                     {MEAL_SLOTS.map(([slotKey, slotLabel]) => {
                       const slotSelections = weeklyMenu[dayKey]?.[slotKey] || {};
-                      const chosenNames = DISH_TYPES.map(([typeKey]) => {
-                        const id = slotSelections[typeKey];
+                      const chosenNames = (dishTypes || []).map((dt) => {
+                        const id = slotSelections[dt.id];
                         return id ? menuItems.find((m) => m.id === id)?.name : null;
                       }).filter(Boolean);
                       return (
@@ -2189,7 +2295,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                     })}
                   </div>
                 </ShelfTag>
-              ))}
+                );
+              })}
             </div>
 
             {openPicker && (
@@ -2207,18 +2314,23 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                       סיימתי
                     </button>
                   </div>
-                  {DISH_TYPES.map(([typeKey, typeLabel]) => {
-                    const options = menuItems.filter((m) => (m.dishType || "main") === typeKey);
-                    const currentId = weeklyMenu[openPicker.dayKey]?.[openPicker.slotKey]?.[typeKey] || "";
+                  {(dishTypes || []).length === 0 && (
+                    <p className="text-sm text-center py-4" style={{ color: C.steel }}>
+                      אין עדיין קטגוריות מוגדרות - הוסף במסך ניהול ← סוגי מנות.
+                    </p>
+                  )}
+                  {(dishTypes || []).map((dt) => {
+                    const options = menuItems.filter((m) => m.dishType === dt.id);
+                    const currentId = weeklyMenu[openPicker.dayKey]?.[openPicker.slotKey]?.[dt.id] || "";
                     return (
-                      <div key={typeKey} className="mb-4">
-                        <div className="text-sm font-bold mb-2" style={{ color: C.accent }}>{typeLabel}</div>
+                      <div key={dt.id} className="mb-4">
+                        <div className="text-sm font-bold mb-2" style={{ color: C.accent }}>{dt.name}</div>
                         {options.length === 0 ? (
                           <p className="text-xs" style={{ color: C.steel }}>אין עדיין מנות מהסוג הזה - הוסף במסך ניהול ← תפריט</p>
                         ) : (
                           <div className="flex flex-col gap-2">
                             <button
-                              onClick={() => setWeekSlot(openPicker.dayKey, openPicker.slotKey, typeKey, "")}
+                              onClick={() => setWeekSlot(openPicker.dayKey, openPicker.slotKey, dt.id, "")}
                               className="text-right p-2 rounded-2xl text-sm"
                               style={{
                                 background: currentId === "" ? C.ink : "#fff",
@@ -2231,7 +2343,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                             {options.map((m) => (
                               <button
                                 key={m.id}
-                                onClick={() => setWeekSlot(openPicker.dayKey, openPicker.slotKey, typeKey, m.id)}
+                                onClick={() => setWeekSlot(openPicker.dayKey, openPicker.slotKey, dt.id, m.id)}
                                 className="text-right p-2 rounded-2xl text-sm font-bold"
                                 style={{
                                   background: currentId === m.id ? categoryColor(m.category) : "#fff",
@@ -2608,13 +2720,13 @@ function NewTaskForm({ users, onSubmit, onCancel, locations }) {
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations }) {
+function AdminTab({ users, updateUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes }) {
   const [section, setSection] = useState("products");
 
   return (
     <div>
       <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
-        {[["products", "מוצרים"], ["users", "עובדים"], ["menu", "תפריט"], ["locations", "מקומות"], ["reminders", "תזכורות"], ["analytics", "ניתוח"], ["settings", "הגדרות"]].map(([val, label]) => (
+        {[["products", "מוצרים"], ["users", "עובדים"], ["menu", "תפריט"], ["dishtypes", "סוגי מנות"], ["locations", "מקומות"], ["reminders", "תזכורות"], ["analytics", "ניתוח"], ["settings", "הגדרות"]].map(([val, label]) => (
           <button
             key={val}
             onClick={() => setSection(val)}
@@ -2633,7 +2745,10 @@ function AdminTab({ users, updateUserProfile, currentUser, products, persistProd
         <UsersAdmin users={users} updateUserProfile={updateUserProfile} showToast={showToast} currentUser={currentUser} />
       )}
       {section === "menu" && (
-        <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} />
+        <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} dishTypes={dishTypes} />
+      )}
+      {section === "dishtypes" && (
+        <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} />
       )}
       {section === "locations" && (
         <LocationsAdmin locations={locations} persistLocations={persistLocations} showToast={showToast} />
@@ -3196,8 +3311,94 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
   );
 }
 
-function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMenu, persistWeeklyMenu }) {
-  const empty = { name: "", category: "בשרי", dishType: "main", ingredients: [] };
+function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
+  const [name, setName] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+
+  async function add() {
+    if (!name.trim()) return showToast("יש להזין שם קטגוריה");
+    if (dishTypes.some((d) => d.name.trim() === name.trim())) return showToast("קטגוריה כזו כבר קיימת");
+    await persistDishTypes([...dishTypes, { id: genId(), name: name.trim() }]);
+    setName("");
+    showToast("הקטגוריה נוספה");
+  }
+
+  async function saveEdit() {
+    if (!editName.trim()) return showToast("יש להזין שם");
+    await persistDishTypes(dishTypes.map((d) => (d.id === editingId ? { ...d, name: editName.trim() } : d)));
+    setEditingId(null);
+    setEditName("");
+  }
+
+  async function remove(id) {
+    await persistDishTypes(dishTypes.filter((d) => d.id !== id));
+  }
+
+  function move(id, dir) {
+    const idx = dishTypes.findIndex((d) => d.id === id);
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= dishTypes.length) return;
+    const next = [...dishTypes];
+    [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+    persistDishTypes(next);
+  }
+
+  return (
+    <div>
+      <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>סוגי מנות/קטגוריות בארוחה</div>
+        <p className="text-xs" style={{ color: C.steel }}>
+          כאן בונים מה מרכיב ארוחה אצלכם - כמה קטגוריות שרוצים (למשל: מנה עיקרית, תוספת, ירקנית, סלט, ללא גלוטן...). כל מוסד יכול לבנות סגנון שונה.
+        </p>
+        <div className="flex gap-2">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="לדוגמה: סלט"
+            className="flex-1 p-2 rounded-2xl border"
+            style={{ borderColor: C.kraftDark }}
+          />
+          <button onClick={add} className="px-4 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>+ הוסף</button>
+        </div>
+      </ShelfTag>
+
+      <div className="flex flex-col gap-2">
+        {dishTypes.length === 0 && (
+          <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין עדיין קטגוריות - הוסף למעלה</p>
+        )}
+        {dishTypes.map((d, idx) => (
+          <div key={d.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+            {editingId === d.id ? (
+              <input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="flex-1 p-1 rounded-xl border ml-2"
+                style={{ borderColor: C.kraftDark }}
+                autoFocus
+              />
+            ) : (
+              <div className="font-bold text-sm" style={{ color: C.ink }}>{d.name}</div>
+            )}
+            <div className="flex gap-1 items-center">
+              <button onClick={() => move(d.id, -1)} disabled={idx === 0} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft, opacity: idx === 0 ? 0.4 : 1 }}>▲</button>
+              <button onClick={() => move(d.id, 1)} disabled={idx === dishTypes.length - 1} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft, opacity: idx === dishTypes.length - 1 ? 0.4 : 1 }}>▼</button>
+              {editingId === d.id ? (
+                <button onClick={saveEdit} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.sage, color: "#fff" }}>שמור</button>
+              ) : (
+                <button onClick={() => { setEditingId(d.id); setEditName(d.name); }} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft }}>ערוך</button>
+              )}
+              <button onClick={() => remove(d.id)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMenu, persistWeeklyMenu, dishTypes }) {
+  const empty = { name: "", category: "בשרי", dishType: "", ingredients: [] };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
   const [ingProductId, setIngProductId] = useState(products[0]?.id || "");
@@ -3233,7 +3434,8 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
     await persistMenuItems(next);
 
     if (assignDay && persistWeeklyMenu) {
-      const dishType = form.dishType || "main";
+      const dishType = form.dishType || dishTypes[0]?.id;
+      if (!dishType) return;
       const daySlots = weeklyMenu[assignDay] || {};
       const slotTypes = daySlots[assignMeal] || {};
       const nextWeekly = {
@@ -3273,9 +3475,13 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
         </div>
         <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>סוג המנה (לשיבוץ בלוח השבועי)</label>
-          <select value={form.dishType || "main"} onChange={(e) => setForm({ ...form, dishType: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
-            {DISH_TYPES.map(([val, label]) => <option key={val} value={val}>{label}</option>)}
-          </select>
+          {dishTypes.length === 0 ? (
+            <p className="text-xs" style={{ color: C.steel }}>אין עדיין קטגוריות מוגדרות - הוסף במסך ניהול ← סוגי מנות.</p>
+          ) : (
+            <select value={form.dishType || dishTypes[0]?.id || ""} onChange={(e) => setForm({ ...form, dishType: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+              {dishTypes.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          )}
         </div>
 
         <div>
@@ -3313,7 +3519,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
           </div>
           {assignDay && (
             <p className="text-xs mt-1" style={{ color: C.steel }}>
-              המנה תשובץ כ"{DISH_TYPES.find(([v]) => v === (form.dishType || "main"))?.[1]}" ב{WEEK_DAYS.find(([v]) => v === assignDay)?.[1]} - {MEAL_SLOTS.find(([v]) => v === assignMeal)?.[1]}
+              המנה תשובץ כ"{dishTypes.find((d) => d.id === form.dishType)?.name || ""}" ב{WEEK_DAYS.find(([v]) => v === assignDay)?.[1]} - {MEAL_SLOTS.find(([v]) => v === assignMeal)?.[1]}
             </p>
           )}
         </div>
@@ -3340,7 +3546,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
               <div>
                 <div className="font-bold text-sm" style={{ color: C.ink }}>
                   {m.name} <span style={{ color: categoryColor(m.category) }}>· {m.category}</span>
-                  {m.dishType && <span style={{ color: C.steel }}> · {DISH_TYPES.find(([v]) => v === m.dishType)?.[1]}</span>}
+                  {m.dishType && <span style={{ color: C.steel }}> · {dishTypes.find((d) => d.id === m.dishType)?.name || ""}</span>}
                 </div>
                 <div className="text-xs mt-1" style={{ color: C.steel }}>
                   {m.ingredients.map((ing) => {
