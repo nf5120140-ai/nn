@@ -86,6 +86,11 @@ async function updateProfile(id, fields) {
   if (error) throw error;
 }
 
+async function deleteProfile(id) {
+  const { error } = await supabase.from("profiles").delete().eq("id", id);
+  if (error) throw error;
+}
+
 /* ---------- kv_store (org-scoped automatically) ---------- */
 async function get(key, shared = false) {
   const orgId = await getOrgId();
@@ -144,4 +149,5 @@ window.auth = {
   getMyProfile,
   getOrgProfiles,
   updateProfile,
+  deleteProfile,
 };
