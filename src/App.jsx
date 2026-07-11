@@ -992,6 +992,10 @@ export default function App() {
     await window.auth.updateProfile(id, fields);
     setUsers((cur) => cur.map((u) => (u.id === id ? { ...u, ...fields, name: fields.display_name ?? u.name } : u)));
   }
+  async function deleteUserProfile(id) {
+    await window.auth.deleteProfile(id);
+    setUsers((cur) => cur.filter((u) => u.id !== id));
+  }
   async function persistTasks(next) {
     setTasks(next);
     await saveKey(KEYS.tasks, next);
@@ -1228,6 +1232,7 @@ export default function App() {
           <AdminTab
             users={users}
             updateUserProfile={updateUserProfile}
+            deleteUserProfile={deleteUserProfile}
             currentUser={currentUser}
             products={products}
             persistProducts={persistProducts}
@@ -2743,7 +2748,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations }) {
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes }) {
+function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes }) {
   const [section, setSection] = useState("products");
 
   return (
@@ -2765,7 +2770,7 @@ function AdminTab({ users, updateUserProfile, currentUser, products, persistProd
         <ProductsAdmin products={products} persistProducts={persistProducts} showToast={showToast} settings={settings} persistSettings={persistSettings} />
       )}
       {section === "users" && (
-        <UsersAdmin users={users} updateUserProfile={updateUserProfile} showToast={showToast} currentUser={currentUser} />
+        <UsersAdmin users={users} updateUserProfile={updateUserProfile} deleteUserProfile={deleteUserProfile} showToast={showToast} currentUser={currentUser} />
       )}
       {section === "menu" && (
         <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} dishTypes={dishTypes} />
@@ -4128,10 +4133,11 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
   );
 }
 
-function UsersAdmin({ users, updateUserProfile, showToast, currentUser }) {
+function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, currentUser }) {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [invitePhone, setInvitePhone] = useState("");
 
   function startEdit(u) {
     setForm({ ...u });
@@ -4150,6 +4156,17 @@ function UsersAdmin({ users, updateUserProfile, showToast, currentUser }) {
     showToast("העובד עודכן");
   }
 
+  async function remove(u) {
+    if (u.id === currentUser.id) return showToast("אי אפשר למחוק את עצמך");
+    if (!window.confirm(`למחוק את ${u.name} מהארגון? הוא לא יוכל יותר לגשת לנתונים.`)) return;
+    try {
+      await deleteUserProfile(u.id);
+      showToast("העובד הוסר מהארגון");
+    } catch (e) {
+      showToast("שגיאה במחיקה: " + (e?.message || ""));
+    }
+  }
+
   function copyOrgId() {
     navigator.clipboard?.writeText(currentUser.orgId).then(() => {
       setCopied(true);
@@ -4157,13 +4174,35 @@ function UsersAdmin({ users, updateUserProfile, showToast, currentUser }) {
     });
   }
 
+  function sendInvite() {
+    const msg = encodeURIComponent(
+      `שלום! מוזמן/ת להצטרף לאפליקציית ניהול המשימות והמלאי שלנו.\n\n1. פתח את האתר\n2. לחץ "הצטרף לארגון קיים"\n3. הזן את מזהה הארגון: ${currentUser.orgId}\n4. הירשם עם המייל והסיסמה שלך`
+    );
+    const cleanPhone = invitePhone.replace(/\D/g, "");
+    const url = cleanPhone ? `https://wa.me/${cleanPhone}?text=${msg}` : `https://wa.me/?text=${msg}`;
+    window.open(url, "_blank");
+  }
+
   return (
     <div>
       <ShelfTag accent={C.accent} style={{ marginBottom: 16 }}>
         <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>הזמנת עובד חדש</div>
         <p className="text-xs mb-2" style={{ color: C.steel }}>
-          עובדים לא נוצרים כאן - כל אחד נרשם בעצמו במסך הכניסה עם "הצטרף לארגון קיים" ומזין את מזהה הארגון הזה:
+          עובדים לא נוצרים כאן ישירות - כל אחד נרשם בעצמו, אבל אפשר לשלוח לו הזמנה מוכנה בוואטסאפ עם כל ההוראות:
         </p>
+        <div className="flex gap-2 mb-2">
+          <input
+            value={invitePhone}
+            onChange={(e) => setInvitePhone(e.target.value)}
+            placeholder="972501234567 (אופציונלי)"
+            className="flex-1 p-2 rounded-xl border text-sm"
+            style={{ borderColor: C.kraftDark, direction: "ltr" }}
+          />
+          <button onClick={sendInvite} className="px-3 rounded-xl font-bold text-sm" style={{ background: "#25D366", color: "#fff" }}>
+            שלח הזמנה
+          </button>
+        </div>
+        <p className="text-xs mb-1" style={{ color: C.steel }}>או שתף ידנית את מזהה הארגון:</p>
         <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.ink, color: "#fff", direction: "ltr", wordBreak: "break-all", fontFamily: "monospace" }}>
           {currentUser.orgId}
         </div>
@@ -4227,8 +4266,12 @@ function UsersAdmin({ users, updateUserProfile, showToast, currentUser }) {
             <div>
               <div className="font-bold text-sm" style={{ color: C.ink }}>{u.name} {u.role === "manager" && "👑"}</div>
               <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>{u.phone || "ללא טלפון"}</div>
+              <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>קוד מזהה: {u.id.slice(0, 8)}</div>
             </div>
-            <button onClick={() => startEdit(u)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+            <div className="flex gap-2">
+              <button onClick={() => startEdit(u)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+              <button onClick={() => remove(u)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+            </div>
           </div>
         ))}
       </div>
