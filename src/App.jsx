@@ -67,6 +67,13 @@ const WEEK_DAYS = [
   ["friday", "יום שישי"],
   ["saturday", "שבת"],
 ];
+function weekdayDateLabel(idx) {
+  const now = new Date();
+  const diff = idx - now.getDay();
+  const d = new Date(now);
+  d.setDate(now.getDate() + diff);
+  return d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+}
 const MEAL_SLOTS = [
   ["lunch", "צהריים"],
   ["dinner", "ערב"],
@@ -681,8 +688,16 @@ function AuthGate({ onAuthed }) {
         <p className="text-center text-xs mt-6" style={{ color: C.steel }}>
           © כל הזכויות שמורות לנפתלי קמפה · ת.ז. 313****31
         </p>
-        <p className="text-center text-xs" style={{ color: C.steel }}>
-          המלצות/פניות לפיתוח: 0585120140
+        <p className="text-center text-xs">
+          <a
+            href={`https://wa.me/972585120140?text=${encodeURIComponent("שלום, רציתי לפתח/להוסיף:")}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline"
+            style={{ color: C.accent }}
+          >
+            המלצות/פניות לפיתוח: 0585120140
+          </a>
         </p>
         <div className="text-center mt-2">
           <button onClick={() => setShowTerms((v) => !v)} className="text-xs underline" style={{ color: C.accent }}>
@@ -1295,8 +1310,16 @@ export default function App() {
             <p className="text-center text-xs" style={{ color: C.steel }}>
               © כל הזכויות שמורות לנפתלי קמפה · ת.ז. 313****31
             </p>
-            <p className="text-center text-xs pb-3" style={{ color: C.steel }}>
-              המלצות/פניות לפיתוח: 0585120140
+            <p className="text-center text-xs pb-3">
+              <a
+                href={`https://wa.me/972585120140?text=${encodeURIComponent("שלום, רציתי לפתח/להוסיף:")}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline"
+                style={{ color: C.accent }}
+              >
+                המלצות/פניות לפיתוח: 0585120140
+              </a>
             </p>
           </div>
         </>
@@ -3398,57 +3421,98 @@ function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
 }
 
 function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMenu, persistWeeklyMenu, dishTypes }) {
-  const empty = { name: "", category: "בשרי", dishType: "", ingredients: [] };
-  const [form, setForm] = useState(empty);
+  const emptyEdit = { name: "", category: "בשרי", dishType: "", ingredients: [] };
   const [editingId, setEditingId] = useState(null);
-  const [ingProductId, setIngProductId] = useState(products[0]?.id || "");
-  const [ingQty, setIngQty] = useState(1);
+  const [editForm, setEditForm] = useState(emptyEdit);
+  const [editIngProductId, setEditIngProductId] = useState(products[0]?.id || "");
+  const [editIngQty, setEditIngQty] = useState(1);
+
+  const [mealCategory, setMealCategory] = useState("בשרי");
+  const [rows, setRows] = useState([]);
   const [assignDay, setAssignDay] = useState("");
   const [assignMeal, setAssignMeal] = useState("lunch");
 
-  function addIngredient() {
-    if (!ingProductId) return;
-    const product = products.find((p) => p.id === ingProductId);
-    if (!product) return;
-    if (form.ingredients.some((i) => i.productId === ingProductId)) {
-      return showToast("המוצר כבר ברשימה");
+  useEffect(() => {
+    if (rows.length === 0 && dishTypes.length > 0) {
+      setRows(dishTypes.map((d) => ({ rowId: genId(), dishType: d.id, locked: true, name: "", ingredients: [] })));
     }
-    setForm({ ...form, ingredients: [...form.ingredients, { productId: ingProductId, qty: Number(ingQty) }] });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dishTypes.length]);
+
+  function addRow() {
+    setRows((r) => [...r, { rowId: genId(), dishType: "", locked: false, name: "", ingredients: [] }]);
+  }
+  function removeRow(rowId) {
+    setRows((r) => r.filter((row) => row.rowId !== rowId));
+  }
+  function updateRow(rowId, fields) {
+    setRows((r) => r.map((row) => (row.rowId === rowId ? { ...row, ...fields } : row)));
+  }
+  function addIngredientToRow(rowId, productId, qty) {
+    if (!productId) return;
+    setRows((r) =>
+      r.map((row) => {
+        if (row.rowId !== rowId) return row;
+        if (row.ingredients.some((i) => i.productId === productId)) {
+          showToast("המוצר כבר ברשימה");
+          return row;
+        }
+        return { ...row, ingredients: [...row.ingredients, { productId, qty: Number(qty) }] };
+      })
+    );
+  }
+  function removeIngredientFromRow(rowId, productId) {
+    setRows((r) =>
+      r.map((row) => (row.rowId === rowId ? { ...row, ingredients: row.ingredients.filter((i) => i.productId !== productId) } : row))
+    );
   }
 
-  function removeIngredient(productId) {
-    setForm({ ...form, ingredients: form.ingredients.filter((i) => i.productId !== productId) });
-  }
+  async function createMeal() {
+    const filled = rows.filter((r) => r.name.trim());
+    if (filled.length === 0) return showToast("מלא לפחות שורה אחת עם שם מנה");
+    const missingType = filled.find((r) => !r.dishType);
+    if (missingType) return showToast("בחר סוג מנה לכל שורה שמילאת");
 
-  async function save() {
-    if (!form.name.trim()) return showToast("יש להזין שם מנה");
-    if (form.ingredients.length === 0) return showToast("הוסף לפחות מרכיב אחד");
-    let next;
-    let savedId = editingId;
-    if (editingId) {
-      next = menuItems.map((m) => (m.id === editingId ? { ...form, id: editingId } : m));
-    } else {
-      savedId = genId();
-      next = [...menuItems, { ...form, id: savedId }];
-    }
-    await persistMenuItems(next);
+    const created = filled.map((r) => ({
+      id: genId(),
+      name: r.name.trim(),
+      category: mealCategory,
+      dishType: r.dishType,
+      ingredients: r.ingredients,
+    }));
+    await persistMenuItems([...menuItems, ...created]);
 
     if (assignDay && persistWeeklyMenu) {
-      const dishType = form.dishType || dishTypes[0]?.id;
-      if (!dishType) return;
       const daySlots = weeklyMenu[assignDay] || {};
-      const slotTypes = daySlots[assignMeal] || {};
-      const nextWeekly = {
-        ...weeklyMenu,
-        [assignDay]: { ...daySlots, [assignMeal]: { ...slotTypes, [dishType]: savedId } },
-      };
-      await persistWeeklyMenu(nextWeekly);
+      const slotTypes = { ...(daySlots[assignMeal] || {}) };
+      created.forEach((item) => {
+        slotTypes[item.dishType] = item.id;
+      });
+      await persistWeeklyMenu({ ...weeklyMenu, [assignDay]: { ...daySlots, [assignMeal]: slotTypes } });
     }
 
-    setForm(empty);
-    setEditingId(null);
+    setRows(dishTypes.map((d) => ({ rowId: genId(), dishType: d.id, locked: true, name: "", ingredients: [] })));
     setAssignDay("");
-    showToast(assignDay ? "המנה נשמרה ושובצה ללוח השבועי" : "המנה נשמרה");
+    showToast(assignDay ? "הארוחה נשמרה ושובצה ללוח השבועי" : "הארוחה נשמרה");
+  }
+
+  function startEdit(m) {
+    setEditForm({ ...m });
+    setEditingId(m.id);
+  }
+  function addEditIngredient() {
+    if (!editIngProductId) return;
+    if (editForm.ingredients.some((i) => i.productId === editIngProductId)) return showToast("המוצר כבר ברשימה");
+    setEditForm({ ...editForm, ingredients: [...editForm.ingredients, { productId: editIngProductId, qty: Number(editIngQty) }] });
+  }
+  function removeEditIngredient(productId) {
+    setEditForm({ ...editForm, ingredients: editForm.ingredients.filter((i) => i.productId !== productId) });
+  }
+  async function saveEdit() {
+    if (!editForm.name.trim()) return showToast("יש להזין שם מנה");
+    await persistMenuItems(menuItems.map((m) => (m.id === editingId ? { ...editForm, id: editingId } : m)));
+    setEditingId(null);
+    showToast("המנה עודכנה");
   }
 
   async function remove(id) {
@@ -3457,84 +3521,120 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
 
   return (
     <div>
-      <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
-        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>
-          {editingId ? "עריכת מנה" : "הוספת מנה לתפריט"}
-        </div>
+      <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>בניית ארוחה</div>
+        <p className="text-xs" style={{ color: C.steel }}>
+          שורה אחת לכל סוג מנה שהגדרת (במסך "סוגי מנות"). מלא מה שרלוונטי, ואפשר להוסיף עוד שורות בכפתור למטה.
+        </p>
+
         <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם המנה</label>
-          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
-        </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>כשרות</label>
-          <select value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>כשרות הארוחה</label>
+          <select value={mealCategory} onChange={(e) => setMealCategory(e.target.value)} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
             <option value="בשרי">בשרי</option>
             <option value="חלבי">חלבי</option>
             <option value="פרווה">פרווה</option>
           </select>
         </div>
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>סוג המנה (לשיבוץ בלוח השבועי)</label>
-          {dishTypes.length === 0 ? (
-            <p className="text-xs" style={{ color: C.steel }}>אין עדיין קטגוריות מוגדרות - הוסף במסך ניהול ← סוגי מנות.</p>
-          ) : (
-            <select value={form.dishType || dishTypes[0]?.id || ""} onChange={(e) => setForm({ ...form, dishType: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
-              {dishTypes.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
-          )}
-        </div>
 
-        <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מרכיבים (מהמלאי הקיים)</label>
-          <div className="flex gap-2 mb-2">
-            <select value={ingProductId} onChange={(e) => setIngProductId(e.target.value)} className="flex-1 p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
-              {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-            <input type="number" value={ingQty} onChange={(e) => setIngQty(e.target.value)} className="w-16 p-2 rounded-2xl border text-center" style={{ borderColor: C.kraftDark }} />
-            <button onClick={addIngredient} className="px-3 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>+</button>
-          </div>
-          <div className="flex flex-col gap-1">
-            {form.ingredients.map((ing) => {
-              const p = products.find((pp) => pp.id === ing.productId);
-              return (
-                <div key={ing.productId} className="flex justify-between items-center text-sm p-1.5 rounded-xl" style={{ background: C.paper }}>
-                  <span>{p ? p.name : "מוצר לא ידוע"} — {ing.qty} {p?.unit}</span>
-                  <button onClick={() => removeIngredient(ing.productId)} className="text-xs px-2 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+        {dishTypes.length === 0 && (
+          <p className="text-xs" style={{ color: C.steel }}>אין עדיין סוגי מנות מוגדרים - הוסף במסך ניהול ← סוגי מנות כדי להתחיל.</p>
+        )}
+
+        {rows.map((row) => (
+          <div key={row.rowId} className="p-3 rounded-2xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+            <div className="flex justify-between items-center mb-2">
+              {row.locked ? (
+                <div className="font-bold text-sm" style={{ color: C.accent }}>
+                  {dishTypes.find((d) => d.id === row.dishType)?.name || "סוג לא ידוע"}
                 </div>
-              );
-            })}
+              ) : (
+                <select
+                  value={row.dishType}
+                  onChange={(e) => updateRow(row.rowId, { dishType: e.target.value })}
+                  className="flex-1 p-2 rounded-xl border text-sm ml-2"
+                  style={{ borderColor: C.kraftDark }}
+                >
+                  <option value="">בחר סוג מנה</option>
+                  {dishTypes.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                </select>
+              )}
+              <button onClick={() => removeRow(row.rowId)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕ הסר שורה</button>
+            </div>
+            <input
+              value={row.name}
+              onChange={(e) => updateRow(row.rowId, { name: e.target.value })}
+              placeholder="שם המנה"
+              className="p-2 rounded-xl border w-full mb-2"
+              style={{ borderColor: C.kraftDark }}
+            />
+            <RowIngredientPicker
+              products={products}
+              ingredients={row.ingredients}
+              onAdd={(pid, qty) => addIngredientToRow(row.rowId, pid, qty)}
+              onRemove={(pid) => removeIngredientFromRow(row.rowId, pid)}
+            />
           </div>
-        </div>
+        ))}
+
+        <button onClick={addRow} className="py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+          + הוסף שורת מנה
+        </button>
 
         <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שיבוץ ללוח השבועי (אופציונלי)</label>
           <div className="flex gap-2">
             <select value={assignDay} onChange={(e) => setAssignDay(e.target.value)} className="flex-1 p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
               <option value="">— לא לשבץ עכשיו —</option>
-              {WEEK_DAYS.map(([val, label]) => <option key={val} value={val}>{label}</option>)}
+              {WEEK_DAYS.map(([val, label], idx) => <option key={val} value={val}>{label} ({weekdayDateLabel(idx)})</option>)}
             </select>
             <select value={assignMeal} onChange={(e) => setAssignMeal(e.target.value)} className="flex-1 p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
               {MEAL_SLOTS.map(([val, label]) => <option key={val} value={val}>{label}</option>)}
             </select>
           </div>
-          {assignDay && (
-            <p className="text-xs mt-1" style={{ color: C.steel }}>
-              המנה תשובץ כ"{dishTypes.find((d) => d.id === form.dishType)?.name || ""}" ב{WEEK_DAYS.find(([v]) => v === assignDay)?.[1]} - {MEAL_SLOTS.find(([v]) => v === assignMeal)?.[1]}
-            </p>
-          )}
         </div>
 
-        <div className="flex gap-2">
-          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
-            {editingId ? "שמור שינויים" : "הוסף מנה"}
-          </button>
-          {editingId && (
-            <button onClick={() => { setForm(empty); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
-              ביטול
-            </button>
-          )}
-        </div>
+        <button onClick={createMeal} className="py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
+          שמור ארוחה
+        </button>
       </ShelfTag>
+
+      {editingId && (
+        <ShelfTag accent={C.sage} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>עריכת מנה</div>
+          <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} placeholder="שם המנה" />
+          <select value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="בשרי">בשרי</option>
+            <option value="חלבי">חלבי</option>
+            <option value="פרווה">פרווה</option>
+          </select>
+          <select value={editForm.dishType || ""} onChange={(e) => setEditForm({ ...editForm, dishType: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="">בחר סוג מנה</option>
+            {dishTypes.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+          <div className="flex gap-2">
+            <select value={editIngProductId} onChange={(e) => setEditIngProductId(e.target.value)} className="flex-1 p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
+              {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+            <input type="number" value={editIngQty} onChange={(e) => setEditIngQty(e.target.value)} className="w-16 p-2 rounded-2xl border text-center" style={{ borderColor: C.kraftDark }} />
+            <button onClick={addEditIngredient} className="px-3 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>+</button>
+          </div>
+          <div className="flex flex-col gap-1">
+            {editForm.ingredients.map((ing) => {
+              const p = products.find((pp) => pp.id === ing.productId);
+              return (
+                <div key={ing.productId} className="flex justify-between items-center text-sm p-1.5 rounded-xl" style={{ background: C.paper }}>
+                  <span>{p ? p.name : "מוצר לא ידוע"} — {ing.qty} {p?.unit}</span>
+                  <button onClick={() => removeEditIngredient(ing.productId)} className="text-xs px-2 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={saveEdit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>שמור שינויים</button>
+            <button onClick={() => setEditingId(null)} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
+          </div>
+        </ShelfTag>
+      )}
 
       <div className="flex flex-col gap-2">
         {menuItems.length === 0 && (
@@ -3556,12 +3656,40 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
                 </div>
               </div>
               <div className="flex gap-2">
-                <button onClick={() => { setForm(m); setEditingId(m.id); }} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+                <button onClick={() => startEdit(m)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
                 <button onClick={() => remove(m.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
               </div>
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function RowIngredientPicker({ products, ingredients, onAdd, onRemove }) {
+  const [productId, setProductId] = useState(products[0]?.id || "");
+  const [qty, setQty] = useState(1);
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-2">
+        <select value={productId} onChange={(e) => setProductId(e.target.value)} className="flex-1 p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark }}>
+          {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+        </select>
+        <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} className="w-14 p-2 rounded-xl border text-center text-sm" style={{ borderColor: C.kraftDark }} />
+        <button onClick={() => onAdd(productId, qty)} className="px-3 rounded-xl font-bold" style={{ background: C.sage, color: "#fff" }}>+</button>
+      </div>
+      <div className="flex flex-col gap-1">
+        {ingredients.map((ing) => {
+          const p = products.find((pp) => pp.id === ing.productId);
+          return (
+            <div key={ing.productId} className="flex justify-between items-center text-xs p-1.5 rounded-xl" style={{ background: "#fff" }}>
+              <span>{p ? p.name : "מוצר לא ידוע"} — {ing.qty} {p?.unit}</span>
+              <button onClick={() => onRemove(ing.productId)} className="text-xs px-2 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
