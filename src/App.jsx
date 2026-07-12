@@ -204,7 +204,28 @@ function BarcodeScanner({ onDetected, onClose }) {
   useEffect(() => {
     let cancelled = false;
 
-    async function startNative() {
+    function stopStream() {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+    }
+
+    async function nativeDetectorAvailable() {
+      if (!("BarcodeDetector" in window)) return false;
+      try {
+        const supported = await window.BarcodeDetector.getSupportedFormats();
+        return supported && supported.length > 0 ? supported : false;
+      } catch (e) {
+        console.error("BarcodeDetector.getSupportedFormats failed:", e);
+        return false;
+      }
+    }
+
+    async function startNative(supportedFormats) {
+      const wanted = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "qr_code"];
+      const formats = wanted.filter((f) => supportedFormats.includes(f));
+      if (formats.length === 0) throw new Error("No overlapping supported barcode formats");
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
       if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
       streamRef.current = stream;
@@ -212,9 +233,7 @@ function BarcodeScanner({ onDetected, onClose }) {
         videoRef.current.srcObject = stream;
         await videoRef.current.play();
       }
-      const detector = new window.BarcodeDetector({
-        formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "qr_code"],
-      });
+      const detector = new window.BarcodeDetector({ formats });
       const scanLoop = async () => {
         if (cancelled || !videoRef.current) return;
         try {
@@ -228,26 +247,29 @@ function BarcodeScanner({ onDetected, onClose }) {
 
     async function startQuagga() {
       await loadScriptOnce(QUAGGA_SRC);
-      if (cancelled || !window.Quagga || !quaggaTargetRef.current) return;
-      window.Quagga.init(
-        {
-          inputStream: {
-            type: "LiveStream",
-            target: quaggaTargetRef.current,
-            constraints: { facingMode: "environment", width: { min: 480 }, height: { min: 480 } },
+      if (cancelled || !window.Quagga || !quaggaTargetRef.current) throw new Error("Quagga failed to load or mount point missing");
+      await new Promise((resolve, reject) => {
+        window.Quagga.init(
+          {
+            inputStream: {
+              type: "LiveStream",
+              target: quaggaTargetRef.current,
+              constraints: { facingMode: "environment", width: { min: 480 }, height: { min: 480 } },
+            },
+            locator: { patchSize: "medium", halfSample: true },
+            numOfWorkers: 2,
+            frequency: 10,
+            decoder: { readers: ["ean_reader", "ean_8_reader", "code_128_reader", "upc_reader", "codabar_reader"] },
+            locate: true,
           },
-          locator: { patchSize: "medium", halfSample: true },
-          numOfWorkers: 2,
-          frequency: 10,
-          decoder: { readers: ["ean_reader", "ean_8_reader", "code_128_reader", "upc_reader", "codabar_reader"] },
-          locate: true,
-        },
-        (err) => {
-          if (cancelled) return;
-          if (err) { setError("לא ניתן להפעיל את המצלמה עבור הסריקה."); setMode("manual"); return; }
-          window.Quagga.start();
-        }
-      );
+          (err) => {
+            if (cancelled) return resolve();
+            if (err) { reject(err); return; }
+            window.Quagga.start();
+            resolve();
+          }
+        );
+      });
       window.Quagga.onDetected((result) => {
         if (result && result.codeResult && result.codeResult.code) {
           finish(result.codeResult.code);
@@ -256,20 +278,22 @@ function BarcodeScanner({ onDetected, onClose }) {
     }
 
     async function start() {
-      if ("BarcodeDetector" in window) {
+      const supportedFormats = await nativeDetectorAvailable();
+      if (supportedFormats) {
         try {
-          await startNative();
-          if (!cancelled) setMode("native");
-          return;
+          await startNative(supportedFormats);
+          if (!cancelled) { setMode("native"); return; }
         } catch (e) {
-          // native camera access failed or detector unsupported for formats - fall through to Quagga
+          console.error("Native barcode scan failed:", e);
+          stopStream();
         }
       }
       try {
         setMode("quagga");
         await startQuagga();
       } catch (e) {
-        setError("לא ניתן לגשת למצלמה. הזן ברקוד ידנית.");
+        console.error("Quagga scan failed:", e);
+        setError("לא ניתן להפעיל סריקת מצלמה במכשיר/דפדפן הזה. הזן ברקוד ידנית. (פרטים טכניים בקונסול)");
         setMode("manual");
       }
     }
@@ -278,7 +302,7 @@ function BarcodeScanner({ onDetected, onClose }) {
     return () => {
       cancelled = true;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      if (streamRef.current) streamRef.current.getTracks().forEach((t) => t.stop());
+      stopStream();
       if (window.Quagga && window.Quagga.stop) {
         try { window.Quagga.stop(); } catch (e) {}
       }
@@ -2623,6 +2647,13 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
 
     const msg = encodeURIComponent(text);
     window.open(`https://wa.me/${user.phone.replace(/\D/g, "")}?text=${msg}`, "_blank");
+
+    if (task.imageData) {
+      // Fallback: the phone/browser doesn't support sharing an image directly into WhatsApp.
+      // Open the photo in its own tab so it can be saved and attached manually.
+      window.open(task.imageData, "_blank");
+      showToast("המכשיר לא תומך בצירוף תמונה אוטומטי לוואטסאפ - התמונה נפתחה בנפרד, שמור ושתף אותה ידנית");
+    }
   }
 
   return (
@@ -3078,8 +3109,8 @@ function LocationsAdmin({ locations, persistLocations, showToast }) {
     const sheet = XLSX.utils.json_to_sheet(rows);
     sheet["!cols"] = [{ wch: 26 }, { wch: 22 }];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, sheet, "מקומות");
-    XLSX.writeFile(wb, "תבנית-מקומות.xlsx");
+    XLSX.utils.book_append_sheet(wb, sheet, "Locations");
+    XLSX.writeFile(wb, "locations-template.xlsx");
   }
 
   function exportLocations() {
@@ -3087,8 +3118,8 @@ function LocationsAdmin({ locations, persistLocations, showToast }) {
     const sheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ "שם מקום/חדר": "", "קבוצה/אזור": "" }]);
     sheet["!cols"] = [{ wch: 26 }, { wch: 22 }];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, sheet, "מקומות");
-    XLSX.writeFile(wb, "מקומות.xlsx");
+    XLSX.utils.book_append_sheet(wb, sheet, "Locations");
+    XLSX.writeFile(wb, "locations-export.xlsx");
     showToast("הקובץ יורד עכשיו");
   }
 
@@ -3882,6 +3913,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
   const [adminSearch, setAdminSearch] = useState("");
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkThreshold, setBulkThreshold] = useState("");
+  const [bulkCategory, setBulkCategory] = useState("");
   const [photoBusy, setPhotoBusy] = useState(false);
 
   const formRef = useRef(null);
@@ -3914,6 +3946,23 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
     showToast(`עודכן סף מינימום ל-${bulkThreshold} עבור ${selectedIds.length} מוצרים`);
     setSelectedIds([]);
     setBulkThreshold("");
+  }
+
+  async function applyBulkCategory() {
+    if (selectedIds.length === 0) return showToast("בחר לפחות מוצר אחד");
+    if (!bulkCategory) return showToast("בחר קטגוריה");
+    const next = products.map((p) =>
+      selectedIds.includes(p.id) ? { ...p, category: bulkCategory } : p
+    );
+    await persistProducts(next);
+    showToast(`עודכנה קטגוריה ל-${selectedIds.length} מוצרים`);
+    setSelectedIds([]);
+    setBulkCategory("");
+  }
+
+  function selectAllInCategory(cat) {
+    const ids = products.filter((p) => (p.category || "ללא קטגוריה") === cat).map((p) => p.id);
+    setSelectedIds((cur) => Array.from(new Set([...cur, ...ids])));
   }
 
   function startEdit(p) {
@@ -4072,8 +4121,8 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
       { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 18 }, { wch: 20 },
     ];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, sheet, "מוצרים");
-    XLSX.writeFile(wb, "מוצרים.xlsx");
+    XLSX.utils.book_append_sheet(wb, sheet, "Products");
+    XLSX.writeFile(wb, "products-export.xlsx");
     showToast("הקובץ יורד עכשיו");
   }
 
@@ -4232,9 +4281,9 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
       {selectedIds.length > 0 && (
         <ShelfTag accent={C.accent} style={{ marginBottom: 16 }}>
           <div className="text-sm font-bold mb-2" style={{ color: C.ink }}>
-            {selectedIds.length} מוצרים נבחרו - עדכן להם סף מינימום אחד
+            {selectedIds.length} מוצרים נבחרו
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 mb-2">
             <input
               type="number"
               value={bulkThreshold}
@@ -4244,12 +4293,21 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
               style={{ borderColor: C.kraftDark }}
             />
             <button onClick={applyBulkThreshold} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
-              עדכן
-            </button>
-            <button onClick={() => setSelectedIds([])} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
-              נקה בחירה
+              עדכן סף
             </button>
           </div>
+          <div className="flex gap-2 mb-2">
+            <select value={bulkCategory} onChange={(e) => setBulkCategory(e.target.value)} className="flex-1 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }}>
+              <option value="">בחר קטגוריה חדשה</option>
+              {PRODUCT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <button onClick={applyBulkCategory} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
+              עדכן קטגוריה
+            </button>
+          </div>
+          <button onClick={() => setSelectedIds([])} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+            נקה בחירה
+          </button>
         </ShelfTag>
       )}
 
@@ -4264,7 +4322,12 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
             }, {})
         ).map(([cat, items]) => (
           <div key={cat}>
-            <div className="wh-display font-bold text-sm mb-2" style={{ color: C.steel }}>{cat} ({items.length})</div>
+            <div className="flex justify-between items-center mb-2">
+              <div className="wh-display font-bold text-sm" style={{ color: C.steel }}>{cat} ({items.length})</div>
+              <button onClick={() => selectAllInCategory(cat)} className="text-xs px-2 py-1 rounded-full" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                סמן את כל הקטגוריה
+              </button>
+            </div>
             <div className="flex flex-col gap-2">
               {items.map((p) => (
                 <div key={p.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
@@ -4381,7 +4444,31 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
           </div>
           <div>
             <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>טלפון (לוואטסאפ)</label>
-            <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+            <div className="flex gap-2">
+              <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="flex-1 p-2 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+              <button
+                onClick={async () => {
+                  if (!("contacts" in navigator && "ContactsManager" in window)) {
+                    showToast("ייבוא מאנשי קשר זמין רק ב-Chrome באנדרואיד");
+                    return;
+                  }
+                  try {
+                    const contacts = await navigator.contacts.select(["name", "tel"], { multiple: false });
+                    if (!contacts || contacts.length === 0) return;
+                    const c = contacts[0];
+                    let digits = String(c.tel?.[0] || "").replace(/\D/g, "");
+                    if (digits.startsWith("0")) digits = "972" + digits.slice(1);
+                    setForm({ ...form, phone: digits || form.phone, name: c.name?.[0] || form.name });
+                  } catch (e) {
+                    console.error(e);
+                  }
+                }}
+                className="px-3 rounded-2xl text-sm font-bold"
+                style={{ background: C.accent, color: "#fff" }}
+              >
+                📇
+              </button>
+            </div>
           </div>
           <div>
             <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תפקיד</label>
