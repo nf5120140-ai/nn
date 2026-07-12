@@ -151,6 +151,23 @@ async function list(prefix = "", shared = false) {
   return { keys: (data || []).map((r) => r.key), prefix, shared };
 }
 
+/* ---------- Realtime sync across devices ---------- */
+async function subscribeToOrgChanges(onChange) {
+  const orgId = await getOrgId();
+  if (!orgId) return () => {};
+  const channel = supabase
+    .channel(`org-${orgId}-changes`)
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "kv_store", filter: `org_id=eq.${orgId}` },
+      (payload) => onChange(payload)
+    )
+    .subscribe();
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}
+
 window.storage = { get, set, delete: del, list };
 window.auth = {
   signUpCreateOrg,
@@ -164,4 +181,5 @@ window.auth = {
   deleteProfile,
   resetPasswordForEmail,
   updatePassword,
+  subscribeToOrgChanges,
 };

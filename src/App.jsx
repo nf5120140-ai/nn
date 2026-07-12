@@ -1054,6 +1054,33 @@ export default function App() {
   }, [currentUser?.id]);
 
   useEffect(() => {
+    if (!currentUser) return;
+    let unsubscribe = () => {};
+    const reloadMap = {
+      [KEYS.products]: async () => setProducts((await loadKey(KEYS.products, [])) || []),
+      [KEYS.tasks]: async () => setTasks((await loadKey(KEYS.tasks, [])) || []),
+      [KEYS.settings]: async () => setSettings((await loadKey(KEYS.settings, { supplierPhone: "" })) || { supplierPhone: "" }),
+      [KEYS.notifications]: async () => setNotifications((await loadKey(KEYS.notifications, [])) || []),
+      [KEYS.menuItems]: async () => setMenuItems((await loadKey(KEYS.menuItems, [])) || []),
+      [KEYS.weeklyMenu]: async () => setWeeklyMenu((await loadKey(KEYS.weeklyMenu, {})) || {}),
+      [KEYS.reminders]: async () => setReminders((await loadKey(KEYS.reminders, [])) || []),
+      [KEYS.stockLog]: async () => setStockLog((await loadKey(KEYS.stockLog, [])) || []),
+      [KEYS.locations]: async () => setLocations((await loadKey(KEYS.locations, [])) || []),
+      [KEYS.dishTypes]: async () => setDishTypes((await loadKey(KEYS.dishTypes, [])) || []),
+    };
+    window.auth.subscribeToOrgChanges((payload) => {
+      const changedKey = payload.new?.key || payload.old?.key;
+      const reloader = reloadMap[changedKey];
+      if (reloader) reloader();
+    }).then((fn) => {
+      unsubscribe = fn;
+    });
+    // also refresh the team member list occasionally isn't covered by kv_store changes
+    // (profiles table changes aren't part of this subscription), so no action needed there.
+    return () => unsubscribe();
+  }, [currentUser?.id]);
+
+  useEffect(() => {
     if (!loaded || !currentUser || locked) return;
     if (isBiometricEnabled() || hasPromptedBiometric()) return;
     isBiometricSupported().then((supported) => {
