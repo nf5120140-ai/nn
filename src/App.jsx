@@ -3,16 +3,16 @@ import * as XLSX from "xlsx";
 
 /* ---------- Design tokens ---------- */
 const C = {
-  ink: "#231F3D",        // deep indigo-ink for text/header
-  paper: "#F7F3FF",      // soft lavender-white page background
+  ink: "#14213D",        // deep navy from the logo, used for text/header
+  paper: "#F3F6FB",      // soft cool-blue white page background
   kraft: "#FFFFFF",      // card background
-  kraftDark: "#E7E0F7",  // card border / subtle divider
+  kraftDark: "#DCE4F0",  // card border / subtle divider
   stamp: "#FF5A5F",      // coral-red for shortage/urgent
   mustard: "#FFB347",    // warm orange for tasks/warning
-  sage: "#2EC4B6",       // teal for ok/success
-  steel: "#7A7592",      // secondary text, muted violet-grey
-  accent: "#7C5CFC",     // vivid purple accent
-  accent2: "#FF7EB6",    // pink accent
+  sage: "#5CB85C",       // logo green for ok/success
+  steel: "#5B6B85",      // secondary text, muted navy-grey
+  accent: "#2E86C4",     // logo blue accent
+  accent2: "#5CB85C",    // logo green accent (gradient end)
 };
 const RADIUS = "20px";
 
@@ -715,9 +715,21 @@ function AuthGate({ onAuthed }) {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center wh-body py-8" style={{ background: C.paper }} dir="rtl">
+    <div className="min-h-screen flex items-center justify-center wh-body py-8" style={{ background: C.paper, position: "relative" }} dir="rtl">
       <style>{FONTS}</style>
-      <div className="w-full max-w-xs">
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          backgroundImage: "url(/icon-512-v2.png)",
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center",
+          backgroundSize: "70vw",
+          opacity: 0.06,
+          pointerEvents: "none",
+        }}
+      />
+      <div className="w-full max-w-xs" style={{ position: "relative" }}>
         <h1 className="wh-display text-2xl font-black mb-1 text-center" style={{ color: C.ink }}>
           ניהול משימות ומלאי מוסדי
         </h1>
@@ -1240,8 +1252,22 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col wh-body" style={{ background: C.paper }} dir="rtl">
+    <div className="min-h-screen flex flex-col wh-body" style={{ background: C.paper, position: "relative" }} dir="rtl">
       <style>{FONTS}</style>
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          backgroundImage: "url(/icon-512-v2.png)",
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center",
+          backgroundSize: "60vw",
+          opacity: 0.05,
+          pointerEvents: "none",
+          zIndex: 0,
+        }}
+      />
+      <div style={{ position: "relative", zIndex: 1 }} className="flex flex-col min-h-screen">
 
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3" style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "0 0 24px 24px" }}>
@@ -1508,6 +1534,7 @@ export default function App() {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
