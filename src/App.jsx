@@ -3450,7 +3450,11 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
       showToast(`נוספו ${newSuppliers.length} ספקים מאנשי הקשר`);
     } catch (err) {
       console.error(err);
-      showToast("שגיאה בייבוא אנשי קשר: " + (err?.message || "לא ידועה"));
+      if (window.matchMedia("(display-mode: standalone)").matches) {
+        showToast("ייבוא מאנשי קשר לא עובד באפליקציה המותקנת - פתח את האתר בכרום רגיל (לא מהאייקון) ונסה שוב");
+      } else {
+        showToast("שגיאה בייבוא אנשי קשר: " + (err?.message || "לא ידועה"));
+      }
     }
   }
 
@@ -4461,6 +4465,11 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
                     setForm({ ...form, phone: digits || form.phone, name: c.name?.[0] || form.name });
                   } catch (e) {
                     console.error(e);
+                    if (window.matchMedia("(display-mode: standalone)").matches) {
+                      showToast("ייבוא מאנשי קשר לא עובד באפליקציה המותקנת - פתח את האתר בכרום רגיל ונסה שוב");
+                    } else {
+                      showToast("שגיאה בייבוא איש קשר: " + (e?.message || "לא ידועה"));
+                    }
                   }
                 }}
                 className="px-3 rounded-2xl text-sm font-bold"
