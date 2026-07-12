@@ -99,6 +99,83 @@ async function saveKey(key, value) {
 const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const todayStr = () => new Date().toLocaleDateString("he-IL");
 
+/* ---------- Send channels (WhatsApp / SMS / Email) ---------- */
+const CHANNELS = [
+  { id: "whatsapp", label: "וואטסאפ", icon: "💬", color: "#25D366" },
+  { id: "sms", label: "SMS", icon: "✉️", color: "#4F86F7" },
+  { id: "email", label: "מייל", icon: "📧", color: "#EA4335" },
+];
+function channelMeta(id) {
+  return CHANNELS.find((c) => c.id === id) || CHANNELS[0];
+}
+
+/** Normalize an Israeli/any phone to bare international digits (0501234567 -> 972501234567). */
+function cleanPhoneDigits(raw) {
+  let d = String(raw || "").replace(/\D/g, "");
+  if (d.startsWith("0")) d = "972" + d.slice(1);
+  return d;
+}
+
+/**
+ * Open the given text in the chosen channel.
+ * Returns { ok } or { ok:false, error } so callers can showToast the reason.
+ */
+function sendViaChannel(channel, { phone, email, text, subject }) {
+  if (channel === "email") {
+    const to = String(email || "").trim();
+    if (!to) return { ok: false, error: "לא הוגדרה כתובת מייל ליעד הזה" };
+    window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(
+      subject || ""
+    )}&body=${encodeURIComponent(text)}`;
+    return { ok: true };
+  }
+  if (channel === "sms") {
+    const digits = cleanPhoneDigits(phone);
+    if (!digits) return { ok: false, error: "לא הוגדר מספר טלפון ליעד הזה" };
+    // "?&body=" is the form that works on both iOS and Android
+    window.location.href = `sms:+${digits}?&body=${encodeURIComponent(text)}`;
+    return { ok: true };
+  }
+  const digits = cleanPhoneDigits(phone);
+  const url = digits
+    ? `https://wa.me/${digits}?text=${encodeURIComponent(text)}`
+    : `https://wa.me/?text=${encodeURIComponent(text)}`;
+  window.open(url, "_blank");
+  return { ok: true };
+}
+
+/** Small 3-way channel selector used in the order screen and the invite box. */
+function ChannelPicker({ value, onChange, label = "שלח דרך" }) {
+  return (
+    <div>
+      {label && (
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+          {label}
+        </label>
+      )}
+      <div className="flex gap-2">
+        {CHANNELS.map((c) => {
+          const active = value === c.id;
+          return (
+            <button
+              key={c.id}
+              onClick={() => onChange(c.id)}
+              className="flex-1 py-2 rounded-2xl text-sm font-bold"
+              style={{
+                background: active ? c.color : "#fff",
+                color: active ? "#fff" : c.color,
+                border: `1.5px solid ${c.color}`,
+              }}
+            >
+              {c.icon} {c.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Building / room locations ---------- */
 function range(from, to) {
   const arr = [];
@@ -1020,6 +1097,8 @@ export default function App() {
         id: prof.id,
         name: prof.display_name || "משתמש",
         phone: prof.phone || "",
+        loginEmail: prof.email || "",
+        contactEmail: prof.contact_email || "",
         role: prof.role,
         permissions: prof.permissions || { inventory: true, order: true, tasks: true },
       }));
@@ -1136,7 +1215,18 @@ export default function App() {
   }
   async function updateUserProfile(id, fields) {
     await window.auth.updateProfile(id, fields);
-    setUsers((cur) => cur.map((u) => (u.id === id ? { ...u, ...fields, name: fields.display_name ?? u.name } : u)));
+    setUsers((cur) =>
+      cur.map((u) =>
+        u.id === id
+          ? {
+              ...u,
+              ...fields,
+              name: fields.display_name ?? u.name,
+              contactEmail: fields.contact_email ?? u.contactEmail,
+            }
+          : u
+      )
+    );
   }
   async function deleteUserProfile(id) {
     await window.auth.deleteProfile(id);
@@ -1966,6 +2056,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const suppliers = settings.suppliers || [];
   const [selectedSupplierId, setSelectedSupplierId] = useState(suppliers[0]?.id || "");
   const [manualPhone, setManualPhone] = useState(settings.supplierPhone || "");
+  const [manualEmail, setManualEmail] = useState(settings.supplierEmail || "");
+  const [channel, setChannel] = useState("whatsapp"); // "whatsapp" | "sms" | "email"
   const [orderMode, setOrderMode] = useState("stock"); // "stock" | "menu" | "week"
   const [qtys, setQtys] = useState(() =>
     Object.fromEntries(lowStock.map((p) => [p.id, Math.max(1, Number(p.threshold) * 2 - Number(p.quantity))]))
@@ -2083,10 +2175,18 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     return lines.join("\n");
   }
 
+  const ORDER_SUBJECT = `הזמנת מלאי — ${todayStr()}`;
+
   function resolvedPhone() {
     if (selectedSupplierId === "__manual__") return manualPhone;
     const s = suppliers.find((s) => s.id === selectedSupplierId);
     return s?.phone || manualPhone;
+  }
+
+  function resolvedEmail() {
+    if (selectedSupplierId === "__manual__") return manualEmail;
+    const s = suppliers.find((s) => s.id === selectedSupplierId);
+    return s?.email || manualEmail;
   }
 
   async function sendOrder() {
@@ -2094,10 +2194,13 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       if (showToast) showToast("סמן קודם לפחות מוצר אחד לשליחה");
       return;
     }
-    const cleanPhone = resolvedPhone().replace(/\D/g, "");
-    const msg = encodeURIComponent(buildStockMessage());
-    const url = cleanPhone ? `https://wa.me/${cleanPhone}?text=${msg}` : `https://wa.me/?text=${msg}`;
-    window.open(url, "_blank");
+    const res = sendViaChannel(channel, {
+      phone: resolvedPhone(),
+      email: resolvedEmail(),
+      text: buildStockMessage(),
+      subject: ORDER_SUBJECT,
+    });
+    if (!res.ok && showToast) showToast(res.error);
   }
 
   // Group a set of rows (product + qty) by the product's assigned supplier.
@@ -2116,16 +2219,23 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
   function sendGroupOrder(items, title, supplierId) {
     const lines = items.map(({ product, qty }) => `- ${qty} ${product.unit} ${product.name}`);
-    const msg = encodeURIComponent(lines.join("\n"));
     let phone = "";
+    let email = "";
     if (supplierId && supplierId !== "__unassigned__") {
-      phone = suppliers.find((s) => s.id === supplierId)?.phone || "";
+      const s = suppliers.find((s) => s.id === supplierId);
+      phone = s?.phone || "";
+      email = s?.email || "";
     } else {
       phone = resolvedPhone();
+      email = resolvedEmail();
     }
-    const cleanPhone = phone.replace(/\D/g, "");
-    const url = cleanPhone ? `https://wa.me/${cleanPhone}?text=${msg}` : `https://wa.me/?text=${msg}`;
-    window.open(url, "_blank");
+    const res = sendViaChannel(channel, {
+      phone,
+      email,
+      text: lines.join("\n"),
+      subject: title ? `${title} — ${todayStr()}` : ORDER_SUBJECT,
+    });
+    if (!res.ok && showToast) showToast(res.error);
   }
 
   function printWeeklyMenu() {
@@ -2205,23 +2315,51 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
         <select
           value={selectedSupplierId}
           onChange={(e) => setSelectedSupplierId(e.target.value)}
-          className="p-2 rounded-2xl border w-full"
+          className="p-2 rounded-2xl border w-full mb-3"
           style={{ borderColor: C.kraftDark }}
         >
           {suppliers.map((s) => (
             <option key={s.id} value={s.id}>{s.name}</option>
           ))}
-          <option value="__manual__">מספר אחר (הזנה ידנית)</option>
+          <option value="__manual__">יעד אחר (הזנה ידנית)</option>
         </select>
+
+        <ChannelPicker value={channel} onChange={setChannel} />
+
         {(selectedSupplierId === "__manual__" || suppliers.length === 0) && (
-          <input
-            value={manualPhone}
-            onChange={(e) => setManualPhone(e.target.value)}
-            placeholder="972501234567"
-            className="mt-2 p-2 rounded-2xl border w-full"
-            style={{ borderColor: C.kraftDark, direction: "ltr" }}
-          />
+          channel === "email" ? (
+            <input
+              value={manualEmail}
+              onChange={(e) => setManualEmail(e.target.value)}
+              type="email"
+              placeholder="supplier@example.com"
+              className="mt-2 p-2 rounded-2xl border w-full"
+              style={{ borderColor: C.kraftDark, direction: "ltr" }}
+            />
+          ) : (
+            <input
+              value={manualPhone}
+              onChange={(e) => setManualPhone(e.target.value)}
+              placeholder="972501234567"
+              className="mt-2 p-2 rounded-2xl border w-full"
+              style={{ borderColor: C.kraftDark, direction: "ltr" }}
+            />
+          )
         )}
+
+        {selectedSupplierId !== "__manual__" && suppliers.length > 0 && (() => {
+          const s = suppliers.find((x) => x.id === selectedSupplierId);
+          if (!s) return null;
+          const missing = channel === "email" ? !s.email : !s.phone;
+          if (!missing) return null;
+          return (
+            <p className="text-xs mt-2" style={{ color: C.stamp }}>
+              {channel === "email"
+                ? `לספק "${s.name}" לא שמור מייל - הוסף אותו במסך ניהול ← ספקים.`
+                : `לספק "${s.name}" לא שמור טלפון - הוסף אותו במסך ניהול ← ספקים.`}
+            </p>
+          );
+        })()}
       </div>
 
       {orderMode === "stock" && (() => {
@@ -2327,8 +2465,12 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 </div>
               </>
             )}
-            <button onClick={sendOrder} className="w-full py-3 rounded-2xl wh-display font-bold" style={{ background: "#25D366", color: "#fff" }}>
-              שלח הזמנה בוואטסאפ
+            <button
+              onClick={sendOrder}
+              className="w-full py-3 rounded-2xl wh-display font-bold"
+              style={{ background: channelMeta(channel).color, color: "#fff" }}
+            >
+              {channelMeta(channel).icon} שלח הזמנה ב{channelMeta(channel).label}
             </button>
           </>
         );
@@ -2410,9 +2552,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                       key={supplierId}
                       onClick={() => sendGroupOrder(items, "📋 הזמנה לפי תפריט", supplierId)}
                       className="w-full py-3 mb-2 rounded-2xl wh-display font-bold"
-                      style={{ background: "#25D366", color: "#fff" }}
+                      style={{ background: channelMeta(channel).color, color: "#fff" }}
                     >
-                      שלח ל{supplierName} ({items.length} מוצרים)
+                      {channelMeta(channel).icon} שלח ל{supplierName} ({items.length} מוצרים)
                     </button>
                   );
                 })}
@@ -2595,9 +2737,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                       key={supplierId}
                       onClick={() => sendGroupOrder(items, "📅 הזמנה לפי תפריט שבועי", supplierId)}
                       className="w-full py-3 mb-2 rounded-2xl wh-display font-bold"
-                      style={{ background: "#25D366", color: "#fff" }}
+                      style={{ background: channelMeta(channel).color, color: "#fff" }}
                     >
-                      שלח ל{supplierName} ({items.length} מוצרים)
+                      {channelMeta(channel).icon} שלח ל{supplierName} ({items.length} מוצרים)
                     </button>
                   );
                 })}
@@ -3438,7 +3580,7 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
 
 function SuppliersAdmin({ settings, persistSettings, showToast }) {
   const suppliers = settings.suppliers || [];
-  const empty = { name: "", phone: "" };
+  const empty = { name: "", phone: "", email: "" };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
   const contactsSupported = typeof navigator !== "undefined" && "contacts" in navigator && "ContactsManager" in window;
@@ -3455,7 +3597,7 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
       return;
     }
     try {
-      const contacts = await navigator.contacts.select(["name", "tel"], { multiple: true });
+      const contacts = await navigator.contacts.select(["name", "tel", "email"], { multiple: true });
       if (!contacts || contacts.length === 0) {
         showToast("לא נבחרו אנשי קשר");
         return;
@@ -3465,11 +3607,12 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
           id: genId(),
           name: c.name?.[0] || "ללא שם",
           phone: normalizePhone(c.tel?.[0] || ""),
+          email: (c.email?.[0] || "").trim(),
         }))
-        .filter((s) => s.phone);
+        .filter((s) => s.phone || s.email);
 
       if (newSuppliers.length === 0) {
-        showToast("לאנשי הקשר שנבחרו אין מספרי טלפון שמורים");
+        showToast("לאנשי הקשר שנבחרו אין טלפון או מייל שמורים");
         return;
       }
 
@@ -3486,7 +3629,9 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
   }
 
   async function save() {
-    if (!form.name.trim() || !form.phone.trim()) return showToast("יש להזין שם וטלפון");
+    if (!form.name.trim()) return showToast("יש להזין שם ספק");
+    if (!form.phone.trim() && !form.email.trim())
+      return showToast("יש להזין לפחות טלפון או מייל");
     let next;
     if (editingId) {
       next = suppliers.map((s) => (s.id === editingId ? { ...form, id: editingId } : s));
@@ -3526,8 +3671,12 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
           <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
         </div>
         <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>טלפון וואטסאפ (972501234567)</label>
-          <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>טלפון (לוואטסאפ / SMS)</label>
+          <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="972501234567" className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מייל (לשליחת הזמנה במייל)</label>
+          <input value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} type="email" placeholder="supplier@example.com" className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
         </div>
         <div className="flex gap-2">
           <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
@@ -3549,10 +3698,15 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
           <div key={s.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
             <div>
               <div className="font-bold text-sm" style={{ color: C.ink }}>{s.name}</div>
-              <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>{s.phone}</div>
+              <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>
+                {s.phone || "ללא טלפון"}
+              </div>
+              <div className="text-xs" style={{ color: s.email ? C.steel : C.kraftDark, direction: "ltr", textAlign: "right" }}>
+                {s.email || "ללא מייל"}
+              </div>
             </div>
             <div className="flex gap-2">
-              <button onClick={() => { setForm(s); setEditingId(s.id); }} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+              <button onClick={() => { setForm({ email: "", ...s }); setEditingId(s.id); }} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
               <button onClick={() => remove(s.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
             </div>
           </div>
@@ -4393,9 +4547,11 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
   const [form, setForm] = useState(null);
   const [copied, setCopied] = useState(false);
   const [invitePhone, setInvitePhone] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteChannel, setInviteChannel] = useState("whatsapp");
 
   function startEdit(u) {
-    setForm({ ...u });
+    setForm({ contactEmail: "", ...u });
     setEditingId(u.id);
   }
 
@@ -4403,6 +4559,7 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
     await updateUserProfile(editingId, {
       display_name: form.name,
       phone: form.phone,
+      contact_email: (form.contactEmail || "").trim(),
       role: form.role,
       permissions: form.permissions,
     });
@@ -4430,12 +4587,14 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
   }
 
   function sendInvite() {
-    const msg = encodeURIComponent(
-      `שלום! מוזמן/ת להצטרף לאפליקציית ניהול המשימות והמלאי שלנו.\n\n1. פתח את האתר\n2. לחץ "הצטרף לארגון קיים"\n3. הזן את מזהה הארגון: ${currentUser.orgId}\n4. הירשם עם המייל והסיסמה שלך`
-    );
-    const cleanPhone = invitePhone.replace(/\D/g, "");
-    const url = cleanPhone ? `https://wa.me/${cleanPhone}?text=${msg}` : `https://wa.me/?text=${msg}`;
-    window.open(url, "_blank");
+    const msg = `שלום! מוזמן/ת להצטרף לאפליקציית ניהול המשימות והמלאי שלנו.\n\n1. פתח את האתר\n2. לחץ "הצטרף לארגון קיים"\n3. הזן את מזהה הארגון: ${currentUser.orgId}\n4. הירשם עם המייל והסיסמה שלך`;
+    const res = sendViaChannel(inviteChannel, {
+      phone: invitePhone,
+      email: inviteEmail,
+      text: msg,
+      subject: "הזמנה להצטרף לאפליקציית ניהול המשימות והמלאי",
+    });
+    if (!res.ok) showToast(res.error);
   }
 
   return (
@@ -4445,15 +4604,33 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
         <p className="text-xs mb-2" style={{ color: C.steel }}>
           עובדים לא נוצרים כאן ישירות - כל אחד נרשם בעצמו, אבל אפשר לשלוח לו הזמנה מוכנה בוואטסאפ עם כל ההוראות:
         </p>
+        <div className="mb-2">
+          <ChannelPicker value={inviteChannel} onChange={setInviteChannel} label="" />
+        </div>
         <div className="flex gap-2 mb-2">
-          <input
-            value={invitePhone}
-            onChange={(e) => setInvitePhone(e.target.value)}
-            placeholder="972501234567 (אופציונלי)"
-            className="flex-1 p-2 rounded-xl border text-sm"
-            style={{ borderColor: C.kraftDark, direction: "ltr" }}
-          />
-          <button onClick={sendInvite} className="px-3 rounded-xl font-bold text-sm" style={{ background: "#25D366", color: "#fff" }}>
+          {inviteChannel === "email" ? (
+            <input
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+              type="email"
+              placeholder="worker@example.com"
+              className="flex-1 p-2 rounded-xl border text-sm"
+              style={{ borderColor: C.kraftDark, direction: "ltr" }}
+            />
+          ) : (
+            <input
+              value={invitePhone}
+              onChange={(e) => setInvitePhone(e.target.value)}
+              placeholder={inviteChannel === "sms" ? "972501234567" : "972501234567 (אופציונלי)"}
+              className="flex-1 p-2 rounded-xl border text-sm"
+              style={{ borderColor: C.kraftDark, direction: "ltr" }}
+            />
+          )}
+          <button
+            onClick={sendInvite}
+            className="px-3 rounded-xl font-bold text-sm whitespace-nowrap"
+            style={{ background: channelMeta(inviteChannel).color, color: "#fff" }}
+          >
             שלח הזמנה
           </button>
         </div>
@@ -4474,9 +4651,9 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
             <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
           </div>
           <div>
-            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>טלפון (לוואטסאפ)</label>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>טלפון (לוואטסאפ / SMS)</label>
             <div className="flex gap-2">
-              <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="flex-1 p-2 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+              <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="972501234567" className="flex-1 p-2 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
               <button
                 onClick={async () => {
                   if (!("contacts" in navigator && "ContactsManager" in window)) {
@@ -4484,12 +4661,17 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
                     return;
                   }
                   try {
-                    const contacts = await navigator.contacts.select(["name", "tel"], { multiple: false });
+                    const contacts = await navigator.contacts.select(["name", "tel", "email"], { multiple: false });
                     if (!contacts || contacts.length === 0) return;
                     const c = contacts[0];
                     let digits = String(c.tel?.[0] || "").replace(/\D/g, "");
                     if (digits.startsWith("0")) digits = "972" + digits.slice(1);
-                    setForm({ ...form, phone: digits || form.phone, name: c.name?.[0] || form.name });
+                    setForm({
+                      ...form,
+                      phone: digits || form.phone,
+                      name: c.name?.[0] || form.name,
+                      contactEmail: (c.email?.[0] || "").trim() || form.contactEmail || "",
+                    });
                   } catch (e) {
                     console.error(e);
                     if (window.matchMedia("(display-mode: standalone)").matches) {
@@ -4505,6 +4687,22 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
                 📇
               </button>
             </div>
+          </div>
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מייל ליצירת קשר</label>
+            <input
+              value={form.contactEmail || ""}
+              onChange={(e) => setForm({ ...form, contactEmail: e.target.value })}
+              type="email"
+              placeholder={form.loginEmail || "worker@example.com"}
+              className="p-2 rounded-2xl border w-full"
+              style={{ borderColor: C.kraftDark, direction: "ltr" }}
+            />
+            {form.loginEmail && (
+              <p className="text-xs mt-1" style={{ color: C.steel }}>
+                מייל ההתחברות שלו: <span style={{ direction: "ltr", display: "inline-block" }}>{form.loginEmail}</span> (לא ניתן לשינוי מכאן)
+              </p>
+            )}
           </div>
           <div>
             <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תפקיד</label>
@@ -4550,6 +4748,9 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
             <div>
               <div className="font-bold text-sm" style={{ color: C.ink }}>{u.name} {u.role === "manager" && "👑"}</div>
               <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>{u.phone || "ללא טלפון"}</div>
+              <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>
+                {u.contactEmail || u.loginEmail || "ללא מייל"}
+              </div>
               <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>קוד מזהה: {u.id.slice(0, 8)}</div>
             </div>
             <div className="flex gap-2">
