@@ -2598,16 +2598,30 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
     if (notifyUser) notifyUser(newTask.assignedToId, `משימה חדשה: ${newTask.title}`);
   }
 
-  function notifyWhatsapp(task) {
+  async function notifyWhatsapp(task) {
     const user = users.find((u) => u.id === task.assignedToId);
     if (!user || !user.phone) {
       showToast("לא הוגדר מספר טלפון לעובד זה");
       return;
     }
     const priorityLabel = { low: "נמוכה", normal: "רגילה", urgent: "דחופה" }[task.priority] || "רגילה";
-    const msg = encodeURIComponent(
-      `🛠️ משימה/תקלה חדשה\nכותרת: ${task.title}${task.location ? `\nמקום: ${task.location}` : ""}\nפירוט: ${task.description || "—"}\nעדיפות: ${priorityLabel}`
-    );
+    const text = `🛠️ משימה/תקלה חדשה\nכותרת: ${task.title}${task.location ? `\nמקום: ${task.location}` : ""}\nפירוט: ${task.description || "—"}\nעדיפות: ${priorityLabel}`;
+
+    if (task.imageData && navigator.share && navigator.canShare) {
+      try {
+        const res = await fetch(task.imageData);
+        const blob = await res.blob();
+        const file = new File([blob], "task.jpg", { type: blob.type || "image/jpeg" });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ text, files: [file] });
+          return;
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    }
+
+    const msg = encodeURIComponent(text);
     window.open(`https://wa.me/${user.phone.replace(/\D/g, "")}?text=${msg}`, "_blank");
   }
 
@@ -2864,21 +2878,54 @@ function NewTaskForm({ users, onSubmit, onCancel, locations }) {
 /* ---------- Admin Tab ---------- */
 function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes }) {
   const [section, setSection] = useState("products");
+  const [showNav, setShowNav] = useState(false);
+
+  const sections = [
+    ["products", "מוצרים"],
+    ["users", "עובדים"],
+    ["menu", "תפריט"],
+    ["dishtypes", "סוגי מנות"],
+    ["locations", "מקומות"],
+    ["reminders", "תזכורות"],
+    ["analytics", "ניתוח"],
+    ["settings", "ספקים"],
+  ];
 
   return (
     <div>
-      <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
-        {[["products", "מוצרים"], ["users", "עובדים"], ["menu", "תפריט"], ["dishtypes", "סוגי מנות"], ["locations", "מקומות"], ["reminders", "תזכורות"], ["analytics", "ניתוח"], ["settings", "הגדרות"]].map(([val, label]) => (
-          <button
-            key={val}
-            onClick={() => setSection(val)}
-            className="px-3 py-1 rounded-2xl text-sm font-bold whitespace-nowrap"
-            style={{ background: section === val ? C.ink : C.kraft, color: section === val ? C.paper : C.ink }}
+      <button
+        onClick={() => setShowNav(true)}
+        className="flex items-center gap-2 mb-4 px-3 py-2 rounded-2xl font-bold text-sm"
+        style={{ background: C.ink, color: C.paper }}
+      >
+        ☰ {sections.find(([v]) => v === section)?.[1]}
+      </button>
+
+      {showNav && (
+        <>
+          <div className="fixed inset-0 z-40" style={{ background: "rgba(35,31,61,0.4)" }} onClick={() => setShowNav(false)} />
+          <div
+            className="fixed top-0 right-0 bottom-0 z-50 flex flex-col wh-body"
+            style={{ width: "72%", maxWidth: 280, background: C.paper, boxShadow: "-8px 0 24px rgba(35,31,61,0.25)", borderRadius: "24px 0 0 24px" }}
           >
-            {label}
-          </button>
-        ))}
-      </div>
+            <div className="p-4" style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "24px 0 0 0" }}>
+              <div className="wh-display font-black text-lg" style={{ color: "#fff" }}>ניהול</div>
+            </div>
+            <div className="flex flex-col p-3 gap-2 flex-1 overflow-y-auto">
+              {sections.map(([val, label]) => (
+                <button
+                  key={val}
+                  onClick={() => { setSection(val); setShowNav(false); }}
+                  className="text-right px-4 py-3 rounded-2xl wh-display text-sm font-bold"
+                  style={{ background: section === val ? C.ink : "transparent", color: section === val ? "#fff" : C.ink }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
 
       {section === "products" && (
         <ProductsAdmin products={products} persistProducts={persistProducts} showToast={showToast} settings={settings} persistSettings={persistSettings} />
