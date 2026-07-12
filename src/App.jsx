@@ -526,6 +526,63 @@ function LockScreen({ onUnlock, onUseLogout }) {
   );
 }
 
+function SetNewPasswordScreen({ onDone }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  async function save() {
+    if (password.length < 6) {
+      setErr("הסיסמה חייבת להיות לפחות 6 תווים");
+      return;
+    }
+    if (password !== confirm) {
+      setErr("הסיסמאות לא תואמות");
+      return;
+    }
+    setErr("");
+    setBusy(true);
+    try {
+      await window.auth.updatePassword(password);
+      setDone(true);
+      window.location.hash = "";
+      await window.auth.signOut();
+    } catch (e) {
+      setErr(e?.message || "שגיאה בעדכון הסיסמה");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center wh-body" style={{ background: C.paper }} dir="rtl">
+      <style>{FONTS}</style>
+      <div className="w-full max-w-xs">
+        <h1 className="wh-display text-xl font-black mb-4 text-center" style={{ color: C.ink }}>קביעת סיסמה חדשה</h1>
+        {done ? (
+          <ShelfTag accent={C.sage} style={{ textAlign: "center" }}>
+            <p className="text-sm mb-3" style={{ color: C.ink }}>הסיסמה עודכנה בהצלחה!</p>
+            <button onClick={onDone} className="w-full p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
+              עבור להתחברות
+            </button>
+          </ShelfTag>
+        ) : (
+          <ShelfTag accent={C.ink} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה חדשה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} autoFocus />
+            <input value={confirm} onChange={(e) => setConfirm(e.target.value)} type="password" placeholder="אימות סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
+            <button onClick={save} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
+              {busy ? "מעדכן..." : "שמור סיסמה חדשה"}
+            </button>
+          </ShelfTag>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function AuthGate({ onAuthed }) {
   const [mode, setMode] = useState(() => (hasExistingAccount() ? "login" : "choose")); // choose | create | join | login
   const [showTerms, setShowTerms] = useState(false);
@@ -538,6 +595,25 @@ function AuthGate({ onAuthed }) {
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmNotice, setConfirmNotice] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+
+  async function doResetPassword() {
+    if (!email.trim()) {
+      setErr("הזן את המייל שלך למעלה קודם, ואז לחץ שוב על 'שכחת סיסמה'");
+      return;
+    }
+    setErr("");
+    setResetBusy(true);
+    try {
+      await window.auth.resetPasswordForEmail(email.trim());
+      setResetSent(true);
+    } catch (e) {
+      setErr(e?.message || "שגיאה בשליחת המייל");
+    } finally {
+      setResetBusy(false);
+    }
+  }
 
   async function doCreate() {
     if (!email.trim() || !password.trim() || !orgName.trim() || !displayName.trim()) {
@@ -677,8 +753,12 @@ function AuthGate({ onAuthed }) {
             <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} autoFocus />
             <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
             {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
+            {resetSent && <p style={{ color: C.sage }} className="text-sm">נשלח מייל לאיפוס הסיסמה - בדוק את תיבת הדואר שלך.</p>}
             <button onClick={doLogin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
               {busy ? "מתחבר..." : "התחבר"}
+            </button>
+            <button onClick={doResetPassword} disabled={resetBusy} className="text-xs underline" style={{ color: C.accent }}>
+              {resetBusy ? "שולח..." : "שכחת סיסמה?"}
             </button>
             <button onClick={() => setMode("choose")} className="text-xs underline" style={{ color: C.accent }}>
               אין לי חשבון / רוצה לפתוח ארגון אחר
@@ -803,6 +883,9 @@ function Login({ users, onLogin, onFirstRun, onDisconnect }) {
 /* ---------- Main App ---------- */
 export default function App() {
   const [authChecked, setAuthChecked] = useState(false);
+  const [passwordRecovery, setPasswordRecovery] = useState(() =>
+    typeof window !== "undefined" && window.location.hash.includes("type=recovery")
+  );
   const [authProfile, setAuthProfile] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [users, setUsers] = useState([]);
@@ -1053,6 +1136,10 @@ export default function App() {
     ? notifications.filter((n) => n.userId === currentUser.id).sort((a, b) => b.createdAt - a.createdAt)
     : [];
   const unreadCount = myNotifications.filter((n) => !n.read).length;
+
+  if (passwordRecovery) {
+    return <SetNewPasswordScreen onDone={() => setPasswordRecovery(false)} />;
+  }
 
   if (!authChecked) {
     return (

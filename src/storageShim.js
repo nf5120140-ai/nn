@@ -55,6 +55,18 @@ async function signIn(email, password) {
   return data;
 }
 
+async function resetPasswordForEmail(email) {
+  const { error } = await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: window.location.origin,
+  });
+  if (error) throw error;
+}
+
+async function updatePassword(newPassword) {
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) throw error;
+}
+
 async function signOut() {
   await supabase.auth.signOut();
   resetOrgCache();
@@ -150,4 +162,6 @@ window.auth = {
   getOrgProfiles,
   updateProfile,
   deleteProfile,
+  resetPasswordForEmail,
+  updatePassword,
 };
