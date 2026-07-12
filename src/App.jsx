@@ -510,8 +510,117 @@ function disableBiometric() {
   localStorage.removeItem(BIOMETRIC_CRED_KEY);
 }
 
-const BIOMETRIC_PROMPTED_KEY = "warehouse-app-biometric-prompted";
-function hasPromptedBiometric() {
+/* ---------- OS-level notifications ---------- */
+const NOTIF_PROMPTED_KEY = "warehouse-app-notif-prompted";
+
+function notificationsSupported() {
+  return typeof window !== "undefined" && "Notification" in window;
+}
+function notificationPermission() {
+  if (!notificationsSupported()) return "unsupported";
+  return Notification.permission; // "default" | "granted" | "denied"
+}
+async function requestNotificationPermission() {
+  if (!notificationsSupported()) return "unsupported";
+  try {
+    return await Notification.requestPermission();
+  } catch (e) {
+    console.error("Notification.requestPermission failed", e);
+    return "denied";
+  }
+}
+function hasPromptedNotifications() {
+  try {
+    return localStorage.getItem(NOTIF_PROMPTED_KEY) === "true";
+  } catch (e) {
+    return true;
+  }
+}
+function markPromptedNotifications() {
+  try {
+    localStorage.setItem(NOTIF_PROMPTED_KEY, "true");
+  } catch (e) {}
+}
+
+/**
+ * Show a system notification.
+ * On Android Chrome `new Notification()` throws ("Illegal constructor"), so we must
+ * go through the service worker registration when one is available.
+ */
+async function showOsNotification(title, body, tag) {
+  if (!notificationsSupported() || Notification.permission !== "granted") return;
+  const options = {
+    body,
+    icon: "/icon-192-v2.png",
+    badge: "/icon-192-v2.png",
+    tag: tag || undefined,
+    dir: "rtl",
+    lang: "he",
+    vibrate: [200, 100, 200],
+  };
+  try {
+    const reg = navigator.serviceWorker ? await navigator.serviceWorker.getRegistration() : null;
+    if (reg && typeof reg.showNotification === "function") {
+      await reg.showNotification(title, options);
+      return;
+    }
+    new Notification(title, options);
+  } catch (e) {
+    console.error("showOsNotification failed", e);
+  }
+}
+
+function NotificationsToggle({ showToast }) {
+  const [perm, setPerm] = useState(() => notificationPermission());
+
+  if (perm === "unsupported") return null;
+
+  async function enable() {
+    const result = await requestNotificationPermission();
+    setPerm(result);
+    markPromptedNotifications();
+    if (result === "granted") {
+      showToast("התראות הופעלו במכשיר הזה");
+      showOsNotification("ההתראות פעילות ✓", "תקבל התראה כאן כשתוקצה לך משימה חדשה.", "test");
+    } else if (result === "denied") {
+      showToast("ההתראות חסומות - יש לאפשר אותן בהגדרות הדפדפן/האפליקציה");
+    }
+  }
+
+  if (perm === "granted") {
+    return (
+      <div
+        className="mx-3 mb-2 py-2 rounded-2xl font-bold text-sm text-center"
+        style={{ background: C.sage, color: "#fff" }}
+      >
+        🔔 התראות פעילות במכשיר הזה
+      </div>
+    );
+  }
+
+  if (perm === "denied") {
+    return (
+      <div
+        className="mx-3 mb-2 py-2 px-3 rounded-2xl text-xs text-center"
+        style={{ background: C.kraft, color: C.steel, border: `1px solid ${C.kraftDark}` }}
+      >
+        🔕 ההתראות חסומות. כדי להפעיל: הגדרות הדפדפן ← הרשאות אתר ← התראות.
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={enable}
+      className="mx-3 mb-2 py-2 rounded-2xl font-bold text-sm text-center"
+      style={{ background: C.paper, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+    >
+      🔔 הפעל התראות למכשיר הזה
+    </button>
+  );
+}
+
+const BIOMETRIC_PROMPTED_KEY = "warehouse-app-biometric-prompted";function hasPromptedBiometric() {
   try {
     return localStorage.getItem(BIOMETRIC_PROMPTED_KEY) === "true";
   } catch (e) {
@@ -1021,6 +1130,8 @@ export default function App() {
   const [showMenu, setShowMenu] = useState(false);
   const [locked, setLocked] = useState(() => isBiometricEnabled());
   const [biometricPrompt, setBiometricPrompt] = useState(false);
+  const [notifBanner, setNotifBanner] = useState(false);
+  const seenNotifIdsRef = useRef(null);
 
   useEffect(() => {
     (async () => {
@@ -1069,6 +1180,7 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return;
     setLoaded(false);
+    seenNotifIdsRef.current = null;
     (async () => {
       const [orgProfiles, p, t, s, n, m, w, r, sl, loc, dt] = await Promise.all([
         window.auth.getOrgProfiles(),
@@ -1203,6 +1315,34 @@ export default function App() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, currentUser?.id]);
+
+  /* Fire an OS notification for any notification that newly appears for me.
+     The first pass only seeds the baseline, so existing/old items stay quiet. */
+  useEffect(() => {
+    if (!loaded || !currentUser) return;
+    const mine = notifications.filter((n) => n.userId === currentUser.id);
+
+    if (seenNotifIdsRef.current === null) {
+      seenNotifIdsRef.current = new Set(mine.map((n) => n.id));
+      return;
+    }
+
+    mine.forEach((n) => {
+      if (seenNotifIdsRef.current.has(n.id)) return;
+      seenNotifIdsRef.current.add(n.id);
+      if (n.read) return;
+      showOsNotification("משימה חדשה 📋", n.message, n.id);
+    });
+  }, [notifications, loaded, currentUser?.id]);
+
+  /* Offer to turn on notifications once, after the biometric prompt is out of the way. */
+  useEffect(() => {
+    if (!loaded || !currentUser || locked || biometricPrompt) return;
+    if (!notificationsSupported()) return;
+    if (notificationPermission() !== "default") return;
+    if (hasPromptedNotifications()) return;
+    setNotifBanner(true);
+  }, [loaded, currentUser?.id, locked, biometricPrompt]);
 
   function showToast(msg) {
     setToast(msg);
@@ -1444,6 +1584,47 @@ export default function App() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto px-4 py-4">
+        {notifBanner && (
+          <ShelfTag accent={C.mustard} style={{ marginBottom: 16 }}>
+            <div className="flex items-start gap-3">
+              <div className="text-2xl">🔔</div>
+              <div className="flex-1">
+                <div className="wh-display font-bold text-sm mb-1" style={{ color: C.ink }}>
+                  להפעיל התראות?
+                </div>
+                <p className="text-xs mb-3" style={{ color: C.steel }}>
+                  תקבל התראה בטלפון ברגע שמוקצית לך משימה חדשה, בלי לפתוח את האפליקציה.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={async () => {
+                      const result = await requestNotificationPermission();
+                      markPromptedNotifications();
+                      setNotifBanner(false);
+                      if (result === "granted") {
+                        showToast("התראות הופעלו");
+                        showOsNotification("ההתראות פעילות ✓", "תקבל התראה כאן על משימות חדשות.", "test");
+                      } else {
+                        showToast("ההתראות לא הופעלו");
+                      }
+                    }}
+                    className="px-4 py-2 rounded-2xl font-bold text-sm"
+                    style={{ background: C.ink, color: C.paper }}
+                  >
+                    הפעל
+                  </button>
+                  <button
+                    onClick={() => { markPromptedNotifications(); setNotifBanner(false); }}
+                    className="px-4 py-2 rounded-2xl text-sm"
+                    style={{ color: C.steel }}
+                  >
+                    לא עכשיו
+                  </button>
+                </div>
+              </div>
+            </div>
+          </ShelfTag>
+        )}
         {tab === "inventory" && (
           <InventoryTab
             products={products}
@@ -1558,6 +1739,7 @@ export default function App() {
                 </div>
               </div>
             )}
+            <NotificationsToggle showToast={showToast} />
             <BiometricToggle currentUser={currentUser} showToast={showToast} />
             <button
               onClick={async () => { await window.auth.signOut(); setAuthProfile(null); setShowMenu(false); }}
@@ -3131,7 +3313,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
         <ProductsAdmin products={products} persistProducts={persistProducts} showToast={showToast} settings={settings} persistSettings={persistSettings} />
       )}
       {section === "users" && (
-        <UsersAdmin users={users} updateUserProfile={updateUserProfile} deleteUserProfile={deleteUserProfile} showToast={showToast} currentUser={currentUser} />
+        <UsersAdmin users={users} updateUserProfile={updateUserProfile} deleteUserProfile={deleteUserProfile} showToast={showToast} currentUser={currentUser} settings={settings} persistSettings={persistSettings} />
       )}
       {section === "menu" && (
         <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} dishTypes={dishTypes} />
@@ -4542,13 +4724,19 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
   );
 }
 
-function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, currentUser }) {
+function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, currentUser, settings, persistSettings }) {
   const [editingId, setEditingId] = useState(null);
   const [form, setForm] = useState(null);
   const [copied, setCopied] = useState(false);
   const [invitePhone, setInvitePhone] = useState("");
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteChannel, setInviteChannel] = useState("whatsapp");
+  const [apkUrl, setApkUrl] = useState(settings?.apkUrl || "");
+
+  async function saveApkUrl() {
+    await persistSettings({ ...settings, apkUrl: apkUrl.trim() });
+    showToast("קישור ה-APK נשמר");
+  }
 
   function startEdit(u) {
     setForm({ contactEmail: "", ...u });
@@ -4587,11 +4775,28 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
   }
 
   function sendInvite() {
-    const msg = `שלום! מוזמן/ת להצטרף לאפליקציית ניהול המשימות והמלאי שלנו.\n\n1. פתח את האתר\n2. לחץ "הצטרף לארגון קיים"\n3. הזן את מזהה הארגון: ${currentUser.orgId}\n4. הירשם עם המייל והסיסמה שלך`;
+    const siteUrl = typeof window !== "undefined" ? window.location.origin : "";
+    const apkUrl = (settings?.apkUrl || "").trim();
+
+    const lines = [
+      "שלום! מוזמן/ת להצטרף לאפליקציית ניהול המשימות והמלאי שלנו.",
+      "",
+      `🔗 קישור לאפליקציה: ${siteUrl}`,
+    ];
+    if (apkUrl) lines.push(`📱 להורדת האפליקציה לאנדרואיד (APK): ${apkUrl}`);
+    lines.push(
+      "",
+      "איך נרשמים:",
+      "1. פתח את הקישור",
+      '2. לחץ "הצטרף לארגון קיים"',
+      `3. הזן את מזהה הארגון: ${currentUser.orgId}`,
+      "4. הירשם עם המייל והסיסמה שלך"
+    );
+
     const res = sendViaChannel(inviteChannel, {
       phone: invitePhone,
       email: inviteEmail,
-      text: msg,
+      text: lines.join("\n"),
       subject: "הזמנה להצטרף לאפליקציית ניהול המשימות והמלאי",
     });
     if (!res.ok) showToast(res.error);
@@ -4638,9 +4843,28 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
         <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.ink, color: "#fff", direction: "ltr", wordBreak: "break-all", fontFamily: "monospace" }}>
           {currentUser.orgId}
         </div>
-        <button onClick={copyOrgId} className="w-full py-1.5 rounded-xl text-xs font-bold" style={{ background: C.paper, color: C.ink }}>
+        <button onClick={copyOrgId} className="w-full py-1.5 rounded-xl text-xs font-bold mb-3" style={{ background: C.paper, color: C.ink }}>
           {copied ? "הועתק ✓" : "העתק מזהה ארגון"}
         </button>
+
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+          קישור להורדת APK (אופציונלי - ייכנס להזמנה)
+        </label>
+        <div className="flex gap-2">
+          <input
+            value={apkUrl}
+            onChange={(e) => setApkUrl(e.target.value)}
+            placeholder="https://.../app.apk"
+            className="flex-1 p-2 rounded-xl border text-sm"
+            style={{ borderColor: C.kraftDark, direction: "ltr" }}
+          />
+          <button onClick={saveApkUrl} className="px-3 rounded-xl font-bold text-sm" style={{ background: C.ink, color: C.paper }}>
+            שמור
+          </button>
+        </div>
+        <p className="text-xs mt-1" style={{ color: C.steel }}>
+          אם ריק - ההזמנה תכיל רק את קישור האתר (שממנו אפשר להתקין כ-PWA).
+        </p>
       </ShelfTag>
 
       {editingId && form && (
