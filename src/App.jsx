@@ -1102,8 +1102,99 @@ function Login({ users, onLogin, onFirstRun, onDisconnect }) {
   );
 }
 
+/* ---------- Splash / welcome screen ---------- */
+const SPLASH_CSS = `
+@keyframes wh-logo-in {
+  0%   { opacity: 0; transform: scale(0.82) translateY(12px); }
+  60%  { opacity: 1; transform: scale(1.03) translateY(0); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes wh-text-in {
+  0%   { opacity: 0; transform: translateY(14px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes wh-ring {
+  0%   { transform: scale(0.9); opacity: 0.45; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+@keyframes wh-bar {
+  0%   { width: 0%; }
+  100% { width: 100%; }
+}
+@keyframes wh-fade-out {
+  0%   { opacity: 1; }
+  100% { opacity: 0; visibility: hidden; }
+}
+.wh-splash        { animation: wh-fade-out 420ms ease-in 1580ms forwards; }
+.wh-splash-logo   { animation: wh-logo-in 700ms cubic-bezier(.2,.8,.2,1) both; }
+.wh-splash-ring   { animation: wh-ring 1800ms ease-out infinite; }
+.wh-splash-title  { animation: wh-text-in 600ms ease-out 280ms both; }
+.wh-splash-sub    { animation: wh-text-in 600ms ease-out 440ms both; }
+.wh-splash-bar    { animation: wh-bar 1700ms ease-in-out both; }
+`;
+
+function SplashScreen() {
+  return (
+    <div
+      className="wh-splash fixed inset-0 z-[100] flex flex-col items-center justify-center wh-body"
+      style={{ background: `linear-gradient(160deg, ${C.accent} 0%, ${C.accent2} 100%)` }}
+      dir="rtl"
+    >
+      <style>{FONTS}</style>
+      <style>{SPLASH_CSS}</style>
+
+      <div className="relative flex items-center justify-center mb-7">
+        <span
+          className="wh-splash-ring absolute rounded-full"
+          style={{ width: 168, height: 168, border: "2px solid rgba(255,255,255,0.7)" }}
+        />
+        <span
+          className="wh-splash-ring absolute rounded-full"
+          style={{ width: 168, height: 168, border: "2px solid rgba(255,255,255,0.7)", animationDelay: "600ms" }}
+        />
+        <div
+          className="wh-splash-logo rounded-3xl flex items-center justify-center"
+          style={{
+            width: 132,
+            height: 132,
+            background: "#fff",
+            boxShadow: "0 18px 44px rgba(20,33,61,0.28)",
+          }}
+        >
+          <img
+            src="/icon-512-v2.png"
+            alt=""
+            style={{ width: 104, height: 104, objectFit: "contain" }}
+          />
+        </div>
+      </div>
+
+      <div
+        className="wh-splash-title wh-display text-center font-black"
+        style={{ color: "#fff", fontSize: 26, letterSpacing: "-0.5px", textShadow: "0 2px 12px rgba(20,33,61,0.25)" }}
+      >
+        ברוכים הבאים
+      </div>
+      <div
+        className="wh-splash-sub wh-display text-center font-bold mt-1.5"
+        style={{ color: "rgba(255,255,255,0.95)", fontSize: 19 }}
+      >
+        לניהול משק חכם
+      </div>
+
+      <div
+        className="mt-9 rounded-full overflow-hidden"
+        style={{ width: 132, height: 3, background: "rgba(255,255,255,0.28)" }}
+      >
+        <div className="wh-splash-bar h-full rounded-full" style={{ background: "#fff" }} />
+      </div>
+    </div>
+  );
+}
+
 /* ---------- Main App ---------- */
 export default function App() {
+  const [splashDone, setSplashDone] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [passwordRecovery, setPasswordRecovery] = useState(() =>
     typeof window !== "undefined" && window.location.hash.includes("type=recovery")
@@ -1132,6 +1223,11 @@ export default function App() {
   const [biometricPrompt, setBiometricPrompt] = useState(false);
   const [notifBanner, setNotifBanner] = useState(false);
   const seenNotifIdsRef = useRef(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSplashDone(true), 2100);
+    return () => clearTimeout(t);
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -1429,6 +1525,10 @@ export default function App() {
     ? notifications.filter((n) => n.userId === currentUser.id).sort((a, b) => b.createdAt - a.createdAt)
     : [];
   const unreadCount = myNotifications.filter((n) => !n.read).length;
+
+  if (!splashDone) {
+    return <SplashScreen />;
+  }
 
   if (passwordRecovery) {
     return <SetNewPasswordScreen onDone={() => setPasswordRecovery(false)} />;
