@@ -3116,7 +3116,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
     if (notifyUser) notifyUser(newTask.assignedToId, `משימה חדשה: ${newTask.title}`);
   }
 
-  async function notifyWhatsapp(task) {
+  async function notifyWhatsapp(task, mode = "share") {
     const user = users.find((u) => u.id === task.assignedToId);
     if (!user || !user.phone) {
       showToast("לא הוגדר מספר טלפון לעובד זה");
@@ -3132,7 +3132,15 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
 
     const waUrl = `https://wa.me/${user.phone.replace(/\D/g, "")}?text=${encodeURIComponent(text)}`;
 
+    // "chat" mode: open this employee's chat directly. WhatsApp's wa.me protocol
+    // has no media parameter, so this is always text-only - by design.
+    if (mode === "chat") {
+      window.open(waUrl, "_blank");
+      return;
+    }
+
     if (!photo) {
+      showToast("למשימה הזו אין תמונה מצורפת - נשלח טקסט בלבד");
       window.open(waUrl, "_blank");
       return;
     }
@@ -3146,15 +3154,25 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
       file = dataUrlToFile(photo, "task.jpg");
     } catch (e) {
       console.error("could not build file from image data", e);
+      showToast("שגיאה: לא ניתן לקרוא את התמונה השמורה");
     }
 
-    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+    if (!navigator.share) {
+      showToast("הדפדפן הזה לא תומך בשיתוף כלל (נסה מהאפליקציה המותקנת)");
+    } else if (file && !navigator.canShare) {
+      showToast("הדפדפן לא תומך בבדיקת שיתוף קבצים");
+    } else if (file && !navigator.canShare({ files: [file] })) {
+      showToast("הדפדפן הזה לא מרשה שיתוף קבצים - נסה מהאפליקציה המותקנת באנדרואיד");
+    }
+
+    if (file && navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
         await navigator.share({ text, files: [file] });
         return;
       } catch (e) {
         if (e && e.name === "AbortError") return; // user closed the share sheet on purpose
         console.error("navigator.share failed", e);
+        showToast(`השיתוף נכשל: ${e?.name || "שגיאה"}`);
       }
     }
 
@@ -3332,9 +3350,30 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
                 >
                   ✏️ ערוך
                 </button>
-                <button onClick={() => notifyWhatsapp(t)} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: "#25D366", color: "#fff" }}>
-                  עדכן בוואטסאפ
-                </button>
+                {(() => {
+                  const loc = (locations || []).find((l) => l.id === t.locationId);
+                  const hasPhoto = !!(t.imageData || loc?.imageData);
+                  return (
+                    <>
+                      <button
+                        onClick={() => notifyWhatsapp(t, "chat")}
+                        className="px-3 py-1 rounded-2xl text-sm font-bold"
+                        style={{ background: "#25D366", color: "#fff" }}
+                      >
+                        💬 שלח לצ'אט
+                      </button>
+                      {hasPhoto && (
+                        <button
+                          onClick={() => notifyWhatsapp(t, "share")}
+                          className="px-3 py-1 rounded-2xl text-sm font-bold"
+                          style={{ background: C.accent, color: "#fff" }}
+                        >
+                          🖼️ שתף עם תמונה
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
                 <button
                   onClick={() => { if (window.confirm("למחוק את המשימה הזו?")) deleteTask(t); }}
                   className="px-3 py-1 rounded-2xl text-sm font-bold"
