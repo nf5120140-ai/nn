@@ -191,7 +191,9 @@ const ADMIN_SECTIONS = [
   { id: "settings", label: "הגדרות" },
 ];
 
-const DEFAULT_PERMISSIONS = { inventory: true, order: true, tasks: true, unitRequest: false, admin: {} };
+/* New users start locked down: tasks only. The manager opens up whatever else they need
+   per-user in the employees screen. */
+const DEFAULT_PERMISSIONS = { inventory: false, order: false, tasks: true, unitRequest: false, admin: {} };
 
 /** A "unit" (e.g. the daycare) requests goods out of OUR stock, not from a supplier. */
 function canRequestFromStock(user) {
@@ -6844,6 +6846,37 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
     showToast("קישור ה-APK נשמר");
   }
 
+  async function importInviteContact() {
+    if (!("contacts" in navigator && "ContactsManager" in window)) {
+      showToast("ייבוא מאנשי קשר זמין רק ב-Chrome באנדרואיד");
+      return;
+    }
+    try {
+      const contacts = await navigator.contacts.select(["name", "tel", "email"], { multiple: false });
+      if (!contacts || contacts.length === 0) return;
+      const c = contacts[0];
+      let digits = String(c.tel?.[0] || "").replace(/\D/g, "");
+      if (digits.startsWith("0")) digits = "972" + digits.slice(1);
+      const mail = (c.email?.[0] || "").trim();
+
+      if (digits) setInvitePhone(digits);
+      if (mail) setInviteEmail(mail);
+
+      // Land them on a channel we actually have a destination for.
+      if (inviteChannel === "email" && !mail && digits) setInviteChannel("whatsapp");
+      if (inviteChannel !== "email" && !digits && mail) setInviteChannel("email");
+
+      if (!digits && !mail) {
+        showToast("לאיש הקשר הזה אין טלפון או מייל שמורים");
+        return;
+      }
+      showToast(`נטען: ${c.name?.[0] || "איש קשר"}`);
+    } catch (e) {
+      console.error("contact import failed", e);
+      showToast("הייבוא בוטל או נכשל");
+    }
+  }
+
   function startEdit(u) {
     setForm({ contactEmail: "", ...u });
     setEditingId(u.id);
@@ -6938,6 +6971,14 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
             />
           )}
           <button
+            onClick={importInviteContact}
+            title="ייבא מאנשי קשר"
+            className="px-3 rounded-xl font-bold text-sm"
+            style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+          >
+            📇
+          </button>
+          <button
             onClick={sendInvite}
             className="px-3 rounded-xl font-bold text-sm whitespace-nowrap"
             style={{ background: channelMeta(inviteChannel).color, color: "#fff" }}
@@ -6945,8 +6986,10 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
             שלח הזמנה
           </button>
         </div>
-        <p className="text-xs mb-1" style={{ color: C.steel }}>או שתף ידנית את מזהה הארגון:</p>
-        <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.ink, color: "#fff", direction: "ltr", wordBreak: "break-all", fontFamily: "monospace" }}>
+        <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.paper, color: C.steel, border: `1px solid ${C.kraftDark}` }}>
+          ℹ️ עובד חדש שנרשם רואה <b>משימות בלבד</b> כברירת מחדל. פתח לו מסכים נוספים כאן למטה, בעריכת העובד.
+        </div>
+        <p className="text-xs mb-1" style={{ color: C.steel }}>או שתף ידנית את מזהה הארגון:</p>        <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.ink, color: "#fff", direction: "ltr", wordBreak: "break-all", fontFamily: "monospace" }}>
           {currentUser.orgId}
         </div>
         <button onClick={copyOrgId} className="w-full py-1.5 rounded-xl text-xs font-bold mb-3" style={{ background: C.paper, color: C.ink }}>
