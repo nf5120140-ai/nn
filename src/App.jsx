@@ -45,6 +45,9 @@ const KEYS = {
   locations: "kitchen-locations",
   dishTypes: "kitchen-dish-types",
   taskCategories: "kitchen-task-categories",
+  orderRequests: "kitchen-order-requests",
+  unitRequests: "kitchen-unit-requests",
+  unitTemplates: "kitchen-unit-templates",
 };
 
 const SETUP_SQL = `create table kv_store (
@@ -157,6 +160,62 @@ function markDirty(key) {
 }
 function clearDirty(key) {
   setDirtyKeys(getDirtyKeys().filter((k) => k !== key));
+}
+
+/* ---------- Roles & permissions ----------
+   manager    - full access, the only role that can send an order to a supplier
+   supervisor - "מנהל מטבח": sees exactly the tabs and admin screens the manager grants,
+                and submits order requests for approval instead of sending them out
+   worker     - tab-level permissions only */
+const ROLES = [
+  { id: "manager", label: "מנהל ראשי", desc: "גישה מלאה, מאשר הזמנות" },
+  { id: "supervisor", label: "מנהל מטבח", desc: "גישה חלקית, שולח בקשות הזמנה לאישור" },
+  { id: "staff", label: "עובד", desc: "גישה בסיסית לפי הרשאות" },
+];
+function roleLabel(role) {
+  return ROLES.find((r) => r.id === role)?.label || "עובד";
+}
+
+/* Admin screens a supervisor can be granted. Managers always get all of them. */
+const ADMIN_SECTIONS = [
+  { id: "products", label: "מוצרים" },
+  { id: "menu", label: "תפריט" },
+  { id: "dishtypes", label: "סוגי מנות" },
+  { id: "taskcats", label: "קטגוריות משימות" },
+  { id: "locations", label: "מקומות" },
+  { id: "reminders", label: "תזכורות" },
+  { id: "analytics", label: "אנליטיקה" },
+  { id: "orderrequests", label: "בקשות הזמנה" },
+  { id: "unitrequests", label: "בקשות מהמחסן" },
+  { id: "users", label: "עובדים" },
+  { id: "settings", label: "הגדרות" },
+];
+
+const DEFAULT_PERMISSIONS = { inventory: true, order: true, tasks: true, unitRequest: false, admin: {} };
+
+/** A "unit" (e.g. the daycare) requests goods out of OUR stock, not from a supplier. */
+function canRequestFromStock(user) {
+  return isManager(user) || user?.permissions?.unitRequest === true;
+}
+
+const isManager = (u) => u?.role === "manager";
+const isSupervisor = (u) => u?.role === "supervisor";
+
+/** Can this user open a given admin screen? */
+function canSeeAdminSection(user, sectionId) {
+  if (isManager(user)) return true;
+  if (!isSupervisor(user)) return false;
+  return !!user?.permissions?.admin?.[sectionId];
+}
+/** Does this user have any admin screen at all (i.e. should the "ניהול" menu item show)? */
+function hasAnyAdminSection(user) {
+  if (isManager(user)) return true;
+  if (!isSupervisor(user)) return false;
+  return ADMIN_SECTIONS.some((s) => user?.permissions?.admin?.[s.id]);
+}
+/** Only a manager may push an order out to a supplier. Everyone else requests approval. */
+function canSendOrders(user) {
+  return isManager(user);
 }
 
 const isOnline = () => (typeof navigator === "undefined" ? true : navigator.onLine !== false);
@@ -1420,6 +1479,332 @@ function SplashScreen() {
   );
 }
 
+/* ---------- Unit requests (e.g. the daycare ordering out of our stock) ---------- */
+
+/** ISO date (yyyy-mm-dd) of the Sunday that starts the current week. */
+function weekStartIso(d = new Date()) {
+  const x = new Date(d);
+  x.setDate(x.getDate() - x.getDay());
+  x.setHours(0, 0, 0, 0);
+  return x.toISOString().slice(0, 10);
+}
+function weekLabel(iso) {
+  const start = new Date(iso);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  const f = (d) => d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+  return `${f(start)} – ${f(end)}`;
+}
+const UNIT_STATUS = {
+  open: { label: "פתוחה (ניתן להוסיף)", color: "#5B6B85" },
+  submitted: { label: "נשלחה - ממתינה לאישור", color: "#FFB347" },
+  fulfilled: { label: "נופקה ✓", color: "#5CB85C" },
+  rejected: { label: "נדחתה", color: "#FF5A5F" },
+};
+
+function UnitRequestTab({
+  products,
+  unitRequests,
+  persistUnitRequests,
+  unitTemplates,
+  persistUnitTemplates,
+  currentUser,
+  showToast,
+  notifyManagers,
+}) {
+  const [view, setView] = useState("current"); // current | template | history
+  const [search, setSearch] = useState("");
+  const [catFilter, setCatFilter] = useState("all");
+
+  const thisWeek = weekStartIso();
+  const mine = (unitRequests || []).filter((r) => r.unitId === currentUser.id);
+  const current = mine.find((r) => r.weekOf === thisWeek && (r.status === "open" || r.status === "submitted"));
+  const history = mine.filter((r) => r !== current).sort((a, b) => b.createdAt - a.createdAt);
+  const template = (unitTemplates || {})[currentUser.id] || [];
+
+  // Only products the manager exposed to units.
+  const catalog = products.filter((p) => p.unitVisible !== false);
+  const categories = Array.from(new Set(catalog.map((p) => p.category || "ללא קטגוריה")));
+  const filtered = catalog
+    .filter((p) => (search ? p.name.includes(search) : true))
+    .filter((p) => (catFilter === "all" ? true : (p.category || "ללא קטגוריה") === catFilter));
+
+  const locked = current?.status === "submitted";
+
+  async function upsertCurrent(items) {
+    const base = current || {
+      id: genId(),
+      unitId: currentUser.id,
+      unitName: currentUser.name,
+      weekOf: thisWeek,
+      status: "open",
+      createdAt: Date.now(),
+      items: [],
+      note: "",
+    };
+    const updated = { ...base, items, updatedAt: Date.now() };
+    const others = (unitRequests || []).filter((r) => r.id !== updated.id);
+    await persistUnitRequests([...others, updated]);
+  }
+
+  async function setQty(product, qty) {
+    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
+    const q = Math.max(0, Number(qty) || 0);
+    const items = (current?.items || []).filter((i) => i.productId !== product.id);
+    if (q > 0) items.push({ productId: product.id, name: product.name, unit: product.unit, qty: q });
+    await upsertCurrent(items);
+  }
+
+  async function loadFromTemplate() {
+    if (locked) return showToast("הבקשה כבר נשלחה");
+    if (template.length === 0) return showToast("לא הוגדרה רשימה שבועית קבועה");
+    const items = template
+      .map((t) => {
+        const p = catalog.find((x) => x.id === t.productId);
+        return p ? { productId: p.id, name: p.name, unit: p.unit, qty: t.qty } : null;
+      })
+      .filter(Boolean);
+    await upsertCurrent(items);
+    showToast(`נטענו ${items.length} מוצרים מהרשימה הקבועה`);
+  }
+
+  async function saveAsTemplate() {
+    const items = (current?.items || []).map((i) => ({ productId: i.productId, qty: i.qty }));
+    if (items.length === 0) return showToast("אין מוצרים לשמור");
+    await persistUnitTemplates({ ...(unitTemplates || {}), [currentUser.id]: items });
+    showToast("נשמר כרשימה שבועית קבועה ✓");
+  }
+
+  async function submit() {
+    if (!current || (current.items || []).length === 0) return showToast("הבקשה ריקה");
+    const others = (unitRequests || []).filter((r) => r.id !== current.id);
+    await persistUnitRequests([...others, { ...current, status: "submitted", submittedAt: Date.now() }]);
+    if (notifyManagers) {
+      await notifyManagers(`🧺 ${currentUser.name} שלח בקשה שבועית (${current.items.length} מוצרים) - ממתינה לאישורך`);
+    }
+    showToast("הבקשה נשלחה למחסן ✓");
+  }
+
+  async function reopen() {
+    const others = (unitRequests || []).filter((r) => r.id !== current.id);
+    await persistUnitRequests([...others, { ...current, status: "open" }]);
+    showToast("הבקשה נפתחה מחדש לעריכה");
+  }
+
+  const qtyOf = (id) => (current?.items || []).find((i) => i.productId === id)?.qty || 0;
+  const totalItems = (current?.items || []).length;
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-4">
+        {[["current", "הבקשה השבועית"], ["template", "רשימה קבועה"], ["history", "היסטוריה"]].map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setView(id)}
+            className="flex-1 py-2 rounded-2xl text-sm font-bold"
+            style={{ background: view === id ? C.ink : C.kraft, color: view === id ? C.paper : C.ink }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "current" && (
+        <>
+          <ShelfTag accent={current ? UNIT_STATUS[current.status].color : C.steel} style={{ marginBottom: 16 }}>
+            <div className="flex justify-between items-center">
+              <div>
+                <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
+                  שבוע {weekLabel(thisWeek)}
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: C.steel }}>
+                  {current ? `${totalItems} מוצרים · ${UNIT_STATUS[current.status].label}` : "עדיין לא התחלת בקשה לשבוע הזה"}
+                </div>
+              </div>
+              {template.length > 0 && !locked && (
+                <button onClick={loadFromTemplate} className="text-xs font-bold px-3 py-2 rounded-2xl" style={{ background: C.accent, color: "#fff" }}>
+                  טען רשימה קבועה
+                </button>
+              )}
+            </div>
+            {locked && (
+              <button onClick={reopen} className="w-full mt-2 py-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
+                פתח מחדש לעריכה
+              </button>
+            )}
+          </ShelfTag>
+
+          {totalItems > 0 && (
+            <ShelfTag accent={C.sage} style={{ marginBottom: 16 }}>
+              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>מה ביקשת</div>
+              <div className="flex flex-col gap-1.5">
+                {(current.items || []).map((i) => (
+                  <div key={i.productId} className="flex justify-between text-sm">
+                    <span style={{ color: C.ink }}>{i.name}</span>
+                    <span className="font-bold" style={{ color: C.ink }}>{i.qty} {i.unit}</span>
+                  </div>
+                ))}
+              </div>
+              {!locked && (
+                <div className="flex gap-2 mt-3">
+                  <button onClick={submit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
+                    שלח למחסן
+                  </button>
+                  <button onClick={saveAsTemplate} className="px-3 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+                    שמור כקבועה
+                  </button>
+                </div>
+              )}
+            </ShelfTag>
+          )}
+
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="חיפוש מוצר..."
+            className="w-full p-3 rounded-2xl border mb-3"
+            style={{ borderColor: C.kraftDark, background: "#fff" }}
+          />
+
+          <div className="flex gap-2 overflow-x-auto pb-2 mb-3">
+            <button
+              onClick={() => setCatFilter("all")}
+              className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
+              style={{ background: catFilter === "all" ? C.ink : "#fff", color: catFilter === "all" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              הכל
+            </button>
+            {categories.map((c) => {
+              const col = categoryColor(c);
+              const active = catFilter === c;
+              return (
+                <button
+                  key={c}
+                  onClick={() => setCatFilter(c)}
+                  className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
+                  style={{ background: active ? col : "#fff", color: active ? "#fff" : col, border: `1.5px solid ${col}` }}
+                >
+                  {c}
+                </button>
+              );
+            })}
+          </div>
+
+          {catalog.length === 0 && (
+            <ShelfTag accent={C.steel}>
+              <p className="text-sm text-center" style={{ color: C.steel }}>
+                המנהל עדיין לא פתח מוצרים להזמנה. פנה אליו.
+              </p>
+            </ShelfTag>
+          )}
+
+          <div className="flex flex-col gap-2">
+            {filtered.map((p) => {
+              const q = qtyOf(p.id);
+              return (
+                <ShelfTag key={p.id} accent={q > 0 ? C.sage : C.kraftDark}>
+                  <div className="flex justify-between items-center">
+                    <div className="flex gap-2 items-center">
+                      {p.imageData && (
+                        <img src={p.imageData} alt="" className="rounded-xl" style={{ width: 44, height: 44, objectFit: "cover" }} />
+                      )}
+                      <div>
+                        <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
+                        <div className="text-xs" style={{ color: C.steel }}>{p.category || "ללא קטגוריה"}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setQty(p, q - 1)}
+                        disabled={locked || q === 0}
+                        className="w-8 h-8 rounded-xl font-bold"
+                        style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked || q === 0 ? 0.4 : 1 }}
+                      >
+                        −
+                      </button>
+                      <input
+                        type="number"
+                        value={q === 0 ? "" : q}
+                        onChange={(e) => setQty(p, e.target.value)}
+                        disabled={locked}
+                        placeholder="0"
+                        className="w-14 text-center p-1.5 rounded-xl border"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                      <button
+                        onClick={() => setQty(p, q + 1)}
+                        disabled={locked}
+                        className="w-8 h-8 rounded-xl font-bold"
+                        style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}
+                      >
+                        +
+                      </button>
+                    </div>
+                  </div>
+                </ShelfTag>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {view === "template" && (
+        <ShelfTag accent={C.accent}>
+          <div className="wh-display font-bold text-sm mb-1" style={{ color: C.ink }}>הרשימה השבועית הקבועה</div>
+          <p className="text-xs mb-3" style={{ color: C.steel }}>
+            הדברים שאתם מזמינים כל שבוע. בנו בקשה בלשונית "הבקשה השבועית", לחצו "שמור כקבועה", ומאז אפשר לטעון אותה בלחיצה אחת בכל שבוע.
+          </p>
+          {template.length === 0 ? (
+            <p className="text-sm text-center py-4" style={{ color: C.steel }}>עדיין לא הוגדרה רשימה קבועה</p>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {template.map((t) => {
+                const p = products.find((x) => x.id === t.productId);
+                if (!p) return null;
+                return (
+                  <div key={t.productId} className="flex justify-between text-sm">
+                    <span style={{ color: C.ink }}>{p.name}</span>
+                    <span className="font-bold" style={{ color: C.ink }}>{t.qty} {p.unit}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </ShelfTag>
+      )}
+
+      {view === "history" && (
+        <div className="flex flex-col gap-2">
+          {history.length === 0 && (
+            <p className="text-sm text-center py-8" style={{ color: C.steel }}>אין בקשות קודמות</p>
+          )}
+          {history.map((r) => {
+            const st = UNIT_STATUS[r.status] || UNIT_STATUS.open;
+            return (
+              <ShelfTag key={r.id} accent={st.color}>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <div className="font-bold text-sm" style={{ color: C.ink }}>שבוע {weekLabel(r.weekOf)}</div>
+                    <div className="text-xs" style={{ color: C.steel }}>{(r.items || []).length} מוצרים</div>
+                  </div>
+                  <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: st.color, color: "#fff" }}>
+                    {st.label}
+                  </span>
+                </div>
+                {r.managerNote && (
+                  <div className="text-xs mt-2 p-2 rounded-xl" style={{ background: C.paper, color: C.steel }}>
+                    הערת המחסן: {r.managerNote}
+                  </div>
+                )}
+              </ShelfTag>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Main App ---------- */
 export default function App() {
   const [splashDone, setSplashDone] = useState(false);
@@ -1441,6 +1826,9 @@ export default function App() {
   const [locations, setLocations] = useState([]);
   const [dishTypes, setDishTypes] = useState([]);
   const [taskCategories, setTaskCategories] = useState([]);
+  const [orderRequests, setOrderRequests] = useState([]);
+  const [unitRequests, setUnitRequests] = useState([]);
+  const [unitTemplates, setUnitTemplates] = useState({});
   const [currentUser, setCurrentUser] = useState(null);
   const [tab, setTab] = useState("tasks");
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -1498,7 +1886,7 @@ export default function App() {
         phone: authProfile.phone || "",
         role: authProfile.role,
         orgId: authProfile.org_id,
-        permissions: authProfile.permissions || { inventory: true, order: true, tasks: true },
+        permissions: { ...DEFAULT_PERMISSIONS, ...(authProfile.permissions || {}) },
       });
     } else {
       setCurrentUser(null);
@@ -1507,8 +1895,16 @@ export default function App() {
 
   useEffect(() => {
     if (!currentUser) return;
-    if (currentUser.role === "manager") return;
-    const perms = currentUser.permissions || { inventory: true, order: true, tasks: true };
+    if (isManager(currentUser)) return;
+    const perms = currentUser.permissions || DEFAULT_PERMISSIONS;
+
+    // A unit user (e.g. the daycare) whose only permission is requesting from stock
+    // should land straight on that screen instead of an empty inventory tab.
+    if (perms.unitRequest === true && perms.inventory === false && perms.order === false && perms.tasks === false) {
+      if (tab !== "unitrequest") setTab("unitrequest");
+      return;
+    }
+
     if (tab === "tasks" && perms.tasks === false) {
       if (perms.inventory !== false) setTab("inventory");
       else if (perms.order !== false) setTab("order");
@@ -1523,7 +1919,7 @@ export default function App() {
     setLoaded(false);
     seenNotifIdsRef.current = null;
     (async () => {
-      const [orgProfiles, p, t, s, n, m, w, r, sl, loc, dt, tc] = await Promise.all([
+      const [orgProfiles, p, t, s, n, m, w, r, sl, loc, dt, tc, orq, ur, ut] = await Promise.all([
         (async () => {
           try {
             const list = await window.auth.getOrgProfiles();
@@ -1545,6 +1941,9 @@ export default function App() {
         loadKey(KEYS.locations, null),
         loadKey(KEYS.dishTypes, null),
         loadKey(KEYS.taskCategories, null),
+        loadKey(KEYS.orderRequests, []),
+        loadKey(KEYS.unitRequests, []),
+        loadKey(KEYS.unitTemplates, {}),
       ]);
       const finalLocations = loc || [];
       let finalDishTypes = dt;
@@ -1577,7 +1976,7 @@ export default function App() {
         loginEmail: prof.email || "",
         contactEmail: prof.contact_email || "",
         role: prof.role,
-        permissions: prof.permissions || { inventory: true, order: true, tasks: true },
+        permissions: { ...DEFAULT_PERMISSIONS, ...(prof.permissions || {}) },
       }));
 
       // Check recurring reminders: if a reminder's scheduled weekday has passed
@@ -1642,6 +2041,9 @@ export default function App() {
       setLocations(finalLocations || []);
       setDishTypes(finalDishTypes || []);
       setTaskCategories(finalTaskCategories || []);
+      setOrderRequests(orq || []);
+      setUnitRequests(ur || []);
+      setUnitTemplates(ut || {});
       setLoaded(true);
     })();
   }, [currentUser?.id]);
@@ -1661,6 +2063,9 @@ export default function App() {
       [KEYS.locations]: async () => setLocations((await loadKey(KEYS.locations, [])) || []),
       [KEYS.dishTypes]: async () => setDishTypes((await loadKey(KEYS.dishTypes, [])) || []),
       [KEYS.taskCategories]: async () => setTaskCategories((await loadKey(KEYS.taskCategories, [])) || []),
+      [KEYS.orderRequests]: async () => setOrderRequests((await loadKey(KEYS.orderRequests, [])) || []),
+      [KEYS.unitRequests]: async () => setUnitRequests((await loadKey(KEYS.unitRequests, [])) || []),
+      [KEYS.unitTemplates]: async () => setUnitTemplates((await loadKey(KEYS.unitTemplates, {})) || {}),
     };
     window.auth.subscribeToOrgChanges((payload) => {
       const changedKey = payload.new?.key || payload.old?.key;
@@ -1790,6 +2195,29 @@ export default function App() {
     setTaskCategories(next);
     await saveKey(KEYS.taskCategories, next);
   }
+
+  async function persistUnitRequests(next) {
+    setUnitRequests(next);
+    await saveKey(KEYS.unitRequests, next);
+  }
+  async function persistUnitTemplates(next) {
+    setUnitTemplates(next);
+    await saveKey(KEYS.unitTemplates, next);
+  }
+  async function persistOrderRequests(next) {
+    setOrderRequests(next);
+    await saveKey(KEYS.orderRequests, next);
+  }
+  /** Notify every manager in the org (used when a supervisor submits an order request). */
+  async function notifyManagers(message) {
+    const managers = users.filter((u) => u.role === "manager");
+    if (managers.length === 0) return;
+    const next = [
+      ...notifications,
+      ...managers.map((u) => ({ id: genId(), userId: u.id, message, read: false, createdAt: Date.now() })),
+    ];
+    await persistNotifications(next);
+  }
   async function notifyUser(userId, message) {
     const next = [
       ...notifications,
@@ -1806,6 +2234,7 @@ export default function App() {
     ? notifications.filter((n) => n.userId === currentUser.id).sort((a, b) => b.createdAt - a.createdAt)
     : [];
   const unreadCount = myNotifications.filter((n) => !n.read).length;
+  const pendingRequestCount = (orderRequests || []).filter((r) => r.status === "pending").length;
 
   if (!splashDone) {
     return <SplashScreen />;
@@ -1894,7 +2323,7 @@ export default function App() {
           <div>
             <div className="wh-display font-black text-lg" style={{ color: C.paper }}>ניהול משימות ומלאי מוסדי</div>
             <div className="text-xs" style={{ color: C.kraft }}>
-              {currentUser.name} · {currentUser.role === "manager" ? "מנהל" : "עובד"}
+              {currentUser.name} · {roleLabel(currentUser.role)}
             </div>
           </div>
         </div>
@@ -2017,7 +2446,7 @@ export default function App() {
             clearScanResult={() => setScanResult(null)}
             currentUser={currentUser}
             showToast={showToast}
-            isManager={currentUser.role === "manager"}
+            isManager={isManager(currentUser)}
             logStockChange={logStockChange}
           />
         )}
@@ -2027,12 +2456,16 @@ export default function App() {
             products={products}
             settings={settings}
             persistSettings={persistSettings}
-            isManager={currentUser.role === "manager"}
+            isManager={isManager(currentUser)}
             menuItems={menuItems}
             weeklyMenu={weeklyMenu}
             persistWeeklyMenu={persistWeeklyMenu}
             showToast={showToast}
             dishTypes={dishTypes}
+            currentUser={currentUser}
+            orderRequests={orderRequests}
+            persistOrderRequests={persistOrderRequests}
+            notifyManagers={notifyManagers}
           />
         )}
         {tab === "tasks" && (
@@ -2047,7 +2480,19 @@ export default function App() {
             taskCategories={taskCategories}
           />
         )}
-        {tab === "admin" && currentUser.role === "manager" && (
+        {tab === "unitrequest" && canRequestFromStock(currentUser) && (
+          <UnitRequestTab
+            products={products}
+            unitRequests={unitRequests}
+            persistUnitRequests={persistUnitRequests}
+            unitTemplates={unitTemplates}
+            persistUnitTemplates={persistUnitTemplates}
+            currentUser={currentUser}
+            showToast={showToast}
+            notifyManagers={notifyManagers}
+          />
+        )}
+        {tab === "admin" && hasAnyAdminSection(currentUser) && (
           <AdminTab
             users={users}
             updateUserProfile={updateUserProfile}
@@ -2071,6 +2516,12 @@ export default function App() {
             persistDishTypes={persistDishTypes}
             taskCategories={taskCategories}
             persistTaskCategories={persistTaskCategories}
+            orderRequests={orderRequests}
+            persistOrderRequests={persistOrderRequests}
+            notifyUser={notifyUser}
+            unitRequests={unitRequests}
+            persistUnitRequests={persistUnitRequests}
+            logStockChange={logStockChange}
           />
         )}
       </div>
@@ -2089,13 +2540,13 @@ export default function App() {
           >
             <div className="p-4" style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "24px 0 0 0" }}>
               <div className="wh-display font-black text-lg" style={{ color: "#fff" }}>ניהול משימות ומלאי מוסדי</div>
-              <div className="text-xs" style={{ color: "#fff" }}>{currentUser.name} · {currentUser.role === "manager" ? "מנהל" : "עובד"}</div>
+              <div className="text-xs" style={{ color: "#fff" }}>{currentUser.name} · {roleLabel(currentUser.role)}</div>
             </div>
             <div className="flex flex-col p-3 gap-2 flex-1">
-              {(currentUser.role === "manager" || currentUser.permissions?.inventory !== false) && (
+              {(isManager(currentUser) || currentUser.permissions?.inventory !== false) && (
                 <DrawerItem label="מלאי" active={tab === "inventory"} onClick={() => { setTab("inventory"); setShowMenu(false); }} />
               )}
-              {(currentUser.role === "manager" || currentUser.permissions?.order !== false) && (
+              {(isManager(currentUser) || currentUser.permissions?.order !== false) && (
                 <DrawerItem
                   label="הזמנה"
                   active={tab === "order"}
@@ -2104,7 +2555,7 @@ export default function App() {
                   badgeColor={C.stamp}
                 />
               )}
-              {(currentUser.role === "manager" || currentUser.permissions?.tasks !== false) && (
+              {(isManager(currentUser) || currentUser.permissions?.tasks !== false) && (
                 <DrawerItem
                   label="משימות"
                   active={tab === "tasks"}
@@ -2113,11 +2564,24 @@ export default function App() {
                   badgeColor={C.mustard}
                 />
               )}
-              {currentUser.role === "manager" && (
-                <DrawerItem label="ניהול" active={tab === "admin"} onClick={() => { setTab("admin"); setShowMenu(false); }} />
+              {canRequestFromStock(currentUser) && (
+                <DrawerItem
+                  label="בקשה מהמחסן"
+                  active={tab === "unitrequest"}
+                  onClick={() => { setTab("unitrequest"); setShowMenu(false); }}
+                />
+              )}
+              {hasAnyAdminSection(currentUser) && (
+                <DrawerItem
+                  label="ניהול"
+                  active={tab === "admin"}
+                  onClick={() => { setTab("admin"); setShowMenu(false); }}
+                  badge={isManager(currentUser) && pendingRequestCount > 0 ? pendingRequestCount : null}
+                  badgeColor={C.stamp}
+                />
               )}
             </div>
-            {currentUser.role === "manager" && (
+            {isManager(currentUser) && (
               <div className="mx-3 mb-2 p-3 rounded-2xl" style={{ background: C.paper }}>
                 <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>לחיבור עובד חדש למסד הזה:</div>
                 <div className="text-xs" style={{ color: C.steel }}>
@@ -2620,7 +3084,9 @@ function HebrewCalendarWidget() {
   );
 }
 
-function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes }) {
+function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers }) {
+  const mayApprove = canSendOrders(currentUser);
+  const myPending = (orderRequests || []).filter((r) => r.createdById === currentUser?.id && r.status === "pending");
   const suppliers = settings.suppliers || [];
   const [selectedSupplierId, setSelectedSupplierId] = useState(suppliers[0]?.id || "");
   const [manualPhone, setManualPhone] = useState(settings.supplierPhone || "");
@@ -2785,6 +3251,41 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     return groups;
   }
 
+  /** Non-managers can't push an order to a supplier - they file it for approval instead. */
+  async function submitOrderRequest(items, supplierId, sourceLabel) {
+    const rows = items
+      .map(({ product, qty }) => ({
+        productId: product.id,
+        name: product.name,
+        unit: product.unit,
+        qty: Number(qty),
+        supplierId: product.supplierId || supplierId || "",
+      }))
+      .filter((r) => r.qty > 0);
+
+    if (rows.length === 0) {
+      showToast("אין מוצרים עם כמות לשליחה");
+      return;
+    }
+
+    const request = {
+      id: genId(),
+      createdAt: Date.now(),
+      createdById: currentUser.id,
+      createdByName: currentUser.name,
+      status: "pending",
+      source: sourceLabel,
+      suggestedSupplierId: supplierId && supplierId !== "__unassigned__" ? supplierId : "",
+      items: rows,
+    };
+
+    await persistOrderRequests([...(orderRequests || []), request]);
+    if (notifyManagers) {
+      await notifyManagers(`📦 ${currentUser.name} שלח בקשת הזמנה (${rows.length} מוצרים) - ממתינה לאישורך`);
+    }
+    showToast("הבקשה נשלחה למנהל לאישור ✓");
+  }
+
   function sendGroupOrder(items, title, supplierId) {
     const lines = items.map(({ product, qty }) => `- ${qty} ${product.unit} ${product.name}`);
     let phone = "";
@@ -2878,8 +3379,29 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
         </button>
       </div>
 
+      {!mayApprove && (
+        <ShelfTag accent={C.accent} style={{ marginBottom: 16 }}>
+          <div className="text-sm font-bold mb-1" style={{ color: C.ink }}>📤 מצב בקשות הזמנה</div>
+          <p className="text-xs" style={{ color: C.steel }}>
+            הרכב את ההזמנה ושלח אותה לאישור המנהל. הוא יאשר וישלח לספק.
+          </p>
+          {myPending.length > 0 && (
+            <div className="mt-2 flex flex-col gap-1">
+              {myPending.map((r) => (
+                <div key={r.id} className="text-xs p-2 rounded-xl" style={{ background: C.paper, color: C.ink }}>
+                  ⏳ ממתינה לאישור · {r.items.length} מוצרים · {r.source} ·{" "}
+                  {new Date(r.createdAt).toLocaleDateString("he-IL")}
+                </div>
+              ))}
+            </div>
+          )}
+        </ShelfTag>
+      )}
+
       <div className="mb-4">
-        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שלח הזמנה לספק</label>
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+          {mayApprove ? "שלח הזמנה לספק" : "ספק מוצע (המנהל יוכל לשנות)"}
+        </label>
         <select
           value={selectedSupplierId}
           onChange={(e) => setSelectedSupplierId(e.target.value)}
@@ -2892,9 +3414,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           <option value="__manual__">יעד אחר (הזנה ידנית)</option>
         </select>
 
-        <ChannelPicker value={channel} onChange={setChannel} />
+        {mayApprove && <ChannelPicker value={channel} onChange={setChannel} />}
 
-        {(selectedSupplierId === "__manual__" || suppliers.length === 0) && (
+        {mayApprove && (selectedSupplierId === "__manual__" || suppliers.length === 0) && (
           channel === "email" ? (
             <input
               value={manualEmail}
@@ -2915,7 +3437,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           )
         )}
 
-        {selectedSupplierId !== "__manual__" && suppliers.length > 0 && (() => {
+        {mayApprove && selectedSupplierId !== "__manual__" && suppliers.length > 0 && (() => {
           const s = suppliers.find((x) => x.id === selectedSupplierId);
           if (!s) return null;
           const missing = channel === "email" ? !s.email : !s.phone;
@@ -3033,13 +3555,28 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 </div>
               </>
             )}
-            <button
-              onClick={sendOrder}
-              className="w-full py-3 rounded-2xl wh-display font-bold"
-              style={{ background: channelMeta(channel).color, color: "#fff" }}
-            >
-              {channelMeta(channel).icon} שלח הזמנה ב{channelMeta(channel).label}
-            </button>
+            {mayApprove ? (
+              <button
+                onClick={sendOrder}
+                className="w-full py-3 rounded-2xl wh-display font-bold"
+                style={{ background: channelMeta(channel).color, color: "#fff" }}
+              >
+                {channelMeta(channel).icon} שלח הזמנה ב{channelMeta(channel).label}
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  const items = products
+                    .filter((p) => selectedForOrder.includes(p.id))
+                    .map((p) => ({ product: p, qty: qtys[p.id] ?? 1 }));
+                  submitOrderRequest(items, selectedSupplierId, "לפי סף מלאי");
+                }}
+                className="w-full py-3 rounded-2xl wh-display font-bold"
+                style={{ background: C.accent, color: "#fff" }}
+              >
+                📤 שלח בקשת הזמנה לאישור המנהל
+              </button>
+            )}
           </>
         );
       })()}
@@ -3118,11 +3655,17 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                   return (
                     <button
                       key={supplierId}
-                      onClick={() => sendGroupOrder(items, "📋 הזמנה לפי תפריט", supplierId)}
+                      onClick={() =>
+                        mayApprove
+                          ? sendGroupOrder(items, "📋 הזמנה לפי תפריט", supplierId)
+                          : submitOrderRequest(items, supplierId, "לפי מנות בודדות")
+                      }
                       className="w-full py-3 mb-2 rounded-2xl wh-display font-bold"
-                      style={{ background: channelMeta(channel).color, color: "#fff" }}
+                      style={{ background: mayApprove ? channelMeta(channel).color : C.accent, color: "#fff" }}
                     >
-                      {channelMeta(channel).icon} שלח ל{supplierName} ({items.length} מוצרים)
+                      {mayApprove
+                        ? `${channelMeta(channel).icon} שלח ל${supplierName} (${items.length} מוצרים)`
+                        : `📤 בקש אישור ל${supplierName} (${items.length} מוצרים)`}
                     </button>
                   );
                 })}
@@ -3303,11 +3846,17 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                   return (
                     <button
                       key={supplierId}
-                      onClick={() => sendGroupOrder(items, "📅 הזמנה לפי תפריט שבועי", supplierId)}
+                      onClick={() =>
+                        mayApprove
+                          ? sendGroupOrder(items, "📅 הזמנה לפי תפריט שבועי", supplierId)
+                          : submitOrderRequest(items, supplierId, "לפי תפריט שבועי")
+                      }
                       className="w-full py-3 mb-2 rounded-2xl wh-display font-bold"
-                      style={{ background: channelMeta(channel).color, color: "#fff" }}
+                      style={{ background: mayApprove ? channelMeta(channel).color : C.accent, color: "#fff" }}
                     >
-                      {channelMeta(channel).icon} שלח ל{supplierName} ({items.length} מוצרים)
+                      {mayApprove
+                        ? `${channelMeta(channel).icon} שלח ל${supplierName} (${items.length} מוצרים)`
+                        : `📤 בקש אישור ל${supplierName} (${items.length} מוצרים)`}
                     </button>
                   );
                 })}
@@ -3923,11 +4472,14 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories }) {
+function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange }) {
   const [section, setSection] = useState("products");
   const [showNav, setShowNav] = useState(false);
 
-  const sections = [
+  const pendingCount = (orderRequests || []).filter((r) => r.status === "pending").length;
+
+  const allSections = [
+    ["orderrequests", "בקשות הזמנה"],
     ["products", "מוצרים"],
     ["users", "עובדים"],
     ["menu", "תפריט"],
@@ -3938,6 +4490,19 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
     ["analytics", "ניתוח"],
     ["settings", "ספקים"],
   ];
+  // A supervisor only sees the admin screens the manager granted them.
+  const sections = allSections.filter(([id]) => canSeeAdminSection(currentUser, id));
+
+  // If the current section became unavailable, fall back to the first allowed one.
+  useEffect(() => {
+    if (sections.length > 0 && !sections.some(([id]) => id === section)) {
+      setSection(sections[0][0]);
+    }
+  }, [sections.length, section]);
+
+  if (sections.length === 0) {
+    return <p className="text-sm text-center py-8" style={{ color: C.steel }}>אין לך הרשאות למסכי ניהול.</p>;
+  }
 
   return (
     <div>
@@ -3964,10 +4529,15 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
                 <button
                   key={val}
                   onClick={() => { setSection(val); setShowNav(false); }}
-                  className="text-right px-4 py-3 rounded-2xl wh-display text-sm font-bold"
+                  className="flex items-center justify-between text-right px-4 py-3 rounded-2xl wh-display text-sm font-bold"
                   style={{ background: section === val ? C.ink : "transparent", color: section === val ? "#fff" : C.ink }}
                 >
-                  {label}
+                  <span>{label}</span>
+                  {val === "orderrequests" && pendingCount > 0 && (
+                    <span className="rounded-full text-[10px] px-1.5 py-0.5 font-bold" style={{ background: C.stamp, color: "#fff" }}>
+                      {pendingCount}
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -3986,6 +4556,29 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
       )}
       {section === "dishtypes" && (
         <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} />
+      )}
+      {section === "orderrequests" && (
+        <OrderRequestsAdmin
+          orderRequests={orderRequests}
+          persistOrderRequests={persistOrderRequests}
+          settings={settings}
+          products={products}
+          showToast={showToast}
+          notifyUser={notifyUser}
+          currentUser={currentUser}
+        />
+      )}
+      {section === "unitrequests" && (
+        <UnitRequestsAdmin
+          unitRequests={unitRequests}
+          persistUnitRequests={persistUnitRequests}
+          products={products}
+          persistProducts={persistProducts}
+          logStockChange={logStockChange}
+          currentUser={currentUser}
+          showToast={showToast}
+          notifyUser={notifyUser}
+        />
       )}
       {section === "taskcats" && (
         <TaskCategoriesAdmin taskCategories={taskCategories} persistTaskCategories={persistTaskCategories} showToast={showToast} />
@@ -4562,6 +5155,454 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function UnitRequestsAdmin({
+  unitRequests,
+  persistUnitRequests,
+  products,
+  persistProducts,
+  logStockChange,
+  currentUser,
+  showToast,
+  notifyUser,
+}) {
+  const [tab, setTab] = useState("pending");
+  const [editing, setEditing] = useState(null); // { requestId, items, note }
+
+  const all = [...(unitRequests || [])].sort((a, b) => (b.submittedAt || b.createdAt) - (a.submittedAt || a.createdAt));
+  const pending = all.filter((r) => r.status === "submitted");
+  const done = all.filter((r) => r.status === "fulfilled" || r.status === "rejected");
+  const shown = tab === "pending" ? pending : done;
+
+  const stockOf = (id) => Number(products.find((p) => p.id === id)?.quantity ?? 0);
+
+  function openReview(r) {
+    setEditing({
+      requestId: r.id,
+      // Default the issued amount to what they asked for, capped at what we actually have.
+      items: (r.items || []).map((i) => ({ ...i, give: Math.min(i.qty, stockOf(i.productId)) })),
+      note: "",
+    });
+  }
+
+  function setGive(productId, val) {
+    setEditing((cur) => ({
+      ...cur,
+      items: cur.items.map((i) => (i.productId === productId ? { ...i, give: Math.max(0, Number(val) || 0) } : i)),
+    }));
+  }
+
+  async function fulfill() {
+    const req = all.find((r) => r.id === editing.requestId);
+    const issued = editing.items.filter((i) => i.give > 0);
+    if (issued.length === 0) return showToast("לא הוגדרה כמות לניפוק");
+
+    // Deduct from stock and log who issued what.
+    const next = products.map((p) => {
+      const hit = issued.find((i) => i.productId === p.id);
+      if (!hit) return p;
+      return { ...p, quantity: Math.max(0, Number(p.quantity) - hit.give) };
+    });
+    await persistProducts(next);
+    for (const i of issued) {
+      if (logStockChange) await logStockChange(i.productId, -i.give, `${currentUser.name} → ${req.unitName}`);
+    }
+
+    await persistUnitRequests(
+      (unitRequests || []).map((r) =>
+        r.id === editing.requestId
+          ? {
+              ...r,
+              status: "fulfilled",
+              fulfilledAt: Date.now(),
+              fulfilledBy: currentUser.name,
+              managerNote: editing.note,
+              issuedItems: issued.map((i) => ({ productId: i.productId, name: i.name, unit: i.unit, qty: i.give })),
+            }
+          : r
+      )
+    );
+
+    const shortages = editing.items.filter((i) => i.give < i.qty);
+    if (notifyUser) {
+      const msg = shortages.length
+        ? `🧺 הבקשה שלך נופקה חלקית (${shortages.length} מוצרים בחוסר)`
+        : "🧺 הבקשה שלך נופקה במלואה ✓";
+      await notifyUser(req.unitId, msg);
+    }
+    setEditing(null);
+    showToast("נופק והמלאי עודכן ✓");
+  }
+
+  async function reject() {
+    const req = all.find((r) => r.id === editing.requestId);
+    await persistUnitRequests(
+      (unitRequests || []).map((r) =>
+        r.id === editing.requestId ? { ...r, status: "rejected", managerNote: editing.note } : r
+      )
+    );
+    if (notifyUser) await notifyUser(req.unitId, `הבקשה השבועית שלך נדחתה${editing.note ? `: ${editing.note}` : ""}`);
+    setEditing(null);
+    showToast("הבקשה נדחתה");
+  }
+
+  if (editing) {
+    const req = all.find((r) => r.id === editing.requestId);
+    const shortages = editing.items.filter((i) => stockOf(i.productId) < i.qty);
+
+    return (
+      <div>
+        <button onClick={() => setEditing(null)} className="mb-3 text-sm font-bold" style={{ color: C.accent }}>
+          ← חזרה לרשימה
+        </button>
+
+        <ShelfTag accent={C.mustard} style={{ marginBottom: 16 }}>
+          <div className="wh-display font-bold" style={{ color: C.ink }}>{req.unitName}</div>
+          <div className="text-xs" style={{ color: C.steel }}>שבוע {weekLabel(req.weekOf)}</div>
+        </ShelfTag>
+
+        {shortages.length > 0 && (
+          <ShelfTag accent={C.stamp} style={{ marginBottom: 16 }}>
+            <div className="font-bold text-sm mb-1" style={{ color: C.stamp }}>⚠️ {shortages.length} מוצרים במלאי חסר</div>
+            <p className="text-xs" style={{ color: C.steel }}>
+              הכמויות למטה כבר הותאמו למה שיש בפועל. אפשר לנפק חלקית ולהזמין את החסר מהספק.
+            </p>
+          </ShelfTag>
+        )}
+
+        <div className="flex flex-col gap-2 mb-4">
+          {editing.items.map((i) => {
+            const have = stockOf(i.productId);
+            const short = have < i.qty;
+            return (
+              <ShelfTag key={i.productId} accent={short ? C.stamp : C.sage}>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <div className="font-bold text-sm" style={{ color: C.ink }}>{i.name}</div>
+                    <div className="text-xs" style={{ color: short ? C.stamp : C.steel }}>
+                      ביקשו {i.qty} {i.unit} · במלאי {have} {i.unit}
+                      {short && ` · חסר ${i.qty - have}`}
+                    </div>
+                  </div>
+                  <div className="text-left">
+                    <div className="text-xs mb-1" style={{ color: C.steel }}>לנפק</div>
+                    <input
+                      type="number"
+                      value={i.give === 0 ? "" : i.give}
+                      onChange={(e) => setGive(i.productId, e.target.value)}
+                      placeholder="0"
+                      className="w-16 text-center p-2 rounded-2xl border"
+                      style={{ borderColor: C.kraftDark }}
+                    />
+                  </div>
+                </div>
+              </ShelfTag>
+            );
+          })}
+        </div>
+
+        <textarea
+          value={editing.note}
+          onChange={(e) => setEditing({ ...editing, note: e.target.value })}
+          placeholder="הערה למעון (אופציונלי)"
+          rows={2}
+          className="w-full p-3 rounded-2xl border mb-3"
+          style={{ borderColor: C.kraftDark }}
+        />
+
+        <button onClick={fulfill} className="w-full py-3 rounded-2xl wh-display font-bold mb-2" style={{ background: C.sage, color: "#fff" }}>
+          ✓ נפק והורד מהמלאי
+        </button>
+        <button onClick={reject} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>
+          דחה בקשה
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h2 className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>בקשות מהמחסן</h2>
+      <p className="text-xs mb-3" style={{ color: C.steel }}>
+        בקשות שיחידות (מעון וכו') שלחו. אישור מנפיק מהמלאי שלך ומוריד את הכמות.
+      </p>
+
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => setTab("pending")}
+          className="flex-1 py-2 rounded-2xl text-sm font-bold"
+          style={{ background: tab === "pending" ? C.ink : C.kraft, color: tab === "pending" ? C.paper : C.ink }}
+        >
+          ממתינות {pending.length > 0 && `(${pending.length})`}
+        </button>
+        <button
+          onClick={() => setTab("done")}
+          className="flex-1 py-2 rounded-2xl text-sm font-bold"
+          style={{ background: tab === "done" ? C.ink : C.kraft, color: tab === "done" ? C.paper : C.ink }}
+        >
+          טופלו
+        </button>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        {shown.length === 0 && (
+          <p className="text-sm text-center py-8" style={{ color: C.steel }}>
+            {tab === "pending" ? "אין בקשות ממתינות" : "אין בקשות שטופלו"}
+          </p>
+        )}
+        {shown.map((r) => {
+          const st = UNIT_STATUS[r.status] || UNIT_STATUS.open;
+          const shortCount = (r.items || []).filter((i) => stockOf(i.productId) < i.qty).length;
+          return (
+            <ShelfTag key={r.id} accent={st.color}>
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>{r.unitName}</div>
+                  <div className="text-xs" style={{ color: C.steel }}>
+                    שבוע {weekLabel(r.weekOf)} · {(r.items || []).length} מוצרים
+                    {r.status === "submitted" && shortCount > 0 && (
+                      <span style={{ color: C.stamp }}> · {shortCount} בחוסר</span>
+                    )}
+                  </div>
+                </div>
+                {r.status === "submitted" ? (
+                  <button onClick={() => openReview(r)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.ink, color: C.paper }}>
+                    בדוק ונפק
+                  </button>
+                ) : (
+                  <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: st.color, color: "#fff" }}>
+                    {st.label}
+                  </span>
+                )}
+              </div>
+            </ShelfTag>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function OrderRequestsAdmin({ orderRequests, persistOrderRequests, settings, products, showToast, notifyUser, currentUser }) {
+  const suppliers = settings?.suppliers || [];
+  const requests = [...(orderRequests || [])].sort((a, b) => b.createdAt - a.createdAt);
+
+  const [tab, setTab] = useState("pending");
+  const [editing, setEditing] = useState(null); // { requestId, items:[...], supplierId, channel }
+
+  const shown = requests.filter((r) => (tab === "pending" ? r.status === "pending" : r.status !== "pending"));
+  const pendingCount = requests.filter((r) => r.status === "pending").length;
+
+  function openReview(r) {
+    setEditing({
+      requestId: r.id,
+      items: r.items.map((i) => ({ ...i })),
+      supplierId: r.suggestedSupplierId || "",
+      channel: "whatsapp",
+    });
+  }
+
+  function setItemQty(productId, qty) {
+    setEditing((cur) => ({
+      ...cur,
+      items: cur.items.map((i) => (i.productId === productId ? { ...i, qty: Math.max(0, Number(qty) || 0) } : i)),
+    }));
+  }
+  function removeItem(productId) {
+    setEditing((cur) => ({ ...cur, items: cur.items.filter((i) => i.productId !== productId) }));
+  }
+
+  async function approveAndSend() {
+    const req = requests.find((r) => r.id === editing.requestId);
+    const items = editing.items.filter((i) => i.qty > 0);
+    if (items.length === 0) return showToast("אין מוצרים עם כמות");
+
+    const supplier = suppliers.find((s) => s.id === editing.supplierId);
+    const text = items.map((i) => `- ${i.qty} ${i.unit} ${i.name}`).join("\n");
+
+    const res = sendViaChannel(editing.channel, {
+      phone: supplier?.phone || settings?.supplierPhone || "",
+      email: supplier?.email || settings?.supplierEmail || "",
+      text,
+      subject: `הזמנת מלאי — ${todayStr()}`,
+    });
+    if (!res.ok) return showToast(res.error);
+
+    await persistOrderRequests(
+      (orderRequests || []).map((r) =>
+        r.id === editing.requestId
+          ? {
+              ...r,
+              status: "approved",
+              items,
+              approvedSupplierId: editing.supplierId,
+              decidedAt: Date.now(),
+              decidedByName: currentUser.name,
+            }
+          : r
+      )
+    );
+    if (notifyUser && req) {
+      notifyUser(req.createdById, `✅ בקשת ההזמנה שלך אושרה ונשלחה${supplier ? ` ל${supplier.name}` : ""}`);
+    }
+    setEditing(null);
+    showToast("הבקשה אושרה ונשלחה");
+  }
+
+  async function reject(r) {
+    const reason = window.prompt("סיבת הדחייה (אופציונלי):", "");
+    if (reason === null) return; // cancelled
+    await persistOrderRequests(
+      (orderRequests || []).map((x) =>
+        x.id === r.id
+          ? { ...x, status: "rejected", rejectReason: reason, decidedAt: Date.now(), decidedByName: currentUser.name }
+          : x
+      )
+    );
+    if (notifyUser) {
+      notifyUser(r.createdById, `❌ בקשת ההזמנה שלך נדחתה${reason ? `: ${reason}` : ""}`);
+    }
+    setEditing(null);
+    showToast("הבקשה נדחתה");
+  }
+
+  const statusChip = (r) => {
+    if (r.status === "approved") return <span className="text-xs px-2 py-0.5 rounded-full font-bold" style={{ background: C.sage, color: "#fff" }}>אושרה</span>;
+    if (r.status === "rejected") return <span className="text-xs px-2 py-0.5 rounded-full font-bold" style={{ background: C.stamp, color: "#fff" }}>נדחתה</span>;
+    return <span className="text-xs px-2 py-0.5 rounded-full font-bold" style={{ background: C.mustard, color: "#fff" }}>ממתינה</span>;
+  };
+
+  return (
+    <div>
+      <h2 className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>בקשות הזמנה</h2>
+      <p className="text-xs mb-3" style={{ color: C.steel }}>
+        בקשות שמנהלי המטבח שלחו. אפשר לערוך כמויות, לבחור ספק, ואז לאשר ולשלוח.
+      </p>
+
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => { setTab("pending"); setEditing(null); }}
+          className="flex-1 py-2 rounded-2xl text-sm font-bold"
+          style={{ background: tab === "pending" ? C.ink : C.kraft, color: tab === "pending" ? C.paper : C.ink }}
+        >
+          ממתינות{pendingCount > 0 ? ` (${pendingCount})` : ""}
+        </button>
+        <button
+          onClick={() => { setTab("history"); setEditing(null); }}
+          className="flex-1 py-2 rounded-2xl text-sm font-bold"
+          style={{ background: tab === "history" ? C.ink : C.kraft, color: tab === "history" ? C.paper : C.ink }}
+        >
+          היסטוריה
+        </button>
+      </div>
+
+      {shown.length === 0 && (
+        <p className="text-sm text-center py-8" style={{ color: C.steel }}>
+          {tab === "pending" ? "אין בקשות ממתינות ✓" : "אין עדיין היסטוריה"}
+        </p>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {shown.map((r) => {
+          const reviewing = editing?.requestId === r.id;
+          const accent = r.status === "approved" ? C.sage : r.status === "rejected" ? C.stamp : C.mustard;
+
+          return (
+            <ShelfTag key={r.id} accent={accent}>
+              <div className="flex justify-between items-start mb-2">
+                <div>
+                  <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
+                    {r.createdByName}
+                  </div>
+                  <div className="text-xs" style={{ color: C.steel }}>
+                    {r.source} · {r.items.length} מוצרים ·{" "}
+                    {new Date(r.createdAt).toLocaleString("he-IL", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                </div>
+                {statusChip(r)}
+              </div>
+
+              {!reviewing && (
+                <div className="flex flex-col gap-1 mb-2">
+                  {r.items.map((i) => (
+                    <div key={i.productId} className="text-xs flex justify-between" style={{ color: C.steel }}>
+                      <span>{i.name}</span>
+                      <span className="font-bold" style={{ color: C.ink }}>{i.qty} {i.unit}</span>
+                    </div>
+                  ))}
+                  {r.rejectReason && (
+                    <div className="text-xs mt-1" style={{ color: C.stamp }}>סיבה: {r.rejectReason}</div>
+                  )}
+                </div>
+              )}
+
+              {reviewing && (
+                <div className="flex flex-col gap-2 mb-2">
+                  {editing.items.map((i) => (
+                    <div key={i.productId} className="flex items-center gap-2">
+                      <span className="flex-1 text-sm" style={{ color: C.ink }}>{i.name}</span>
+                      <input
+                        type="number"
+                        value={i.qty === 0 ? "" : i.qty}
+                        onChange={(e) => setItemQty(i.productId, e.target.value)}
+                        className="w-16 text-center p-1.5 rounded-xl border"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                      <span className="text-xs" style={{ color: C.steel }}>{i.unit}</span>
+                      <button onClick={() => removeItem(i.productId)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                    </div>
+                  ))}
+
+                  <div>
+                    <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>ספק</label>
+                    <select
+                      value={editing.supplierId}
+                      onChange={(e) => setEditing({ ...editing, supplierId: e.target.value })}
+                      className="p-2 rounded-2xl border w-full text-sm"
+                      style={{ borderColor: C.kraftDark }}
+                    >
+                      <option value="">ללא ספק (מספר/מייל ברירת מחדל)</option>
+                      {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+
+                  <ChannelPicker value={editing.channel} onChange={(c) => setEditing({ ...editing, channel: c })} />
+                </div>
+              )}
+
+              {r.status === "pending" && (
+                <div className="flex gap-2 mt-2">
+                  {reviewing ? (
+                    <>
+                      <button onClick={approveAndSend} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+                        ✅ אשר ושלח
+                      </button>
+                      <button onClick={() => reject(r)} className="px-3 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>
+                        דחה
+                      </button>
+                      <button onClick={() => setEditing(null)} className="px-3 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+                        סגור
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={() => openReview(r)} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.ink, color: C.paper }}>
+                        בדוק ואשר
+                      </button>
+                      <button onClick={() => reject(r)} className="px-3 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>
+                        דחה
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </ShelfTag>
+          );
+        })}
       </div>
     </div>
   );
@@ -5146,7 +6187,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
     await persistCategories(next);
   }
 
-  const empty = { name: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "", imageData: null };
+  const empty = { name: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "", unitVisible: true, imageData: null };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
   const fileInputRef = useRef(null);
@@ -5157,6 +6198,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkThreshold, setBulkThreshold] = useState("");
   const [bulkCategory, setBulkCategory] = useState("");
+  const [bulkSupplier, setBulkSupplier] = useState("");
   const [photoBusy, setPhotoBusy] = useState(false);
 
   const formRef = useRef(null);
@@ -5202,6 +6244,33 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
     setSelectedIds([]);
     setBulkCategory("");
   }
+  async function applyBulkSupplier() {
+    if (selectedIds.length === 0) return showToast("בחר לפחות מוצר אחד");
+    const next = products.map((p) =>
+      selectedIds.includes(p.id) ? { ...p, supplierId: bulkSupplier || "" } : p
+    );
+    await persistProducts(next);
+    const label = bulkSupplier
+      ? suppliers.find((sp) => sp.id === bulkSupplier)?.name || "ספק"
+      : "ללא ספק";
+    showToast(`${selectedIds.length} מוצרים שויכו ל${label}`);
+    setSelectedIds([]);
+    setBulkSupplier("");
+  }
+
+  async function applyBulkVisibility(visible) {
+    if (selectedIds.length === 0) return showToast("בחר לפחות מוצר אחד");
+    await persistProducts(
+      products.map((p) => (selectedIds.includes(p.id) ? { ...p, unitVisible: visible } : p))
+    );
+    showToast(
+      visible
+        ? `${selectedIds.length} מוצרים נפתחו להזמנה ליחידות`
+        : `${selectedIds.length} מוצרים הוסתרו מהיחידות`
+    );
+    setSelectedIds([]);
+  }
+
 
   function selectAllInCategory(cat) {
     const ids = products.filter((p) => (p.category || "ללא קטגוריה") === cat).map((p) => p.id);
@@ -5613,6 +6682,26 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
               עדכן קטגוריה
             </button>
           </div>
+          <div className="flex gap-2 mb-2">
+            <select value={bulkSupplier} onChange={(e) => setBulkSupplier(e.target.value)} className="flex-1 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }}>
+              <option value="">ללא ספק קבוע</option>
+              {suppliers.map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
+            </select>
+            <button onClick={applyBulkSupplier} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.mustard, color: C.ink }}>
+              שייך ספק
+            </button>
+          </div>
+          <div className="flex gap-2 mb-2">
+            <button onClick={() => applyBulkVisibility(true)} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+              👁️ פתח להזמנת יחידות
+            </button>
+            <button onClick={() => applyBulkVisibility(false)} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.steel, color: "#fff" }}>
+              🚫 הסתר מיחידות
+            </button>
+          </div>
+          {suppliers.length === 0 && (
+            <p className="text-xs mb-2" style={{ color: C.steel }}>אין ספקים מוגדרים - הוסף במסך ניהול ← הגדרות.</p>
+          )}
           <button onClick={() => setSelectedIds([])} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
             נקה בחירה
           </button>
@@ -5872,34 +6961,84 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
           <div>
             <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תפקיד</label>
             <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
-              <option value="staff">עובד</option>
-              <option value="manager">מנהל</option>
+              {ROLES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
             </select>
+            <p className="text-xs mt-1" style={{ color: C.steel }}>
+              {ROLES.find((r) => r.id === form.role)?.desc}
+            </p>
           </div>
-          {form.role === "staff" && (
-            <div>
-              <label className="text-xs font-bold block mb-2" style={{ color: C.steel }}>מה העובד יראה באפליקציה</label>
-              <div className="flex flex-col gap-2">
-                {[
-                  ["inventory", "מלאי"],
-                  ["order", "הזמנה"],
-                  ["tasks", "משימות"],
-                ].map(([key, label]) => {
-                  const perms = form.permissions || { inventory: true, order: true, tasks: true };
-                  return (
-                    <label key={key} className="flex items-center gap-2 text-sm" style={{ color: C.ink }}>
+
+          {form.role !== "manager" && (() => {
+            const perms = { ...DEFAULT_PERMISSIONS, ...(form.permissions || {}) };
+            const adminPerms = perms.admin || {};
+            const setPerm = (key, val) => setForm({ ...form, permissions: { ...perms, [key]: val } });
+            const setAdminPerm = (key, val) =>
+              setForm({ ...form, permissions: { ...perms, admin: { ...adminPerms, [key]: val } } });
+
+            return (
+              <>
+                <div>
+                  <label className="text-xs font-bold block mb-2" style={{ color: C.steel }}>מסכים ראשיים</label>
+                  <div className="flex flex-col gap-2">
+                    {[
+                      ["inventory", "מלאי"],
+                      ["order", "הזמנה"],
+                      ["tasks", "משימות"],
+                    ].map(([key, label]) => (
+                      <label key={key} className="flex items-center gap-2 text-sm" style={{ color: C.ink }}>
+                        <input
+                          type="checkbox"
+                          checked={perms[key] !== false}
+                          onChange={(e) => setPerm(key, e.target.checked)}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                    <label className="flex items-start gap-2 text-sm" style={{ color: C.ink }}>
                       <input
                         type="checkbox"
-                        checked={perms[key] !== false}
-                        onChange={(e) => setForm({ ...form, permissions: { ...perms, [key]: e.target.checked } })}
+                        checked={perms.unitRequest === true}
+                        onChange={(e) => setPerm("unitRequest", e.target.checked)}
+                        style={{ marginTop: 4 }}
                       />
-                      {label}
+                      <span>
+                        בקשה מהמחסן
+                        <span className="block text-xs" style={{ color: C.steel }}>
+                          ליחידות כמו המעון - מזמינים מהמלאי שלך ואתה מנפיק. אם זו ההרשאה היחידה, הם יראו רק את המסך הזה.
+                        </span>
+                      </span>
                     </label>
-                  );
-                })}
-              </div>
-            </div>
-          )}
+                  </div>
+                </div>
+
+                {form.role === "supervisor" && (
+                  <div className="p-3 rounded-2xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+                    <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+                      מסכי ניהול שמנהל המטבח יראה
+                    </label>
+                    <p className="text-xs mb-2" style={{ color: C.steel }}>
+                      סמן רק את מה שאתה רוצה שיראה. אם לא תסמן כלום - הוא לא יראה את תפריט "ניהול" בכלל.
+                    </p>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {ADMIN_SECTIONS.map((sec) => (
+                        <label key={sec.id} className="flex items-center gap-2 text-sm" style={{ color: C.ink }}>
+                          <input
+                            type="checkbox"
+                            checked={!!adminPerms[sec.id]}
+                            onChange={(e) => setAdminPerm(sec.id, e.target.checked)}
+                          />
+                          {sec.label}
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-xs mt-2" style={{ color: C.accent }}>
+                      ℹ️ מנהל מטבח לא יכול לשלוח הזמנה לספק בעצמו - הוא שולח בקשה שתגיע אליך לאישור.
+                    </p>
+                  </div>
+                )}
+              </>
+            );
+          })()}
           <div className="flex gap-2">
             <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>שמור שינויים</button>
             <button onClick={() => { setForm(null); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
@@ -5911,7 +7050,8 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
         {users.map((u) => (
           <div key={u.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
             <div>
-              <div className="font-bold text-sm" style={{ color: C.ink }}>{u.name} {u.role === "manager" && "👑"}</div>
+              <div className="font-bold text-sm" style={{ color: C.ink }}>{u.name} {u.role === "manager" ? "👑" : u.role === "supervisor" ? "🧑\u200d🍳" : ""}</div>
+              <div className="text-xs font-bold" style={{ color: C.accent }}>{roleLabel(u.role)}</div>
               <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>{u.phone || "ללא טלפון"}</div>
               <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>
                 {u.contactEmail || u.loginEmail || "ללא מייל"}
