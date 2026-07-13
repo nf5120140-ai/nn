@@ -6195,6 +6195,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
   const [pasteMode, setPasteMode] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [adminSearch, setAdminSearch] = useState("");
+  const [visFilter, setVisFilter] = useState("all"); // all | open | hidden
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkThreshold, setBulkThreshold] = useState("");
   const [bulkCategory, setBulkCategory] = useState("");
@@ -6256,6 +6257,18 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
     showToast(`${selectedIds.length} מוצרים שויכו ל${label}`);
     setSelectedIds([]);
     setBulkSupplier("");
+  }
+
+  async function toggleUnitVisible(product) {
+    const next = products.map((p) =>
+      p.id === product.id ? { ...p, unitVisible: p.unitVisible === false } : p
+    );
+    await persistProducts(next);
+    showToast(
+      product.unitVisible === false
+        ? `"${product.name}" נפתח להזמנת יחידות`
+        : `"${product.name}" הוסתר מהיחידות`
+    );
   }
 
   async function applyBulkVisibility(visible) {
@@ -6622,6 +6635,22 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
             <p className="text-xs mt-1" style={{ color: C.steel }}>הוסף ספקים במסך ניהול ← הגדרות כדי לבחור כאן.</p>
           )}
         </div>
+        <div className="p-3 rounded-2xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+          <label className="flex items-start gap-2 text-sm" style={{ color: C.ink }}>
+            <input
+              type="checkbox"
+              checked={form.unitVisible !== false}
+              onChange={(e) => setForm({ ...form, unitVisible: e.target.checked })}
+              style={{ marginTop: 4 }}
+            />
+            <span>
+              <b>👁️ פתוח להזמנת יחידות</b>
+              <span className="block text-xs" style={{ color: C.steel }}>
+                יחידות כמו המעון יראו את המוצר ויוכלו להזמין אותו ממך. הורד את הסימון כדי להסתיר אותו מהן.
+              </span>
+            </span>
+          </label>
+        </div>
         <div>
           <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
             {photoBusy ? "טוען תמונה..." : form.imageData ? "📷 החלף תמונת מוצר" : "📷 צרף תמונת מוצר"}
@@ -6654,6 +6683,27 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
         className="p-2 rounded-2xl border w-full mb-3"
         style={{ borderColor: C.kraftDark, background: "#fff" }}
       />
+
+      <div className="flex gap-2 mb-3">
+        {[
+          ["all", `הכל (${products.length})`],
+          ["open", `👁️ פתוחים ליחידות (${products.filter((p) => p.unitVisible !== false).length})`],
+          ["hidden", `🚫 מוסתרים (${products.filter((p) => p.unitVisible === false).length})`],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setVisFilter(id)}
+            className="flex-1 py-2 rounded-2xl text-xs font-bold"
+            style={{
+              background: visFilter === id ? C.ink : "#fff",
+              color: visFilter === id ? "#fff" : C.ink,
+              border: `1px solid ${C.kraftDark}`,
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
       {selectedIds.length > 0 && (
         <ShelfTag accent={C.accent} style={{ marginBottom: 16 }}>
@@ -6712,6 +6762,13 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
         {Object.entries(
           products
             .filter((p) => !adminSearch || p.name.includes(adminSearch) || (p.barcode || "").includes(adminSearch))
+            .filter((p) =>
+              visFilter === "all"
+                ? true
+                : visFilter === "open"
+                ? p.unitVisible !== false
+                : p.unitVisible === false
+            )
             .reduce((acc, p) => {
               const cat = p.category || "ללא קטגוריה";
               (acc[cat] = acc[cat] || []).push(p);
@@ -6726,8 +6783,10 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
               </button>
             </div>
             <div className="flex flex-col gap-2">
-              {items.map((p) => (
-                <div key={p.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+              {items.map((p) => {
+                const openToUnits = p.unitVisible !== false;
+                return (
+                <div key={p.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, borderRight: `5px solid ${openToUnits ? C.sage : C.steel}` }}>
                   <div className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -6736,16 +6795,33 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
                     />
                     {p.imageData && <img src={p.imageData} alt="" className="rounded-xl" style={{ width: 40, height: 40, objectFit: "cover" }} />}
                     <div>
-                      <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
+                      <div className="font-bold text-sm flex items-center gap-1.5" style={{ color: C.ink }}>
+                        {p.name}
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded-full font-bold whitespace-nowrap"
+                          style={{ background: openToUnits ? C.sage : C.steel, color: "#fff" }}
+                        >
+                          {openToUnits ? "👁️ פתוח ליחידות" : "🚫 מוסתר"}
+                        </span>
+                      </div>
                       <div className="text-xs" style={{ color: C.steel }}>₪{Number(p.price).toFixed(2)} · {p.quantity} {p.unit} · סף: {p.threshold}</div>
                     </div>
                   </div>
                   <div className="flex gap-2">
+                    <button
+                      onClick={() => toggleUnitVisible(p)}
+                      title={openToUnits ? "הסתר מהיחידות" : "פתח להזמנת יחידות"}
+                      className="text-xs px-2 py-1 rounded-2xl"
+                      style={{ background: openToUnits ? C.sage : C.kraft, color: openToUnits ? "#fff" : C.steel }}
+                    >
+                      {openToUnits ? "👁️" : "🚫"}
+                    </button>
                     <button onClick={() => startEdit(p)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
                     <button onClick={() => remove(p.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         ))}
