@@ -80,21 +80,166 @@ const MEAL_SLOTS = [
   ["dinner", "ערב"],
 ];
 
-async function loadKey(key, fallback) {
+/* ---------- Offline layer ----------
+   Everything is mirrored into IndexedDB (not localStorage - photos would blow past
+   the 5MB quota). Writes go to the cache first and are queued when there's no
+   network, then flushed to Supabase automatically once we're back online.
+   Conflict policy: last-write-wins per key, and a key with unflushed local changes
+   is never overwritten by a remote read. */
+
+const IDB_NAME = "kitchen-offline";
+const IDB_STORE = "kv";
+const DIRTY_KEYS_LS = "kitchen-dirty-keys";
+
+let idbPromise = null;
+function openIdb() {
+  if (idbPromise) return idbPromise;
+  idbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return idbPromise;
+}
+
+async function cacheGet(key) {
   try {
-    const res = await window.storage.get(key, true);
-    if (!res) return fallback;
-    return JSON.parse(res.value);
+    const db = await openIdb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const req = tx.objectStore(IDB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
   } catch (e) {
-    return fallback;
+    console.error("cacheGet failed", key, e);
+    return undefined;
   }
 }
+
+async function cacheSet(key, value) {
+  try {
+    const db = await openIdb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.objectStore(IDB_STORE).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (e) {
+    console.error("cacheSet failed", key, e);
+  }
+}
+
+/* The dirty list is tiny, so plain localStorage is fine and lets us read it synchronously. */
+function getDirtyKeys() {
+  try {
+    return JSON.parse(localStorage.getItem(DIRTY_KEYS_LS) || "[]");
+  } catch (e) {
+    return [];
+  }
+}
+function setDirtyKeys(keys) {
+  try {
+    localStorage.setItem(DIRTY_KEYS_LS, JSON.stringify(keys));
+  } catch (e) {}
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("kitchen-sync-changed", { detail: keys.length }));
+  }
+}
+function markDirty(key) {
+  const d = getDirtyKeys();
+  if (!d.includes(key)) setDirtyKeys([...d, key]);
+}
+function clearDirty(key) {
+  setDirtyKeys(getDirtyKeys().filter((k) => k !== key));
+}
+
+const isOnline = () => (typeof navigator === "undefined" ? true : navigator.onLine !== false);
+
+const PROFILE_CACHE_KEY = "kitchen-cached-profile";
+function cachedProfile() {
+  try {
+    const raw = localStorage.getItem(PROFILE_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+async function loadKey(key, fallback) {
+  const cached = await cacheGet(key);
+
+  // Local changes that haven't reached the server yet must win over whatever the
+  // server still has, otherwise a refresh would silently discard the user's work.
+  if (getDirtyKeys().includes(key)) {
+    return cached !== undefined ? cached : fallback;
+  }
+
+  if (isOnline()) {
+    try {
+      const res = await window.storage.get(key, true);
+      if (res) {
+        const value = JSON.parse(res.value);
+        await cacheSet(key, value);
+        return value;
+      }
+      // Nothing on the server for this key.
+      return cached !== undefined ? cached : fallback;
+    } catch (e) {
+      console.error("remote load failed, using cache", key, e);
+    }
+  }
+
+  return cached !== undefined ? cached : fallback;
+}
+
 async function saveKey(key, value) {
+  await cacheSet(key, value); // always land locally first, so nothing is ever lost
+
+  if (!isOnline()) {
+    markDirty(key);
+    return { synced: false };
+  }
+
   try {
     await window.storage.set(key, JSON.stringify(value), true);
+    clearDirty(key);
+    return { synced: true };
   } catch (e) {
-    console.error("storage save failed", key, e);
+    console.error("storage save failed, queued for sync", key, e);
+    markDirty(key);
+    return { synced: false };
   }
+}
+
+/** Push every queued key to the server. Re-reads the cache so the latest value wins. */
+async function flushPendingWrites() {
+  if (!isOnline()) return { flushed: 0, remaining: getDirtyKeys().length };
+
+  const dirty = getDirtyKeys();
+  let flushed = 0;
+
+  for (const key of dirty) {
+    const value = await cacheGet(key);
+    if (value === undefined) {
+      clearDirty(key);
+      continue;
+    }
+    try {
+      await window.storage.set(key, JSON.stringify(value), true);
+      clearDirty(key);
+      flushed++;
+    } catch (e) {
+      console.error("flush failed", key, e);
+    }
+  }
+
+  return { flushed, remaining: getDirtyKeys().length };
 }
 
 const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -1103,6 +1248,88 @@ function Login({ users, onLogin, onFirstRun, onDisconnect }) {
   );
 }
 
+/* ---------- Offline / sync status bar ---------- */
+function SyncBar({ showToast }) {
+  const [online, setOnline] = useState(isOnline());
+  const [pending, setPending] = useState(() => getDirtyKeys().length);
+  const [syncing, setSyncing] = useState(false);
+  const [justSynced, setJustSynced] = useState(false);
+
+  const doFlush = useCallback(async () => {
+    if (!isOnline() || getDirtyKeys().length === 0) return;
+    setSyncing(true);
+    const { flushed, remaining } = await flushPendingWrites();
+    setSyncing(false);
+    setPending(remaining);
+    if (flushed > 0 && remaining === 0) {
+      setJustSynced(true);
+      if (showToast) showToast("כל השינויים סונכרנו לשרת ✓");
+      setTimeout(() => setJustSynced(false), 3000);
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    function onOnline() {
+      setOnline(true);
+      doFlush();
+    }
+    function onOffline() {
+      setOnline(false);
+    }
+    function onSyncChanged(e) {
+      setPending(e.detail);
+    }
+
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("kitchen-sync-changed", onSyncChanged);
+
+    // Catch anything left over from a previous session, and retry periodically in
+    // case navigator.onLine lies (captive portals, flaky mobile data).
+    doFlush();
+    const interval = setInterval(doFlush, 20000);
+
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("kitchen-sync-changed", onSyncChanged);
+      clearInterval(interval);
+    };
+  }, [doFlush]);
+
+  if (online && pending === 0 && !justSynced) return null;
+
+  let bg = C.mustard;
+  let label = "";
+
+  if (!online) {
+    bg = C.steel;
+    label =
+      pending > 0
+        ? `📴 אין חיבור - ${pending} שינויים שמורים במכשיר ויסונכרנו אוטומטית`
+        : "📴 אין חיבור - אפשר להמשיך לעבוד, הנתונים נשמרים במכשיר";
+  } else if (syncing) {
+    bg = C.accent;
+    label = "🔄 מסנכרן...";
+  } else if (pending > 0) {
+    bg = C.mustard;
+    label = `⏳ ${pending} שינויים ממתינים לסנכרון`;
+  } else if (justSynced) {
+    bg = C.sage;
+    label = "✓ הכל מסונכרן";
+  }
+
+  return (
+    <button
+      onClick={doFlush}
+      className="w-full py-1.5 px-3 text-xs font-bold wh-body text-center"
+      style={{ background: bg, color: "#fff", border: "none" }}
+    >
+      {label}
+    </button>
+  );
+}
+
 /* ---------- Splash / welcome screen ---------- */
 const SPLASH_CSS = `
 @keyframes wh-logo-in {
@@ -1236,11 +1463,27 @@ export default function App() {
       try {
         const session = await window.auth.getSession();
         if (session) {
-          const profile = await window.auth.getMyProfile();
-          if (profile) setAuthProfile(profile);
+          try {
+            const profile = await window.auth.getMyProfile();
+            if (profile) {
+              setAuthProfile(profile);
+              try {
+                localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(profile));
+              } catch (e) {}
+            }
+          } catch (e) {
+            // Offline (or the server is unreachable): the Supabase session itself is
+            // stored locally and still valid, so fall back to the last known profile
+            // instead of bouncing a logged-in user back to the login screen.
+            console.error("getMyProfile failed, falling back to cached profile", e);
+            const cached = cachedProfile();
+            if (cached) setAuthProfile(cached);
+          }
         }
       } catch (e) {
         console.error(e);
+        const cached = cachedProfile();
+        if (cached) setAuthProfile(cached);
       }
       setAuthChecked(true);
     })();
@@ -1281,7 +1524,16 @@ export default function App() {
     seenNotifIdsRef.current = null;
     (async () => {
       const [orgProfiles, p, t, s, n, m, w, r, sl, loc, dt, tc] = await Promise.all([
-        window.auth.getOrgProfiles(),
+        (async () => {
+          try {
+            const list = await window.auth.getOrgProfiles();
+            if (list) await cacheSet("__org_profiles__", list);
+            return list;
+          } catch (e) {
+            console.error("getOrgProfiles failed, using cache", e);
+            return (await cacheGet("__org_profiles__")) || [];
+          }
+        })(),
         loadKey(KEYS.products, []),
         loadKey(KEYS.tasks, []),
         loadKey(KEYS.settings, { supplierPhone: "" }),
@@ -1414,9 +1666,15 @@ export default function App() {
       const changedKey = payload.new?.key || payload.old?.key;
       const reloader = reloadMap[changedKey];
       if (reloader) reloader();
-    }).then((fn) => {
-      unsubscribe = fn;
-    });
+    })
+      .then((fn) => {
+        unsubscribe = fn;
+      })
+      .catch((e) => {
+        // No network: realtime just isn't available. The app keeps working from
+        // the local cache and will re-subscribe on the next load.
+        console.error("realtime subscribe failed", e);
+      });
     // also refresh the team member list occasionally isn't covered by kv_store changes
     // (profiles table changes aren't part of this subscription), so no action needed there.
     return () => unsubscribe();
@@ -1658,6 +1916,8 @@ export default function App() {
           </button>
         </div>
       </div>
+
+      <SyncBar showToast={showToast} />
 
       {showNotifications && (
         <div
