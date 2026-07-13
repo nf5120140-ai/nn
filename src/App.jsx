@@ -777,18 +777,33 @@ async function showOsNotification(title, body, tag) {
   }
 }
 
+/** Ask for permission, then register this device with the push server.
+    Returns the permission result. */
+async function enablePushOnThisDevice() {
+  const result = await requestNotificationPermission();
+  markPromptedNotifications();
+  if (result !== "granted") return result;
+  try {
+    if (window.auth?.registerPush) await window.auth.registerPush();
+  } catch (e) {
+    // Permission is granted, so in-app + foreground notifications still work.
+    // Only true background push is unavailable (e.g. VAPID key not configured yet).
+    console.error("push registration failed", e);
+  }
+  return result;
+}
+
 function NotificationsToggle({ showToast }) {
   const [perm, setPerm] = useState(() => notificationPermission());
 
   if (perm === "unsupported") return null;
 
   async function enable() {
-    const result = await requestNotificationPermission();
+    const result = await enablePushOnThisDevice();
     setPerm(result);
-    markPromptedNotifications();
     if (result === "granted") {
       showToast("התראות הופעלו במכשיר הזה");
-      showOsNotification("ההתראות פעילות ✓", "תקבל התראה כאן כשתוקצה לך משימה חדשה.", "test");
+      showOsNotification("ההתראות פעילות ✓", "תקבל התראה גם כשהאפליקציה סגורה.", "test");
     } else if (result === "denied") {
       showToast("ההתראות חסומות - יש לאפשר אותן בהגדרות הדפדפן/האפליקציה");
     }
@@ -2124,6 +2139,20 @@ export default function App() {
     setNotifBanner(true);
   }, [loaded, currentUser?.id, locked, biometricPrompt]);
 
+  /* Push endpoints can silently expire (browser update, long inactivity). Re-registering
+     on every load is cheap - it upserts on the same endpoint - and keeps delivery alive. */
+  useEffect(() => {
+    if (!loaded || !currentUser || locked) return;
+    if (!notificationsSupported() || notificationPermission() !== "granted") return;
+    (async () => {
+      try {
+        if (window.auth?.registerPush) await window.auth.registerPush();
+      } catch (e) {
+        console.error("push re-registration failed", e);
+      }
+    })();
+  }, [loaded, currentUser?.id, locked]);
+
   function showToast(msg) {
     setToast(msg);
     setTimeout(() => setToast(""), 2200);
@@ -2211,6 +2240,22 @@ export default function App() {
     await saveKey(KEYS.orderRequests, next);
   }
   /** Notify every manager in the org (used when a supervisor submits an order request). */
+  /* Two layers on purpose:
+     1. The in-app notification (kv_store + realtime) - the source of truth.
+     2. A real Web Push - the only thing that reaches a phone whose app is CLOSED.
+     Push is best-effort: if the Edge Function is down or we're offline, the in-app
+     notification still lands, and the OS notification fires next time the app opens. */
+  async function pushTo(userIds, title, body) {
+    try {
+      if (!window.auth?.sendPush) return;
+      const ids = userIds.filter(Boolean);
+      if (ids.length === 0) return;
+      await window.auth.sendPush({ userIds: ids, title, body, url: "/" });
+    } catch (e) {
+      console.error("push send failed (in-app notification still delivered)", e);
+    }
+  }
+
   async function notifyManagers(message) {
     const managers = users.filter((u) => u.role === "manager");
     if (managers.length === 0) return;
@@ -2219,6 +2264,7 @@ export default function App() {
       ...managers.map((u) => ({ id: genId(), userId: u.id, message, read: false, createdAt: Date.now() })),
     ];
     await persistNotifications(next);
+    pushTo(managers.map((u) => u.id), "ניהול משק חכם", message);
   }
   async function notifyUser(userId, message) {
     const next = [
@@ -2226,6 +2272,7 @@ export default function App() {
       { id: genId(), userId, message, read: false, createdAt: Date.now() },
     ];
     await persistNotifications(next);
+    pushTo([userId], "ניהול משק חכם", message);
   }
 
   const lowStock = products.filter((p) => Number(p.quantity) <= Number(p.threshold));
@@ -2407,17 +2454,16 @@ export default function App() {
                   להפעיל התראות?
                 </div>
                 <p className="text-xs mb-3" style={{ color: C.steel }}>
-                  תקבל התראה בטלפון ברגע שמוקצית לך משימה חדשה, בלי לפתוח את האפליקציה.
+                  תקבל התראה בטלפון ברגע שמוקצית לך משימה חדשה - גם כשהאפליקציה סגורה לגמרי.
                 </p>
                 <div className="flex gap-2">
                   <button
                     onClick={async () => {
-                      const result = await requestNotificationPermission();
-                      markPromptedNotifications();
+                      const result = await enablePushOnThisDevice();
                       setNotifBanner(false);
                       if (result === "granted") {
                         showToast("התראות הופעלו");
-                        showOsNotification("ההתראות פעילות ✓", "תקבל התראה כאן על משימות חדשות.", "test");
+                        showOsNotification("ההתראות פעילות ✓", "תקבל התראה גם כשהאפליקציה סגורה.", "test");
                       } else {
                         showToast("ההתראות לא הופעלו");
                       }
