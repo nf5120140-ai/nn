@@ -44,6 +44,7 @@ const KEYS = {
   stockLog: "kitchen-stock-log",
   locations: "kitchen-locations",
   dishTypes: "kitchen-dish-types",
+  taskCategories: "kitchen-task-categories",
 };
 
 const SETUP_SQL = `create table kv_store (
@@ -1212,6 +1213,7 @@ export default function App() {
   const [stockLog, setStockLog] = useState([]);
   const [locations, setLocations] = useState([]);
   const [dishTypes, setDishTypes] = useState([]);
+  const [taskCategories, setTaskCategories] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [tab, setTab] = useState("tasks");
   const [scannerOpen, setScannerOpen] = useState(false);
@@ -1278,7 +1280,7 @@ export default function App() {
     setLoaded(false);
     seenNotifIdsRef.current = null;
     (async () => {
-      const [orgProfiles, p, t, s, n, m, w, r, sl, loc, dt] = await Promise.all([
+      const [orgProfiles, p, t, s, n, m, w, r, sl, loc, dt, tc] = await Promise.all([
         window.auth.getOrgProfiles(),
         loadKey(KEYS.products, []),
         loadKey(KEYS.tasks, []),
@@ -1290,6 +1292,7 @@ export default function App() {
         loadKey(KEYS.stockLog, []),
         loadKey(KEYS.locations, null),
         loadKey(KEYS.dishTypes, null),
+        loadKey(KEYS.taskCategories, null),
       ]);
       const finalLocations = loc || [];
       let finalDishTypes = dt;
@@ -1301,6 +1304,20 @@ export default function App() {
         ];
         await saveKey(KEYS.dishTypes, finalDishTypes);
       }
+      let finalTaskCategories = tc;
+      if (finalTaskCategories === null) {
+        finalTaskCategories = [
+          { id: genId(), name: "חשמל", icon: "⚡" },
+          { id: genId(), name: "אינסטלציה", icon: "🔧" },
+          { id: genId(), name: "נגרות", icon: "🪚" },
+          { id: genId(), name: "מיזוג", icon: "❄️" },
+          { id: genId(), name: "ניקיון", icon: "🧹" },
+          { id: genId(), name: "מטבח", icon: "🍳" },
+          { id: genId(), name: "כללי", icon: "📋" },
+        ];
+        await saveKey(KEYS.taskCategories, finalTaskCategories);
+      }
+
       const finalUsers = (orgProfiles || []).map((prof) => ({
         id: prof.id,
         name: prof.display_name || "משתמש",
@@ -1372,6 +1389,7 @@ export default function App() {
       setStockLog(sl || []);
       setLocations(finalLocations || []);
       setDishTypes(finalDishTypes || []);
+      setTaskCategories(finalTaskCategories || []);
       setLoaded(true);
     })();
   }, [currentUser?.id]);
@@ -1390,6 +1408,7 @@ export default function App() {
       [KEYS.stockLog]: async () => setStockLog((await loadKey(KEYS.stockLog, [])) || []),
       [KEYS.locations]: async () => setLocations((await loadKey(KEYS.locations, [])) || []),
       [KEYS.dishTypes]: async () => setDishTypes((await loadKey(KEYS.dishTypes, [])) || []),
+      [KEYS.taskCategories]: async () => setTaskCategories((await loadKey(KEYS.taskCategories, [])) || []),
     };
     window.auth.subscribeToOrgChanges((payload) => {
       const changedKey = payload.new?.key || payload.old?.key;
@@ -1508,6 +1527,10 @@ export default function App() {
   async function persistDishTypes(next) {
     setDishTypes(next);
     await saveKey(KEYS.dishTypes, next);
+  }
+  async function persistTaskCategories(next) {
+    setTaskCategories(next);
+    await saveKey(KEYS.taskCategories, next);
   }
   async function notifyUser(userId, message) {
     const next = [
@@ -1761,6 +1784,7 @@ export default function App() {
             showToast={showToast}
             notifyUser={notifyUser}
             locations={locations}
+            taskCategories={taskCategories}
           />
         )}
         {tab === "admin" && currentUser.role === "manager" && (
@@ -1785,6 +1809,8 @@ export default function App() {
             persistLocations={persistLocations}
             dishTypes={dishTypes}
             persistDishTypes={persistDishTypes}
+            taskCategories={taskCategories}
+            persistTaskCategories={persistTaskCategories}
           />
         )}
       </div>
@@ -3035,15 +3061,32 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 }
 
 /* ---------- Tasks Tab ---------- */
-function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUser, locations }) {
+function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUser, locations, taskCategories }) {
   const [showNew, setShowNew] = useState(false);
   const [filter, setFilter] = useState("open");
   const [employeeFilter, setEmployeeFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [editingTask, setEditingTask] = useState(null);
+
+  const cats = taskCategories || [];
+  const catById = (id) => cats.find((c) => c.id === id);
 
   const visible = tasks
     .filter((t) => (filter === "all" ? true : filter === "open" ? t.status !== "done" : t.status === "done"))
     .filter((t) => (employeeFilter === "all" ? true : t.assignedToId === employeeFilter))
+    .filter((t) => (categoryFilter === "all" ? true : t.categoryId === categoryFilter))
     .sort((a, b) => b.createdAt - a.createdAt);
+
+  async function saveEdit(updated) {
+    const original = tasks.find((t) => t.id === updated.id);
+    const next = tasks.map((t) => (t.id === updated.id ? { ...t, ...updated } : t));
+    await persistTasks(next);
+    setEditingTask(null);
+    showToast("המשימה עודכנה");
+    if (notifyUser && original && updated.assignedToId !== original.assignedToId) {
+      notifyUser(updated.assignedToId, `שויכה אליך משימה: ${updated.title}`);
+    }
+  }
 
   async function updateStatus(task, status) {
     const next = tasks.map((t) => (t.id === task.id ? { ...t, status } : t));
@@ -3080,31 +3123,51 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
       return;
     }
     const priorityLabel = { low: "נמוכה", normal: "רגילה", urgent: "דחופה" }[task.priority] || "רגילה";
-    const text = `🛠️ משימה/תקלה חדשה\nכותרת: ${task.title}${task.location ? `\nמקום: ${task.location}` : ""}\nפירוט: ${task.description || "—"}\nעדיפות: ${priorityLabel}`;
+    const cat = catById(task.categoryId);
+    const text = `🛠️ משימה/תקלה חדשה\nכותרת: ${task.title}${cat ? `\nקטגוריה: ${cat.name}` : ""}${task.location ? `\nמקום: ${task.location}` : ""}\nפירוט: ${task.description || "—"}\nעדיפות: ${priorityLabel}`;
 
-    if (task.imageData && navigator.share && navigator.canShare) {
+    // Prefer the location photo if the task itself has none.
+    const loc = (locations || []).find((l) => l.id === task.locationId);
+    const photo = task.imageData || loc?.imageData || null;
+
+    const waUrl = `https://wa.me/${user.phone.replace(/\D/g, "")}?text=${encodeURIComponent(text)}`;
+
+    if (!photo) {
+      window.open(waUrl, "_blank");
+      return;
+    }
+
+    // IMPORTANT: navigator.share() must be invoked inside the user gesture.
+    // Any `await` before it (e.g. fetch()) breaks that and the browser throws
+    // NotAllowedError - which is why the image never made it through before.
+    // dataUrlToFile is synchronous, so the gesture survives.
+    let file = null;
+    try {
+      file = dataUrlToFile(photo, "task.jpg");
+    } catch (e) {
+      console.error("could not build file from image data", e);
+    }
+
+    if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
       try {
-        const res = await fetch(task.imageData);
-        const blob = await res.blob();
-        const file = new File([blob], "task.jpg", { type: blob.type || "image/jpeg" });
-        if (navigator.canShare({ files: [file] })) {
-          await navigator.share({ text, files: [file] });
-          return;
-        }
+        await navigator.share({ text, files: [file] });
+        return;
       } catch (e) {
-        console.error(e);
+        if (e && e.name === "AbortError") return; // user closed the share sheet on purpose
+        console.error("navigator.share failed", e);
       }
     }
 
-    const msg = encodeURIComponent(text);
-    window.open(`https://wa.me/${user.phone.replace(/\D/g, "")}?text=${msg}`, "_blank");
-
-    if (task.imageData) {
-      // Fallback: the phone/browser doesn't support sharing an image directly into WhatsApp.
-      // Open the photo in its own tab so it can be saved and attached manually.
-      window.open(task.imageData, "_blank");
-      showToast("המכשיר לא תומך בצירוף תמונה אוטומטי לוואטסאפ - התמונה נפתחה בנפרד, שמור ושתף אותה ידנית");
+    // Fallback: no file sharing support. Put the text on the clipboard so it can be
+    // pasted as a caption, open the photo for manual attaching, and open the chat.
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch (e) {
+      /* clipboard may be unavailable - not fatal */
     }
+    downloadDataUrl(photo, `task-${task.id}.jpg`);
+    window.open(waUrl, "_blank");
+    showToast("המכשיר לא תומך בשליחת תמונה ישירות - התמונה הורדה והטקסט הועתק, צרף אותם בוואטסאפ");
   }
 
   return (
@@ -3147,8 +3210,56 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
         </select>
       </div>
 
+      {cats.length > 0 && (
+        <div className="flex gap-2 overflow-x-auto pb-2 mb-3">
+          <button
+            onClick={() => setCategoryFilter("all")}
+            className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
+            style={{
+              background: categoryFilter === "all" ? C.ink : "#fff",
+              color: categoryFilter === "all" ? "#fff" : C.ink,
+              border: `1px solid ${C.kraftDark}`,
+            }}
+          >
+            כל הקטגוריות
+          </button>
+          {cats.map((c) => {
+            const col = categoryColor(c.name);
+            const active = categoryFilter === c.id;
+            const count = tasks.filter(
+              (t) => t.categoryId === c.id && (filter === "all" ? true : filter === "open" ? t.status !== "done" : t.status === "done")
+            ).length;
+            return (
+              <button
+                key={c.id}
+                onClick={() => setCategoryFilter(c.id)}
+                className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
+                style={{
+                  background: active ? col : "#fff",
+                  color: active ? "#fff" : col,
+                  border: `1.5px solid ${col}`,
+                }}
+              >
+                {c.icon || "📋"} {c.name}{count > 0 ? ` (${count})` : ""}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {showNew && (
-        <NewTaskForm users={users} onSubmit={addTask} onCancel={() => setShowNew(false)} locations={locations} />
+        <NewTaskForm users={users} onSubmit={addTask} onCancel={() => setShowNew(false)} locations={locations} taskCategories={cats} />
+      )}
+
+      {editingTask && (
+        <EditTaskForm
+          task={editingTask}
+          users={users}
+          locations={locations}
+          taskCategories={cats}
+          onSubmit={saveEdit}
+          onCancel={() => setEditingTask(null)}
+        />
       )}
 
       <div className="flex flex-col gap-3">
@@ -3162,7 +3273,22 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
             <ShelfTag key={t.id} accent={accent}>
               <div className="flex justify-between items-start">
                 <div>
-                  <div className="wh-display font-bold" style={{ color: C.ink }}>{t.title}</div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="wh-display font-bold" style={{ color: C.ink }}>{t.title}</div>
+                    {(() => {
+                      const cat = catById(t.categoryId);
+                      if (!cat) return null;
+                      const col = categoryColor(cat.name);
+                      return (
+                        <span
+                          className="text-xs px-2 py-0.5 rounded-full font-bold whitespace-nowrap"
+                          style={{ background: col, color: "#fff" }}
+                        >
+                          {cat.icon || "📋"} {cat.name}
+                        </span>
+                      );
+                    })()}
+                  </div>
                   {t.description && <div className="text-sm mt-1" style={{ color: C.steel }}>{t.description}</div>}
                   {t.location && (
                     <div className="text-xs mt-1 font-bold" style={{ color: C.ink }}>📍 {t.location}</div>
@@ -3177,19 +3303,8 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
                       ) : null;
                     })()
                   )}
-                  <div className="text-xs mt-2 flex items-center gap-2">
-                    <span style={{ color: C.steel }}>שויך ל:</span>
-                    <select
-                      value={t.assignedToId || ""}
-                      onChange={(e) => reassign(t, e.target.value)}
-                      className="text-xs p-1 rounded-2xl border"
-                      style={{ borderColor: C.kraftDark, background: "#fff", color: C.ink }}
-                    >
-                      {users.map((u) => (
-                        <option key={u.id} value={u.id}>{u.name}</option>
-                      ))}
-                    </select>
-                    <span style={{ color: C.steel }}>· נוצר ע"י {t.createdBy}</span>
+                  <div className="text-xs mt-2" style={{ color: C.steel }}>
+                    שויך ל: <b style={{ color: C.ink }}>{assignee?.name || "לא משויך"}</b> · נוצר ע"י {t.createdBy}
                   </div>
                 </div>
                 <span
@@ -3210,6 +3325,13 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
                     סמן כסגור
                   </button>
                 )}
+                <button
+                  onClick={() => setEditingTask(t)}
+                  className="px-3 py-1 rounded-2xl text-sm font-bold"
+                  style={{ background: C.accent, color: "#fff" }}
+                >
+                  ✏️ ערוך
+                </button>
                 <button onClick={() => notifyWhatsapp(t)} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: "#25D366", color: "#fff" }}>
                   עדכן בוואטסאפ
                 </button>
@@ -3227,6 +3349,34 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
       </div>
     </div>
   );
+}
+
+/**
+ * Convert a data URL to a File *synchronously*.
+ * This matters: navigator.share() only works inside a user gesture, and awaiting
+ * fetch(dataUrl) first would break the gesture chain and make the share fail.
+ */
+function dataUrlToFile(dataUrl, filename) {
+  const [header, base64] = String(dataUrl).split(",");
+  const mime = (header.match(/:(.*?);/) || [])[1] || "image/jpeg";
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], filename, { type: mime });
+}
+
+function downloadDataUrl(dataUrl, filename) {
+  try {
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch (e) {
+    console.error("download failed", e);
+    window.open(dataUrl, "_blank");
+  }
 }
 
 function resizeImageToDataUrl(file, maxDim = 900, quality = 0.7) {
@@ -3257,11 +3407,121 @@ function resizeImageToDataUrl(file, maxDim = 900, quality = 0.7) {
   });
 }
 
-function NewTaskForm({ users, onSubmit, onCancel, locations }) {
+function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCancel }) {
+  const [title, setTitle] = useState(task.title || "");
+  const [description, setDescription] = useState(task.description || "");
+  const [assignedToId, setAssignedToId] = useState(task.assignedToId || users[0]?.id || "");
+  const [priority, setPriority] = useState(task.priority || "normal");
+  const [categoryId, setCategoryId] = useState(task.categoryId || "");
+  const [locationId, setLocationId] = useState(task.locationId || "");
+
+  const locationGroups = Object.entries(
+    (locations || []).reduce((acc, loc) => {
+      const g = loc.group || "אחר";
+      (acc[g] = acc[g] || []).push(loc);
+      return acc;
+    }, {})
+  );
+
+  function submit() {
+    if (!title.trim()) return;
+    const loc = (locations || []).find((l) => l.id === locationId);
+    onSubmit({
+      id: task.id,
+      title: title.trim(),
+      description,
+      assignedToId,
+      priority,
+      categoryId,
+      locationId,
+      location: loc ? loc.name : "",
+    });
+  }
+
+  const originalAssignee = users.find((u) => u.id === task.assignedToId);
+  const changedAssignee = assignedToId !== task.assignedToId;
+
+  return (
+    <ShelfTag accent={C.accent} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>עריכת משימה</div>
+
+      <input
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="כותרת"
+        className="p-2 rounded-2xl border"
+        style={{ borderColor: C.kraftDark }}
+        autoFocus
+      />
+      <textarea
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        placeholder="פירוט"
+        className="p-2 rounded-2xl border"
+        style={{ borderColor: C.kraftDark }}
+        rows={2}
+      />
+
+      <div>
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>קטגוריה</label>
+        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+          <option value="">ללא קטגוריה</option>
+          {(taskCategories || []).map((c) => (
+            <option key={c.id} value={c.id}>{c.icon || "📋"} {c.name}</option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שיוך לעובד</label>
+        <select value={assignedToId} onChange={(e) => setAssignedToId(e.target.value)} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+        {changedAssignee && (
+          <p className="text-xs mt-1" style={{ color: C.accent }}>
+            העברה מ{originalAssignee?.name || "לא משויך"} — תישלח לו התראה על המשימה.
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מקום</label>
+        <select value={locationId} onChange={(e) => setLocationId(e.target.value)} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+          <option value="">ללא מקום</option>
+          {locationGroups.map(([g, items]) => (
+            <optgroup key={g} label={g}>
+              {items.map((loc) => (
+                <option key={loc.id} value={loc.id}>{loc.name}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+
+      <select value={priority} onChange={(e) => setPriority(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
+        <option value="low">עדיפות נמוכה</option>
+        <option value="normal">עדיפות רגילה</option>
+        <option value="urgent">עדיפות דחופה</option>
+      </select>
+
+      <div className="flex gap-2">
+        <button onClick={submit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
+          שמור שינויים
+        </button>
+        <button onClick={onCancel} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
+          ביטול
+        </button>
+      </div>
+    </ShelfTag>
+  );
+}
+
+function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [assignedToId, setAssignedToId] = useState(users[0]?.id || "");
   const [priority, setPriority] = useState("normal");
+  const [categoryId, setCategoryId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [imageData, setImageData] = useState(null);
   const [imageBusy, setImageBusy] = useState(false);
@@ -3308,6 +3568,12 @@ function NewTaskForm({ users, onSubmit, onCancel, locations }) {
           <img src={loc.imageData} alt="" className="rounded-2xl" style={{ maxHeight: 100 }} />
         ) : null;
       })()}
+      <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
+        <option value="">בחר קטגוריה (אופציונלי)</option>
+        {(taskCategories || []).map((c) => (
+          <option key={c.id} value={c.id}>{c.icon || "📋"} {c.name}</option>
+        ))}
+      </select>
       <select value={assignedToId} onChange={(e) => setAssignedToId(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
         {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
       </select>
@@ -3342,7 +3608,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations }) {
             if (!title.trim()) return;
             const loc = (locations || []).find((l) => l.id === locationId);
             const locationLabel = loc ? `${loc.group || "אחר"} · ${loc.name}` : "";
-            onSubmit({ title, description, assignedToId, priority, location: locationLabel, locationId, imageData });
+            onSubmit({ title, description, assignedToId, priority, categoryId, location: locationLabel, locationId, imageData });
           }}
           className="flex-1 py-2 rounded-2xl font-bold"
           style={{ background: C.ink, color: C.paper }}
@@ -3358,7 +3624,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations }) {
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes }) {
+function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories }) {
   const [section, setSection] = useState("products");
   const [showNav, setShowNav] = useState(false);
 
@@ -3367,6 +3633,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
     ["users", "עובדים"],
     ["menu", "תפריט"],
     ["dishtypes", "סוגי מנות"],
+    ["taskcats", "קטגוריות משימות"],
     ["locations", "מקומות"],
     ["reminders", "תזכורות"],
     ["analytics", "ניתוח"],
@@ -3420,6 +3687,9 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
       )}
       {section === "dishtypes" && (
         <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} />
+      )}
+      {section === "taskcats" && (
+        <TaskCategoriesAdmin taskCategories={taskCategories} persistTaskCategories={persistTaskCategories} showToast={showToast} />
       )}
       {section === "locations" && (
         <LocationsAdmin locations={locations} persistLocations={persistLocations} showToast={showToast} />
@@ -3992,6 +4262,157 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
               <button onClick={() => remove(s.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
             </div>
           </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TaskCategoriesAdmin({ taskCategories, persistTaskCategories, showToast }) {
+  const ICON_CHOICES = ["⚡", "🔧", "🪚", "❄️", "🧹", "🍳", "🚿", "🔨", "🪟", "🚪", "💡", "🧯", "🌱", "📋"];
+  const [name, setName] = useState("");
+  const [icon, setIcon] = useState("📋");
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editIcon, setEditIcon] = useState("📋");
+
+  const cats = taskCategories || [];
+
+  async function add() {
+    if (!name.trim()) return showToast("יש להזין שם קטגוריה");
+    if (cats.some((c) => c.name.trim() === name.trim())) return showToast("קטגוריה כזו כבר קיימת");
+    await persistTaskCategories([...cats, { id: genId(), name: name.trim(), icon }]);
+    setName("");
+    setIcon("📋");
+    showToast("הקטגוריה נוספה");
+  }
+
+  async function saveEdit() {
+    if (!editName.trim()) return showToast("יש להזין שם קטגוריה");
+    await persistTaskCategories(
+      cats.map((c) => (c.id === editingId ? { ...c, name: editName.trim(), icon: editIcon } : c))
+    );
+    setEditingId(null);
+    showToast("הקטגוריה עודכנה");
+  }
+
+  async function remove(id) {
+    if (!window.confirm("למחוק את הקטגוריה? משימות שכבר משויכות אליה יישארו, אבל יוצגו ללא קטגוריה.")) return;
+    await persistTaskCategories(cats.filter((c) => c.id !== id));
+    showToast("הקטגוריה נמחקה");
+  }
+
+  async function move(id, dir) {
+    const idx = cats.findIndex((c) => c.id === id);
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= cats.length) return;
+    const next = [...cats];
+    [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+    await persistTaskCategories(next);
+  }
+
+  return (
+    <div>
+      <h2 className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>קטגוריות משימות</h2>
+      <p className="text-xs mb-3" style={{ color: C.steel }}>
+        חשמל, אינסטלציה, נגרות... הקטגוריה נבחרת ביצירת משימה, ואפשר לסנן לפיה במסך המשימות.
+      </p>
+
+      <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="text-sm font-bold" style={{ color: C.ink }}>הוסף קטגוריה</div>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="שם הקטגוריה (למשל: גינון)"
+          className="p-2 rounded-2xl border"
+          style={{ borderColor: C.kraftDark }}
+        />
+        <div>
+          <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>בחר אייקון</div>
+          <div className="flex flex-wrap gap-1">
+            {ICON_CHOICES.map((ic) => (
+              <button
+                key={ic}
+                onClick={() => setIcon(ic)}
+                className="text-lg rounded-xl"
+                style={{
+                  width: 38,
+                  height: 38,
+                  background: icon === ic ? C.ink : "#fff",
+                  border: `1.5px solid ${icon === ic ? C.ink : C.kraftDark}`,
+                }}
+              >
+                {ic}
+              </button>
+            ))}
+          </div>
+        </div>
+        <button onClick={add} className="py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
+          הוסף
+        </button>
+      </ShelfTag>
+
+      <div className="flex flex-col gap-2">
+        {cats.length === 0 && (
+          <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין עדיין קטגוריות</p>
+        )}
+        {cats.map((c, idx) => (
+          <ShelfTag key={c.id} accent={categoryColor(c.name)}>
+            {editingId === c.id ? (
+              <div className="flex flex-col gap-2">
+                <input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="p-2 rounded-2xl border"
+                  style={{ borderColor: C.kraftDark }}
+                  autoFocus
+                />
+                <div className="flex flex-wrap gap-1">
+                  {ICON_CHOICES.map((ic) => (
+                    <button
+                      key={ic}
+                      onClick={() => setEditIcon(ic)}
+                      className="text-lg rounded-xl"
+                      style={{
+                        width: 34,
+                        height: 34,
+                        background: editIcon === ic ? C.ink : "#fff",
+                        border: `1.5px solid ${editIcon === ic ? C.ink : C.kraftDark}`,
+                      }}
+                    >
+                      {ic}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={saveEdit} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+                    שמור
+                  </button>
+                  <button onClick={() => setEditingId(null)} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+                    ביטול
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex justify-between items-center">
+                <div className="font-bold text-sm" style={{ color: C.ink }}>
+                  {c.icon || "📋"} {c.name}
+                </div>
+                <div className="flex gap-1">
+                  <button onClick={() => move(c.id, -1)} disabled={idx === 0} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft, opacity: idx === 0 ? 0.4 : 1 }}>▲</button>
+                  <button onClick={() => move(c.id, 1)} disabled={idx === cats.length - 1} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft, opacity: idx === cats.length - 1 ? 0.4 : 1 }}>▼</button>
+                  <button
+                    onClick={() => { setEditingId(c.id); setEditName(c.name); setEditIcon(c.icon || "📋"); }}
+                    className="text-xs px-2 py-1 rounded-xl"
+                    style={{ background: C.kraft }}
+                  >
+                    ערוך
+                  </button>
+                  <button onClick={() => remove(c.id)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+                </div>
+              </div>
+            )}
+          </ShelfTag>
         ))}
       </div>
     </div>
