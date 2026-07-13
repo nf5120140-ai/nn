@@ -5079,7 +5079,8 @@ function RowIngredientPicker({ products, ingredients, onAdd, onRemove }) {
   );
 }
 
-const PRODUCT_CATEGORIES = [
+/* Starting set only - the real list lives in settings.productCategories and is editable. */
+const DEFAULT_PRODUCT_CATEGORIES = [
   "יבשים",
   "מוצרי ניקיון",
   "חד פעמי",
@@ -5090,6 +5091,61 @@ const PRODUCT_CATEGORIES = [
 
 function ProductsAdmin({ products, persistProducts, showToast, settings, persistSettings }) {
   const suppliers = settings?.suppliers || [];
+  const categories = settings?.productCategories || DEFAULT_PRODUCT_CATEGORIES;
+  const [showCatManager, setShowCatManager] = useState(false);
+  const [newCat, setNewCat] = useState("");
+  const [renamingCat, setRenamingCat] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  async function persistCategories(next) {
+    await persistSettings({ ...settings, productCategories: next });
+  }
+
+  async function addCategory() {
+    const name = newCat.trim();
+    if (!name) return showToast("יש להזין שם קטגוריה");
+    if (categories.includes(name)) return showToast("קטגוריה כזו כבר קיימת");
+    await persistCategories([...categories, name]);
+    setNewCat("");
+    showToast(`הקטגוריה "${name}" נוספה`);
+  }
+
+  async function renameCategory(oldName) {
+    const name = renameValue.trim();
+    if (!name) return showToast("יש להזין שם קטגוריה");
+    if (name !== oldName && categories.includes(name)) return showToast("קטגוריה כזו כבר קיימת");
+    await persistCategories(categories.map((c) => (c === oldName ? name : c)));
+    // Keep existing products pointing at the renamed category.
+    const affected = products.filter((p) => p.category === oldName);
+    if (affected.length > 0) {
+      await persistProducts(products.map((p) => (p.category === oldName ? { ...p, category: name } : p)));
+    }
+    setRenamingCat(null);
+    showToast(`שונה ל"${name}"${affected.length ? ` · ${affected.length} מוצרים עודכנו` : ""}`);
+  }
+
+  async function removeCategory(name) {
+    const inUse = products.filter((p) => p.category === name).length;
+    const msg = inUse > 0
+      ? `יש ${inUse} מוצרים בקטגוריה "${name}". למחוק אותה? המוצרים יישארו אבל יעברו ל"ללא קטגוריה".`
+      : `למחוק את הקטגוריה "${name}"?`;
+    if (!window.confirm(msg)) return;
+    await persistCategories(categories.filter((c) => c !== name));
+    if (inUse > 0) {
+      await persistProducts(products.map((p) => (p.category === name ? { ...p, category: "" } : p)));
+    }
+    showToast("הקטגוריה נמחקה");
+  }
+
+  async function moveCategory(name, dir) {
+    const idx = categories.indexOf(name);
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= categories.length) return;
+    const next = [...categories];
+    [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+    await persistCategories(next);
+  }
+
   const empty = { name: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "", imageData: null };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
@@ -5416,11 +5472,76 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
           <input type="number" placeholder="יחידות בקרטון" value={form.unitsPerCarton || ""} onChange={(e) => setForm({ ...form, unitsPerCarton: Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
         </div>
         <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>קטגוריה</label>
+          <div className="flex justify-between items-center mb-1">
+            <label className="text-xs font-bold" style={{ color: C.steel }}>קטגוריה</label>
+            <button
+              onClick={() => setShowCatManager((v) => !v)}
+              className="text-xs font-bold underline"
+              style={{ color: C.accent }}
+            >
+              {showCatManager ? "סגור ניהול קטגוריות" : "⚙️ נהל קטגוריות"}
+            </button>
+          </div>
           <select value={form.category || ""} onChange={(e) => setForm({ ...form, category: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
             <option value="">ללא קטגוריה</option>
-            {PRODUCT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+            {categories.map((c) => <option key={c} value={c}>{c}</option>)}
           </select>
+
+          {showCatManager && (
+            <div className="mt-2 p-3 rounded-2xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+              <div className="flex gap-2 mb-3">
+                <input
+                  value={newCat}
+                  onChange={(e) => setNewCat(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addCategory()}
+                  placeholder="שם קטגוריה חדשה"
+                  className="flex-1 p-2 rounded-xl border text-sm"
+                  style={{ borderColor: C.kraftDark, background: "#fff" }}
+                />
+                <button onClick={addCategory} className="px-4 rounded-xl font-bold text-sm" style={{ background: C.ink, color: C.paper }}>
+                  הוסף
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                {categories.map((c, idx) => {
+                  const count = products.filter((p) => p.category === c).length;
+                  const col = categoryColor(c);
+                  return (
+                    <div key={c} className="flex items-center gap-1.5 p-2 rounded-xl" style={{ background: "#fff", borderRight: `4px solid ${col}` }}>
+                      {renamingCat === c ? (
+                        <>
+                          <input
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && renameCategory(c)}
+                            className="flex-1 p-1.5 rounded-lg border text-sm"
+                            style={{ borderColor: C.kraftDark }}
+                            autoFocus
+                          />
+                          <button onClick={() => renameCategory(c)} className="text-xs px-2 py-1 rounded-lg font-bold" style={{ background: C.sage, color: "#fff" }}>שמור</button>
+                          <button onClick={() => setRenamingCat(null)} className="text-xs px-2 py-1 rounded-lg" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="flex-1 text-sm font-bold" style={{ color: C.ink }}>
+                            {c} <span className="font-normal text-xs" style={{ color: C.steel }}>({count})</span>
+                          </span>
+                          <button onClick={() => moveCategory(c, -1)} disabled={idx === 0} className="text-xs px-1.5 py-1 rounded-lg" style={{ background: C.kraft, opacity: idx === 0 ? 0.35 : 1 }}>▲</button>
+                          <button onClick={() => moveCategory(c, 1)} disabled={idx === categories.length - 1} className="text-xs px-1.5 py-1 rounded-lg" style={{ background: C.kraft, opacity: idx === categories.length - 1 ? 0.35 : 1 }}>▼</button>
+                          <button onClick={() => { setRenamingCat(c); setRenameValue(c); }} className="text-xs px-2 py-1 rounded-lg" style={{ background: C.kraft, color: C.ink }}>שנה שם</button>
+                          <button onClick={() => removeCategory(c)} className="text-xs px-2 py-1 rounded-lg" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-xs mt-2" style={{ color: C.steel }}>
+                שינוי שם מעדכן אוטומטית את כל המוצרים בקטגוריה.
+              </p>
+            </div>
+          )}
         </div>
         <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>ספק קבוע למוצר (אופציונלי)</label>
@@ -5486,7 +5607,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
           <div className="flex gap-2 mb-2">
             <select value={bulkCategory} onChange={(e) => setBulkCategory(e.target.value)} className="flex-1 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }}>
               <option value="">בחר קטגוריה חדשה</option>
-              {PRODUCT_CATEGORIES.map((c) => <option key={c} value={c}>{c}</option>)}
+              {categories.map((c) => <option key={c} value={c}>{c}</option>)}
             </select>
             <button onClick={applyBulkCategory} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
               עדכן קטגוריה
