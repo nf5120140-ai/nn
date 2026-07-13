@@ -8,6 +8,11 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { persistSession: true, autoRefreshToken: true },
 });
 
+/* ====== Web Push ======
+   החלף את המחרוזת הזו במפתח ה-VAPID הציבורי שתייצר (ראה README).
+   זה מפתח ציבורי - מותר לחלוטין שיהיה בקוד הצד-לקוח. */
+const VAPID_PUBLIC_KEY = "BG89H8Luj-qdMLB6-DN5WgdFSBsRZbs1G4iyLOwbswjB42NboDg3_G6zSLNOJngJrVzh8NobnJxsun_lsscarM0";
+
 let cachedOrgId = null;
 
 async function getOrgId() {
@@ -151,6 +156,126 @@ async function list(prefix = "", shared = false) {
   return { keys: (data || []).map((r) => r.key), prefix, shared };
 }
 
+/* ---------- Web Push ---------- */
+
+/** מפתח VAPID מגיע כ-base64url; ה-API של הדפדפן דורש Uint8Array. */
+function urlBase64ToUint8Array(base64String) {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+function pushSupported() {
+  return (
+    typeof window !== "undefined" &&
+    "serviceWorker" in navigator &&
+    "PushManager" in window &&
+    "Notification" in window
+  );
+}
+
+/**
+ * רושם את המכשיר הנוכחי לקבלת push ושומר את המנוי ב-Supabase.
+ * דורש שהרשאת ההתראות כבר ניתנה.
+ */
+async function registerPush() {
+  if (!pushSupported()) throw new Error("push not supported");
+  if (Notification.permission !== "granted") throw new Error("permission not granted");
+  if (!VAPID_PUBLIC_KEY || VAPID_PUBLIC_KEY.startsWith("PASTE_")) {
+    throw new Error("VAPID public key not configured");
+  }
+
+  const reg = await navigator.serviceWorker.ready;
+
+  // אם כבר יש מנוי למכשיר הזה נשתמש בו, אחרת ניצור חדש.
+  let sub = await reg.pushManager.getSubscription();
+  if (!sub) {
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
+    });
+  }
+
+  const { data: sessionData } = await supabase.auth.getSession();
+  const uid = sessionData?.session?.user?.id;
+  if (!uid) throw new Error("not signed in");
+
+  const orgId = await getOrgId();
+  if (!orgId) throw new Error("no organization");
+
+  const json = sub.toJSON();
+  const { error } = await supabase.from("push_subscriptions").upsert(
+    {
+      user_id: uid,
+      org_id: orgId,
+      endpoint: json.endpoint,
+      p256dh: json.keys.p256dh,
+      auth: json.keys.auth,
+      user_agent: navigator.userAgent.slice(0, 200),
+    },
+    { onConflict: "endpoint" }
+  );
+  if (error) throw error;
+
+  return true;
+}
+
+/** מבטל את המנוי של המכשיר הנוכחי (למשל כשמכבים התראות). */
+async function unregisterPush() {
+  if (!pushSupported()) return;
+  const reg = await navigator.serviceWorker.ready;
+  const sub = await reg.pushManager.getSubscription();
+  if (!sub) return;
+  const endpoint = sub.toJSON().endpoint;
+  await sub.unsubscribe();
+  await supabase.from("push_subscriptions").delete().eq("endpoint", endpoint);
+}
+
+/** האם המכשיר הזה כבר רשום? */
+async function isPushRegistered() {
+  if (!pushSupported()) return false;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    return !!(await reg.pushManager.getSubscription());
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * שולח התראת push למשתמשים בארגון, דרך ה-Edge Function.
+ * שקט בכוונה: אם השליחה נכשלת (אין רשת / לא נפרס עדיין),
+ * ההתראה הפנימית באפליקציה עדיין עובדת - זה רק שכבה נוספת.
+ */
+async function sendPush({ userIds, title, body, url, tag }) {
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    if (!token) return { sent: 0 };
+
+    const res = await fetch(`${SUPABASE_URL}/functions/v1/send-push`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({ userIds, title, body, url, tag }),
+    });
+
+    if (!res.ok) {
+      console.error("sendPush failed", res.status, await res.text());
+      return { sent: 0 };
+    }
+    return await res.json();
+  } catch (e) {
+    console.error("sendPush error", e);
+    return { sent: 0 };
+  }
+}
+
 /* ---------- Realtime sync across devices ---------- */
 async function subscribeToOrgChanges(onChange) {
   const orgId = await getOrgId();
@@ -182,4 +307,9 @@ window.auth = {
   resetPasswordForEmail,
   updatePassword,
   subscribeToOrgChanges,
+  registerPush,
+  unregisterPush,
+  isPushRegistered,
+  sendPush,
+  pushSupported,
 };
