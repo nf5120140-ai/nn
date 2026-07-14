@@ -3672,11 +3672,14 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       showToast("אין מוצרים עם כמות גדולה מאפס");
       return;
     }
+    // Same rule as the menu modes: only a manager sends straight to the supplier.
+    // Anyone else raises a request for approval. (This used to bypass approval.)
     setPendingOrder({
       items,
-      title: "הזמנה לפי סף מלאי",
+      title: "לפי סף מלאי",
       supplierId: selectedSupplierId === "__manual__" ? "__unassigned__" : selectedSupplierId,
-      isRequest: false,
+      isRequest: !mayApprove,
+      sourceLabel: "לפי סף מלאי",
     });
   }
 
@@ -4316,9 +4319,11 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               <button
                 onClick={sendOrder}
                 className="w-full py-3 rounded-2xl wh-display font-bold"
-                style={{ background: channelMeta(channel).color, color: "#fff" }}
+                style={{ background: mayApprove ? channelMeta(channel).color : C.accent, color: "#fff" }}
               >
-                {channelMeta(channel).icon} שלח הזמנה ב{channelMeta(channel).label}
+                {mayApprove
+                  ? `${channelMeta(channel).icon} שלח הזמנה ב${channelMeta(channel).label}`
+                  : "📤 שלח בקשה לאישור מנהל"}
               </button>
             ) : (
               <button
@@ -6805,9 +6810,18 @@ function OrderRequestsAdmin({ orderRequests, persistOrderRequests, settings, pro
       </div>
 
       {shown.length === 0 && (
-        <p className="text-sm text-center py-8" style={{ color: C.steel }}>
-          {tab === "pending" ? "אין בקשות ממתינות ✓" : "אין עדיין היסטוריה"}
-        </p>
+        <ShelfTag accent={C.steel}>
+          <p className="text-sm text-center mb-2" style={{ color: C.steel }}>
+            {tab === "pending" ? "אין בקשות ממתינות ✓" : "אין עדיין היסטוריה"}
+          </p>
+          {tab === "pending" && (
+            <p className="text-xs text-center" style={{ color: C.steel, lineHeight: 1.6 }}>
+              כמנהל, ההזמנות שלך יוצאות ישירות לספק ולא נכנסות לכאן. המסך הזה מתמלא רק כשעובד שולח בקשה שדורשת את אישורך.
+              <br />
+              <b>מחפש את הבקשות של המעון?</b> הן נמצאות בניהול ← "בקשות מהמחסן".
+            </p>
+          )}
+        </ShelfTag>
       )}
 
       <div className="flex flex-col gap-3">
