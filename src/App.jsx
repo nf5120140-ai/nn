@@ -3466,6 +3466,10 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [weekPortions, setWeekPortions] = useState(1);
   const [menuQtys, setMenuQtys] = useState({});
   const [weekQtys, setWeekQtys] = useState({});
+  const [pickedIds, setPickedIds] = useState([]);        // which computed needs go on the order
+  const [orderExtras, setOrderExtras] = useState({});    // productId -> qty, for items NOT in the menu
+  const [extrasOpen, setExtrasOpen] = useState(false);
+  const [extraSearch, setExtraSearch] = useState("");
   const [orderSearch, setOrderSearch] = useState("");
   const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
   const [selectedForOrder, setSelectedForOrder] = useState([]);
@@ -3570,6 +3574,35 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     return store[product.id] ?? deficit;
   }
 
+  function togglePicked(id) {
+    setPickedIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  }
+
+  /* The order = the needs you actually ticked + anything you added manually.
+     Nothing is ticked by default: a product only ships if you chose it. */
+  function buildOrderRows(needs, qtyStore) {
+    const rows = needs
+      .filter((n) => pickedIds.includes(n.product.id))
+      .map((n) => ({ product: n.product, qty: getQty(qtyStore, n.product, n.deficit) }));
+
+    Object.entries(orderExtras).forEach(([pid, qty]) => {
+      if (rows.some((r) => r.product.id === pid)) return; // already covered by the menu
+      const product = products.find((p) => p.id === pid);
+      if (product && Number(qty) > 0) rows.push({ product, qty: Number(qty) });
+    });
+
+    return rows.filter((r) => Number(r.qty) > 0);
+  }
+
+  function groupRowsBySupplier(rows) {
+    const groups = {};
+    rows.forEach((r) => {
+      const key = r.product.supplierId || "__unassigned__";
+      (groups[key] = groups[key] || []).push(r);
+    });
+    return groups;
+  }
+
   function buildStockMessage() {
     const lines = products
       .filter((p) => selectedForOrder.includes(p.id))
@@ -3609,17 +3642,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
   // Group a set of rows (product + qty) by the product's assigned supplier.
   // Rows for products with no assigned supplier fall under "__unassigned__".
-  function groupBySupplier(rows, qtyStore) {
-    const groups = {};
-    rows.forEach(({ product, deficit }) => {
-      const qty = getQty(qtyStore, product, deficit);
-      if (Number(qty) <= 0) return;
-      const key = product.supplierId || "__unassigned__";
-      if (!groups[key]) groups[key] = [];
-      groups[key].push({ product, qty });
-    });
-    return groups;
-  }
+
 
   /** Non-managers can't push an order to a supplier - they file it for approval instead. */
   async function submitOrderRequest(items, supplierId, sourceLabel) {
@@ -3654,6 +3677,137 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       await notifyManagers(`📦 ${currentUser.name} שלח בקשת הזמנה (${rows.length} מוצרים) - ממתינה לאישורך`);
     }
     showToast("הבקשה נשלחה למנהל לאישור ✓");
+  }
+
+  /* Shared by "לפי מנות בודדות" and "לפי תפריט שבועי": manually added products
+     that the menu calculation knows nothing about (ketchup, napkins, a one-off). */
+  function ExtrasPanel() {
+    const extraRows = Object.entries(orderExtras)
+      .map(([pid, qty]) => ({ product: products.find((p) => p.id === pid), qty }))
+      .filter((r) => r.product);
+
+    const pickable = products
+      .filter((p) => !orderExtras[p.id])
+      .filter((p) => !extraSearch || p.name.includes(extraSearch));
+
+    return (
+      <div className="mb-4">
+        <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>
+          ➕ תוספות להזמנה (מחוץ לתפריט)
+        </div>
+
+        {extraRows.length > 0 && (
+          <div className="flex flex-col gap-2 mb-2">
+            {extraRows.map(({ product, qty }) => (
+              <ShelfTag key={product.id} accent={C.mustard}>
+                <div className="flex justify-between items-center text-sm">
+                  <div>
+                    <div className="font-bold" style={{ color: C.ink }}>{product.name}</div>
+                    <div className="text-xs" style={{ color: C.steel }}>
+                      יש במלאי {product.quantity} {product.unit}
+                      {product.supplierId && ` · ספק: ${suppliers.find((s) => s.id === product.supplierId)?.name || "—"}`}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={Number(qty) === 0 ? "" : qty}
+                      onChange={(e) =>
+                        setOrderExtras((cur) => ({ ...cur, [product.id]: Math.max(0, Number(e.target.value) || 0) }))
+                      }
+                      className="w-16 text-center p-2 rounded-2xl border"
+                      style={{ borderColor: C.kraftDark }}
+                    />
+                    <button
+                      onClick={() =>
+                        setOrderExtras((cur) => {
+                          const next = { ...cur };
+                          delete next[product.id];
+                          return next;
+                        })
+                      }
+                      className="px-2 py-1 rounded-xl text-xs font-bold"
+                      style={{ background: C.stamp, color: "#fff" }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              </ShelfTag>
+            ))}
+          </div>
+        )}
+
+        <button
+          onClick={() => setExtrasOpen(true)}
+          className="w-full py-2 rounded-2xl font-bold text-sm"
+          style={{ background: "#fff", color: C.mustard, border: `1.5px dashed ${C.mustard}` }}
+        >
+          ➕ הוסף מוצר שלא בתפריט
+        </button>
+
+        {extrasOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-end"
+            style={{ background: "rgba(35,31,61,0.5)" }}
+            onClick={() => setExtrasOpen(false)}
+          >
+            <div
+              className="w-full wh-body"
+              style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "80vh", overflowY: "auto", padding: 16 }}
+              onClick={(e) => e.stopPropagation()}
+              dir="rtl"
+            >
+              <div className="flex justify-between items-center mb-3">
+                <div className="wh-display font-bold" style={{ color: C.ink }}>הוסף מוצר להזמנה</div>
+                <button onClick={() => setExtrasOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>
+                  סיימתי
+                </button>
+              </div>
+
+              <input
+                value={extraSearch}
+                onChange={(e) => setExtraSearch(e.target.value)}
+                placeholder="חיפוש מוצר..."
+                className="w-full p-3 rounded-2xl border mb-3"
+                style={{ borderColor: C.kraftDark, background: "#fff" }}
+                autoFocus
+              />
+
+              {pickable.length === 0 ? (
+                <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין מוצרים תואמים</p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {pickable.map((p) => {
+                    // Suggest topping back up to twice the threshold, like the stock screen does.
+                    const suggested = Math.max(1, Number(p.threshold) * 2 - Number(p.quantity));
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => {
+                          setOrderExtras((cur) => ({ ...cur, [p.id]: suggested }));
+                          setExtraSearch("");
+                        }}
+                        className="flex justify-between items-center p-3 rounded-2xl text-right"
+                        style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}
+                      >
+                        <div>
+                          <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
+                          <div className="text-xs" style={{ color: C.steel }}>
+                            {p.category || "ללא קטגוריה"} · יש {p.quantity} {p.unit}
+                          </div>
+                        </div>
+                        <span className="text-lg font-bold" style={{ color: C.sage }}>+</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
   }
 
   function sendGroupOrder(items, title, supplierId) {
@@ -4025,20 +4179,45 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
             {selectedMenuIds.length > 0 && (
               <>
-                <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>מה חסר לפי החישוב (אפשר לערוך כמות):</div>
+                <div className="flex justify-between items-center mb-2">
+                  <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>מה חסר לפי החישוב</div>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => setPickedIds(menuNeeds.map((n) => n.product.id))}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      סמן הכל
+                    </button>
+                    <button
+                      onClick={() => setPickedIds([])}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      נקה
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs mb-2" style={{ color: C.steel }}>
+                  סמן ✔ מה נכנס להזמנה. {pickedIds.filter((id) => menuNeeds.some((n) => n.product.id === id)).length} מסומנים.
+                </p>
                 <div className="flex flex-col gap-2 mb-4">
                   {menuNeeds.map((n) => {
                     const supplierName = n.product.supplierId
                       ? suppliers.find((s) => s.id === n.product.supplierId)?.name
                       : null;
+                    const picked = pickedIds.includes(n.product.id);
                     return (
-                      <ShelfTag key={n.product.id} accent={n.deficit > 0 ? C.stamp : C.sage}>
+                      <ShelfTag key={n.product.id} accent={picked ? (n.deficit > 0 ? C.stamp : C.sage) : C.kraftDark}>
                         <div className="flex justify-between items-center text-sm">
-                          <div>
-                            <div style={{ color: C.ink }} className="font-bold">{n.product.name}</div>
-                            <div style={{ color: C.steel }} className="text-xs">
-                              צריך {n.totalNeeded} · יש {n.product.quantity}
-                              {supplierName && ` · ספק: ${supplierName}`}
+                          <div className="flex items-center gap-2">
+                            <input type="checkbox" checked={picked} onChange={() => togglePicked(n.product.id)} />
+                            <div>
+                              <div style={{ color: C.ink }} className="font-bold">{n.product.name}</div>
+                              <div style={{ color: C.steel }} className="text-xs">
+                                צריך {n.totalNeeded} · יש {n.product.quantity}
+                                {supplierName && ` · ספק: ${supplierName}`}
+                              </div>
                             </div>
                           </div>
                           <input
@@ -4055,7 +4234,10 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                     );
                   })}
                 </div>
-                {Object.entries(groupBySupplier(menuNeeds, menuQtys)).map(([supplierId, items]) => {
+
+                <ExtrasPanel />
+
+                {Object.entries(groupRowsBySupplier(buildOrderRows(menuNeeds, menuQtys))).map(([supplierId, items]) => {
                   const supplierName = supplierId === "__unassigned__" ? "ספק כללי" : suppliers.find((s) => s.id === supplierId)?.name || "ספק";
                   return (
                     <button
@@ -4297,20 +4479,45 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
             {weekNeeds.chosenDishNames.length > 0 && (
               <>
-                <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>מה חסר לכל השבוע (אפשר לערוך כמות):</div>
+                <div className="flex justify-between items-center mb-2">
+                  <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>מה חסר לכל השבוע</div>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => setPickedIds(weekNeeds.rows.map((n) => n.product.id))}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      סמן הכל
+                    </button>
+                    <button
+                      onClick={() => setPickedIds([])}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      נקה
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs mb-2" style={{ color: C.steel }}>
+                  סמן ✔ מה נכנס להזמנה. {pickedIds.filter((id) => weekNeeds.rows.some((n) => n.product.id === id)).length} מסומנים.
+                </p>
                 <div className="flex flex-col gap-2 mb-4">
                   {weekNeeds.rows.map((n) => {
                     const supplierName = n.product.supplierId
                       ? suppliers.find((s) => s.id === n.product.supplierId)?.name
                       : null;
+                    const picked = pickedIds.includes(n.product.id);
                     return (
-                      <ShelfTag key={n.product.id} accent={n.deficit > 0 ? C.stamp : C.sage}>
+                      <ShelfTag key={n.product.id} accent={picked ? (n.deficit > 0 ? C.stamp : C.sage) : C.kraftDark}>
                         <div className="flex justify-between items-center text-sm">
-                          <div>
-                            <div style={{ color: C.ink }} className="font-bold">{n.product.name}</div>
-                            <div style={{ color: C.steel }} className="text-xs">
-                              צריך {n.totalNeeded} · יש {n.product.quantity}
-                              {supplierName && ` · ספק: ${supplierName}`}
+                          <div className="flex items-center gap-2">
+                            <input type="checkbox" checked={picked} onChange={() => togglePicked(n.product.id)} />
+                            <div>
+                              <div style={{ color: C.ink }} className="font-bold">{n.product.name}</div>
+                              <div style={{ color: C.steel }} className="text-xs">
+                                צריך {n.totalNeeded} · יש {n.product.quantity}
+                                {supplierName && ` · ספק: ${supplierName}`}
+                              </div>
                             </div>
                           </div>
                           <input
@@ -4327,7 +4534,10 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                     );
                   })}
                 </div>
-                {Object.entries(groupBySupplier(weekNeeds.rows, weekQtys)).map(([supplierId, items]) => {
+
+                <ExtrasPanel />
+
+                {Object.entries(groupRowsBySupplier(buildOrderRows(weekNeeds.rows, weekQtys))).map(([supplierId, items]) => {
                   const supplierName = supplierId === "__unassigned__" ? "ספק כללי" : suppliers.find((s) => s.id === supplierId)?.name || "ספק";
                   return (
                     <button
