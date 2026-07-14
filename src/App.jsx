@@ -1840,7 +1840,7 @@ function UnitRequestTab({
     const others = (unitRequests || []).filter((r) => r.id !== current.id);
     await persistUnitRequests([...others, { ...current, status: "submitted", submittedAt: Date.now() }]);
     if (notifyManagers) {
-      await notifyManagers(`🧺 ${currentUser.name} שלח בקשה שבועית (${current.items.length} מוצרים) - ממתינה לאישורך`);
+      await notifyManagers(`🧺 ${currentUser.name} שלח בקשה שבועית (${current.items.length} מוצרים) - ממתינה לאישורך`, { tab: "admin", section: "unitrequests" });
     }
     showToast("הבקשה נשלחה למחסן ✓");
   }
@@ -2095,6 +2095,8 @@ export default function App() {
   const [scanResult, setScanResult] = useState(null); // { code, product|null }
   const [toast, setToast] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
+  const [adminSection, setAdminSection] = useState(null); // set when a notification points at an admin screen
+  const [focusTaskId, setFocusTaskId] = useState(null);   // task to auto-open after tapping a notification
   const [showMenu, setShowMenu] = useState(false);
   const [locked, setLocked] = useState(() => isBiometricEnabled());
   const [biometricPrompt, setBiometricPrompt] = useState(false);
@@ -2415,10 +2417,11 @@ export default function App() {
 
       for (const t of due) {
         const msg = `⏰ בדיקת המשך: ${t.title}`;
+        const link = { tab: "tasks", taskId: t.id };
         // Nudge the assignee, and the manager who set it if that's someone else.
         const recipients = new Set([t.assignedToId, t.createdById].filter(Boolean));
         for (const uid of recipients) {
-          await notifyUser(uid, msg);
+          await notifyUser(uid, msg, link);
         }
       }
     }
@@ -2428,6 +2431,21 @@ export default function App() {
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, currentUser?.id, tasks]);
+
+  /* Tapping a notification takes you to whatever it's about, marks it read,
+     and closes the panel. Older notifications have no link - they just get marked read. */
+  async function openNotification(n) {
+    const next = notifications.map((x) => (x.id === n.id ? { ...x, read: true } : x));
+    await persistNotifications(next);
+    setShowNotifications(false);
+
+    if (!n.link) return;
+    const { tab: target, section, taskId } = n.link;
+
+    if (section) setAdminSection(section);
+    if (taskId) setFocusTaskId(taskId);
+    if (target) setTab(target);
+  }
 
   function showToast(msg) {
     setToast(msg);
@@ -2532,20 +2550,22 @@ export default function App() {
     }
   }
 
-  async function notifyManagers(message) {
+  async function notifyManagers(message, link) {
     const managers = users.filter((u) => u.role === "manager");
     if (managers.length === 0) return;
     const next = [
       ...notifications,
-      ...managers.map((u) => ({ id: genId(), userId: u.id, message, read: false, createdAt: Date.now() })),
+      ...managers.map((u) => ({ id: genId(), userId: u.id, message, link, read: false, createdAt: Date.now() })),
     ];
     await persistNotifications(next);
     pushTo(managers.map((u) => u.id), "ניהול משק חכם", message);
   }
-  async function notifyUser(userId, message) {
+  /* `link` tells the notification bell where to jump when tapped, e.g.
+     { tab: "tasks", taskId } or { tab: "admin", section: "unitrequests" }. */
+  async function notifyUser(userId, message, link) {
     const next = [
       ...notifications,
-      { id: genId(), userId, message, read: false, createdAt: Date.now() },
+      { id: genId(), userId, message, link, read: false, createdAt: Date.now() },
     ];
     await persistNotifications(next);
     pushTo([userId], "ניהול משק חכם", message);
@@ -2696,13 +2716,20 @@ export default function App() {
           ) : (
             <div className="flex flex-col gap-2">
               {myNotifications.map((n) => (
-                <div
+                <button
                   key={n.id}
-                  className="p-2 rounded-xl text-sm"
-                  style={{ background: n.read ? C.paper : "#EFEAFF", color: C.ink }}
+                  onClick={() => openNotification(n)}
+                  className="p-2 rounded-xl text-sm text-right flex items-center gap-2"
+                  style={{
+                    background: n.read ? C.paper : "#EFEAFF",
+                    color: C.ink,
+                    cursor: n.link ? "pointer" : "default",
+                    border: `1px solid ${n.read ? C.kraftDark : "#D8CEFF"}`,
+                  }}
                 >
-                  {n.message}
-                </div>
+                  <span className="flex-1">{n.message}</span>
+                  {n.link && <span style={{ color: C.accent, fontWeight: 700 }}>‹</span>}
+                </button>
               ))}
             </div>
           )}
@@ -2772,6 +2799,8 @@ export default function App() {
             showToast={showToast}
             isManager={isManager(currentUser)}
             logStockChange={logStockChange}
+            initialSection={adminSection}
+            onSectionConsumed={() => setAdminSection(null)}
           />
         )}
         {tab === "order" && (
@@ -2802,6 +2831,8 @@ export default function App() {
             notifyUser={notifyUser}
             locations={locations}
             taskCategories={taskCategories}
+            focusTaskId={focusTaskId}
+            onFocusConsumed={() => setFocusTaskId(null)}
           />
         )}
         {tab === "unitrequest" && canRequestFromStock(currentUser) && (
@@ -3683,7 +3714,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
     await persistOrderRequests([...(orderRequests || []), request]);
     if (notifyManagers) {
-      await notifyManagers(`📦 ${currentUser.name} שלח בקשת הזמנה (${rows.length} מוצרים) - ממתינה לאישורך`);
+      await notifyManagers(`📦 ${currentUser.name} שלח בקשת הזמנה (${rows.length} מוצרים) - ממתינה לאישורך`, { tab: "admin", section: "orderrequests" });
     }
     showToast("הבקשה נשלחה למנהל לאישור ✓");
   }
@@ -4947,7 +4978,7 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
   );
 }
 
-function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUser, locations, taskCategories }) {
+function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUser, locations, taskCategories, focusTaskId, onFocusConsumed }) {
   const [showNew, setShowNew] = useState(false);
   const [filter, setFilter] = useState("open");
   const [employeeFilter, setEmployeeFilter] = useState("all");
@@ -4957,6 +4988,23 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
 
   const cats = taskCategories || [];
   const catById = (id) => cats.find((c) => c.id === id);
+
+  /* Arrived here by tapping a notification: open that task, and clear any filter
+     that would have hidden it (e.g. it's already done, or in another category). */
+  useEffect(() => {
+    if (!focusTaskId) return;
+    const t = tasks.find((x) => x.id === focusTaskId);
+    if (t) {
+      setFilter("all");
+      setEmployeeFilter("all");
+      setCategoryFilter("all");
+      setDetailTask(t);
+    } else {
+      showToast("המשימה לא נמצאה - ייתכן שנמחקה");
+    }
+    if (onFocusConsumed) onFocusConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusTaskId]);
 
   async function saveTask(updated) {
     const next = tasks.map((t) => (t.id === updated.id ? updated : t));
@@ -4981,7 +5029,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
     setEditingTask(null);
     showToast("המשימה עודכנה");
     if (notifyUser && original && updated.assignedToId !== original.assignedToId) {
-      notifyUser(updated.assignedToId, `שויכה אליך משימה: ${updated.title}`);
+      notifyUser(updated.assignedToId, `שויכה אליך משימה: ${updated.title}`, { tab: "tasks", taskId: updated.id });
     }
   }
 
@@ -4994,7 +5042,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
     const next = tasks.map((t) => (t.id === task.id ? { ...t, assignedToId } : t));
     await persistTasks(next);
     if (notifyUser && assignedToId !== task.assignedToId) {
-      notifyUser(assignedToId, `שויכה אליך משימה: ${task.title}`);
+      notifyUser(assignedToId, `שויכה אליך משימה: ${task.title}`, { tab: "tasks", taskId: task.id });
     }
   }
 
@@ -5010,7 +5058,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
     await persistTasks(next);
     setShowNew(false);
     showToast("המשימה נוצרה");
-    if (notifyUser) notifyUser(newTask.assignedToId, `משימה חדשה: ${newTask.title}`);
+    if (notifyUser) notifyUser(newTask.assignedToId, `משימה חדשה: ${newTask.title}`, { tab: "tasks", taskId: created.id });
   }
 
   async function notifyWhatsapp(task, mode = "share") {
@@ -5609,8 +5657,15 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange }) {
-  const [section, setSection] = useState("products");
+function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed }) {
+  const [section, setSection] = useState(initialSection || "products");
+
+  // A notification can deep-link straight into a specific admin screen.
+  useEffect(() => {
+    if (!initialSection) return;
+    setSection(initialSection);
+    if (onSectionConsumed) onSectionConsumed();
+  }, [initialSection]);
   const [showNav, setShowNav] = useState(false);
 
   const pendingCount = (orderRequests || []).filter((r) => r.status === "pending").length;
@@ -6369,7 +6424,7 @@ function UnitRequestsAdmin({
       const msg = shortages.length
         ? `🧺 הבקשה שלך נופקה חלקית (${shortages.length} מוצרים בחוסר)`
         : "🧺 הבקשה שלך נופקה במלואה ✓";
-      await notifyUser(req.unitId, msg);
+      await notifyUser(req.unitId, msg, { tab: "unitrequest" });
     }
     setEditing(null);
     showToast("נופק והמלאי עודכן ✓");
@@ -6382,7 +6437,7 @@ function UnitRequestsAdmin({
         r.id === editing.requestId ? { ...r, status: "rejected", managerNote: editing.note } : r
       )
     );
-    if (notifyUser) await notifyUser(req.unitId, `הבקשה השבועית שלך נדחתה${editing.note ? `: ${editing.note}` : ""}`);
+    if (notifyUser) await notifyUser(req.unitId, `הבקשה השבועית שלך נדחתה${editing.note ? `: ${editing.note}` : ""}`, { tab: "unitrequest" });
     setEditing(null);
     showToast("הבקשה נדחתה");
   }
@@ -6584,7 +6639,7 @@ function OrderRequestsAdmin({ orderRequests, persistOrderRequests, settings, pro
       )
     );
     if (notifyUser && req) {
-      notifyUser(req.createdById, `✅ בקשת ההזמנה שלך אושרה ונשלחה${supplier ? ` ל${supplier.name}` : ""}`);
+      notifyUser(req.createdById, `✅ בקשת ההזמנה שלך אושרה ונשלחה${supplier ? ` ל${supplier.name}` : ""}`, { tab: "order" });
     }
     setEditing(null);
     showToast("הבקשה אושרה ונשלחה");
@@ -6601,7 +6656,7 @@ function OrderRequestsAdmin({ orderRequests, persistOrderRequests, settings, pro
       )
     );
     if (notifyUser) {
-      notifyUser(r.createdById, `❌ בקשת ההזמנה שלך נדחתה${reason ? `: ${reason}` : ""}`);
+      notifyUser(r.createdById, `❌ בקשת ההזמנה שלך נדחתה${reason ? `: ${reason}` : ""}`, { tab: "order" });
     }
     setEditing(null);
     showToast("הבקשה נדחתה");
