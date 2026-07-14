@@ -6430,6 +6430,32 @@ function UnitRequestsAdmin({
     showToast("נופק והמלאי עודכן ✓");
   }
 
+  /* Close a request without touching stock: for when the goods were handed over
+     outside the app, or the stock count was already corrected by hand. */
+  async function markHandled(reqId, note) {
+    const req = all.find((r) => r.id === reqId);
+    await persistUnitRequests(
+      (unitRequests || []).map((r) =>
+        r.id === reqId
+          ? {
+              ...r,
+              status: "fulfilled",
+              fulfilledAt: Date.now(),
+              fulfilledBy: currentUser.name,
+              stockUntouched: true,
+              managerNote: note || r.managerNote || "",
+              issuedItems: (r.items || []).map((i) => ({ ...i })),
+            }
+          : r
+      )
+    );
+    if (notifyUser && req) {
+      await notifyUser(req.unitId, "🧺 הבקשה שלך טופלה ✓", { tab: "unitrequest" });
+    }
+    setEditing(null);
+    showToast("הבקשה סומנה כטופלה (המלאי לא שונה)");
+  }
+
   async function reject() {
     const req = all.find((r) => r.id === editing.requestId);
     await persistUnitRequests(
@@ -6509,6 +6535,16 @@ function UnitRequestsAdmin({
         <button onClick={fulfill} className="w-full py-3 rounded-2xl wh-display font-bold mb-2" style={{ background: C.sage, color: "#fff" }}>
           ✓ נפק והורד מהמלאי
         </button>
+        <button
+          onClick={() => markHandled(editing.requestId, editing.note)}
+          className="w-full py-2 rounded-2xl font-bold text-sm mb-2"
+          style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+        >
+          ✓ סמן כטופל — בלי לשנות מלאי
+        </button>
+        <p className="text-xs text-center mb-3" style={{ color: C.steel }}>
+          השתמש בזה אם מסרת להם ידנית, או אם כבר עדכנת את המלאי בעצמך.
+        </p>
         <button onClick={reject} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>
           דחה בקשה
         </button>
@@ -6559,12 +6595,30 @@ function UnitRequestsAdmin({
                     {r.status === "submitted" && shortCount > 0 && (
                       <span style={{ color: C.stamp }}> · {shortCount} בחוסר</span>
                     )}
+                    {r.status === "fulfilled" && r.fulfilledBy && (
+                      <span> · ע"י {r.fulfilledBy}</span>
+                    )}
+                    {r.status === "fulfilled" && r.stockUntouched && (
+                      <span style={{ color: C.mustard }}> · המלאי לא שונה</span>
+                    )}
                   </div>
                 </div>
                 {r.status === "submitted" ? (
-                  <button onClick={() => openReview(r)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.ink, color: C.paper }}>
-                    בדוק ונפק
-                  </button>
+                  <div className="flex flex-col gap-1.5">
+                    <button onClick={() => openReview(r)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.ink, color: C.paper }}>
+                      בדוק ונפק
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!window.confirm(`לסמן את הבקשה של ${r.unitName} כטופלה? המלאי לא ישתנה.`)) return;
+                        markHandled(r.id);
+                      }}
+                      className="px-4 py-1.5 rounded-2xl font-bold text-xs"
+                      style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      ✓ סמן כטופל
+                    </button>
+                  </div>
                 ) : (
                   <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: st.color, color: "#fff" }}>
                     {st.label}
