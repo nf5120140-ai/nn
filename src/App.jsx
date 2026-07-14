@@ -1561,6 +1561,184 @@ function SplashScreen() {
   );
 }
 
+/* Grid editor shaped like the Excel sheet it replaces: one row per dish type,
+   one column per day. Tap a cell to pick the dish. */
+function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey, slotLabel }) {
+  const [cell, setCell] = useState(null); // { dayKey, dayLabel, dishTypeId, dishTypeName }
+  const types = dishTypes || [];
+
+  if (types.length === 0) {
+    return (
+      <ShelfTag accent={C.steel}>
+        <p className="text-sm text-center" style={{ color: C.steel }}>
+          אין סוגי מנות מוגדרים. הוסף בניהול ← סוגי מנות (למשל: מנה עיקרית, תוספת, ירקנית).
+        </p>
+      </ShelfTag>
+    );
+  }
+
+  const nameOf = (dayKey, dtId) => {
+    const id = weeklyMenu[dayKey]?.[slotKey]?.[dtId];
+    return menuItems.find((m) => m.id === id)?.name || "";
+  };
+
+  return (
+    <div className="mb-4">
+      <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>
+        ארוחת {slotLabel}
+      </div>
+
+      <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+        <table style={{ borderCollapse: "collapse", minWidth: "100%" }}>
+          <thead>
+            <tr>
+              <th
+                style={{
+                  background: C.accent,
+                  color: "#fff",
+                  padding: "8px 6px",
+                  border: `1px solid ${C.kraftDark}`,
+                  position: "sticky",
+                  right: 0,
+                  zIndex: 2,
+                  minWidth: 84,
+                  fontSize: 12,
+                }}
+              />
+              {WEEK_DAYS.map(([, label], idx) => (
+                <th
+                  key={label}
+                  style={{
+                    background: C.accent,
+                    color: "#fff",
+                    padding: "8px 10px",
+                    border: `1px solid ${C.kraftDark}`,
+                    fontSize: 13,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {label}
+                  <div style={{ fontSize: 10, fontWeight: 400, opacity: 0.9 }}>{weekdayDateLabel(idx)}</div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {types.map((dt) => (
+              <tr key={dt.id}>
+                <th
+                  style={{
+                    background: "#D6E7F5",
+                    color: C.ink,
+                    padding: "8px 6px",
+                    border: `1px solid ${C.kraftDark}`,
+                    textAlign: "right",
+                    fontSize: 12,
+                    position: "sticky",
+                    right: 0,
+                    zIndex: 1,
+                    minWidth: 84,
+                  }}
+                >
+                  {dt.name}
+                </th>
+                {WEEK_DAYS.map(([dayKey, dayLabel]) => {
+                  const val = nameOf(dayKey, dt.id);
+                  return (
+                    <td
+                      key={dayKey}
+                      onClick={() => setCell({ dayKey, dayLabel, dishTypeId: dt.id, dishTypeName: dt.name })}
+                      style={{
+                        border: `1px solid ${C.kraftDark}`,
+                        padding: "8px 10px",
+                        textAlign: "center",
+                        fontSize: 13,
+                        cursor: "pointer",
+                        background: val ? "#fff" : "#FAFBFD",
+                        color: val ? C.ink : C.kraftDark,
+                        minWidth: 96,
+                      }}
+                    >
+                      {val || "+"}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {cell && (
+        <div
+          className="fixed inset-0 z-50 flex items-end"
+          style={{ background: "rgba(35,31,61,0.5)" }}
+          onClick={() => setCell(null)}
+        >
+          <div
+            className="w-full wh-body"
+            style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "70vh", overflowY: "auto", padding: 16 }}
+            onClick={(e) => e.stopPropagation()}
+            dir="rtl"
+          >
+            <div className="flex justify-between items-center mb-3">
+              <div>
+                <div className="wh-display font-bold" style={{ color: C.ink }}>{cell.dishTypeName}</div>
+                <div className="text-xs" style={{ color: C.steel }}>{cell.dayLabel} · ארוחת {slotLabel}</div>
+              </div>
+              <button onClick={() => setCell(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>
+                סגור
+              </button>
+            </div>
+
+            <button
+              onClick={async () => {
+                await setWeekSlot(cell.dayKey, slotKey, cell.dishTypeId, "");
+                setCell(null);
+              }}
+              className="w-full p-3 rounded-2xl text-sm font-bold mb-2 text-right"
+              style={{ background: "#fff", color: C.steel, border: `1px solid ${C.kraftDark}` }}
+            >
+              — רוקן תא —
+            </button>
+
+            {menuItems.filter((m) => m.dishType === cell.dishTypeId).length === 0 ? (
+              <p className="text-sm text-center py-6" style={{ color: C.steel }}>
+                אין מנות מסוג "{cell.dishTypeName}". הוסף בניהול ← תפריט.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {menuItems
+                  .filter((m) => m.dishType === cell.dishTypeId)
+                  .map((m) => {
+                    const selected = weeklyMenu[cell.dayKey]?.[slotKey]?.[cell.dishTypeId] === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        onClick={async () => {
+                          await setWeekSlot(cell.dayKey, slotKey, cell.dishTypeId, m.id);
+                          setCell(null);
+                        }}
+                        className="p-3 rounded-2xl text-right font-bold"
+                        style={{
+                          background: selected ? C.sage : "#fff",
+                          color: selected ? "#fff" : C.ink,
+                          border: `1.5px solid ${selected ? C.sage : C.kraftDark}`,
+                        }}
+                      >
+                        {selected && "✓ "}{m.name}
+                      </button>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Unit requests (e.g. the daycare ordering out of our stock) ---------- */
 
 /** ISO date (yyyy-mm-dd) of the Sunday that starts the current week. */
@@ -3251,6 +3429,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
   const [selectedForOrder, setSelectedForOrder] = useState([]);
   const [openPicker, setOpenPicker] = useState(null);
+  const [weekView, setWeekView] = useState("grid"); // "grid" (like the Excel sheet) | "days"
   const { holidays } = useHebrewHolidays();
 
   function dateForWeekdayIndex(idx) {
@@ -3270,14 +3449,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lowStock.length]);
 
-  useEffect(() => {
-    setSelectedForOrder((cur) => {
-      const lowIds = lowStock.map((p) => p.id);
-      const merged = Array.from(new Set([...cur, ...lowIds]));
-      return merged;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lowStock.length]);
+  // Deliberately no auto-selection: the user decides what actually goes on the order.
+  // (Previously every low-stock item was pre-ticked, which made it easy to send things
+  // nobody meant to order.) The "סמן הכל" button is there when you do want them all.
 
   function toggleMenuItem(id) {
     setSelectedMenuIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
@@ -3453,22 +3627,47 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     if (!res.ok && showToast) showToast(res.error);
   }
 
+  /* Print layout mirrors the Excel sheet this replaced:
+     rows = dish types (מנה עיקרית / תוספת / ירקנית), columns = days.
+     One table per meal slot. */
   function printWeeklyMenu() {
-    const rows = WEEK_DAYS.map(([dayKey, dayLabel]) => {
-      const cells = MEAL_SLOTS.map(([slotKey]) => {
-        const names = (dishTypes || []).map((dt) => {
-          const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
-          const m = menuItems.find((mi) => mi.id === id);
-          return m ? m.name : null;
-        }).filter(Boolean);
-        return names.length > 0 ? names.join("<br/>") : "—";
-      });
-      return { dayLabel, cells };
-    });
-    const headerCells = MEAL_SLOTS.map(([, label]) => `<th>${label}</th>`).join("");
-    const bodyRows = rows
-      .map((r) => `<tr><td class="daycell">${r.dayLabel}</td>${r.cells.map((c) => `<td>${c}</td>`).join("")}</tr>`)
-      .join("");
+    const days = WEEK_DAYS;
+    const types = dishTypes || [];
+
+    function tableFor(slotKey, slotLabel) {
+      const header = days
+        .map(([, label], idx) => `<th>${label}<div class="date">${weekdayDateLabel(idx)}</div></th>`)
+        .join("");
+
+      const body = types
+        .map((dt) => {
+          const cells = days
+            .map(([dayKey]) => {
+              const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+              const m = menuItems.find((mi) => mi.id === id);
+              return `<td>${m ? m.name : ""}</td>`;
+            })
+            .join("");
+          return `<tr><th class="rowhead">${dt.name}</th>${cells}</tr>`;
+        })
+        .join("");
+
+      // Skip a meal slot entirely if nothing was planned for it.
+      const anything = days.some(([dayKey]) =>
+        types.some((dt) => weeklyMenu[dayKey]?.[slotKey]?.[dt.id])
+      );
+      if (!anything) return "";
+
+      return `
+        <h2>ארוחת ${slotLabel}</h2>
+        <table>
+          <thead><tr><th class="corner"></th>${header}</tr></thead>
+          <tbody>${body}</tbody>
+        </table>`;
+    }
+
+    const tables = MEAL_SLOTS.map(([k, l]) => tableFor(k, l)).join("");
+
     const html = `
       <!doctype html>
       <html lang="he" dir="rtl">
@@ -3476,20 +3675,24 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           <meta charset="UTF-8" />
           <title>תפריט שבועי</title>
           <style>
-            body { font-family: Arial, sans-serif; padding: 24px; }
-            h1 { text-align: center; font-size: 20px; margin-bottom: 16px; }
-            table { width: 100%; border-collapse: collapse; }
-            th, td { border: 1px solid #333; padding: 10px; text-align: center; font-size: 14px; }
-            th { background: #EFEAFF; }
-            .daycell { font-weight: bold; background: #F7F3FF; }
+            @page { size: A4 landscape; margin: 12mm; }
+            body { font-family: Arial, sans-serif; padding: 8px; color: #111; }
+            h1 { text-align: center; font-size: 22px; margin: 0 0 4px; }
+            .sub { text-align: center; font-size: 12px; color: #666; margin-bottom: 18px; }
+            h2 { font-size: 16px; margin: 18px 0 6px; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 10px; page-break-inside: avoid; }
+            th, td { border: 1px solid #444; padding: 8px 6px; text-align: center; font-size: 14px; }
+            thead th { background: #2E86C4; color: #fff; font-size: 15px; }
+            .date { font-size: 10px; font-weight: normal; opacity: 0.85; }
+            .corner { background: #2E86C4; }
+            .rowhead { background: #D6E7F5; text-align: right; font-weight: bold; width: 110px; }
+            tbody tr:nth-child(even) td { background: #F5F9FD; }
           </style>
         </head>
         <body>
-          <h1>תפריט שבועי — ${todayStr()}</h1>
-          <table>
-            <thead><tr><th></th>${headerCells}</tr></thead>
-            <tbody>${bodyRows}</tbody>
-          </table>
+          <h1>תפריט שבועי</h1>
+          <div class="sub">${weekLabel(weekStartIso())}</div>
+          ${tables || '<p style="text-align:center">לא שובצו מנות לשבוע הזה</p>'}
           <script>window.onload = () => window.print();</script>
         </body>
       </html>
@@ -3498,6 +3701,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     win.document.write(html);
     win.document.close();
   }
+
 
   return (
     <div>
@@ -3849,6 +4053,43 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               </button>
             </div>
 
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={() => setWeekView("grid")}
+                className="flex-1 py-2 rounded-2xl text-sm font-bold"
+                style={{ background: weekView === "grid" ? C.ink : C.kraft, color: weekView === "grid" ? C.paper : C.ink }}
+              >
+                📊 טבלה
+              </button>
+              <button
+                onClick={() => setWeekView("days")}
+                className="flex-1 py-2 rounded-2xl text-sm font-bold"
+                style={{ background: weekView === "days" ? C.ink : C.kraft, color: weekView === "days" ? C.paper : C.ink }}
+              >
+                📅 יום-יום
+              </button>
+            </div>
+
+            {weekView === "grid" && (
+              <>
+                <p className="text-xs mb-3" style={{ color: C.steel }}>
+                  לחץ על תא כדי לבחור מנה. אפשר להחליק לצדדים כדי לראות את כל הימים.
+                </p>
+                {MEAL_SLOTS.map(([slotKey, slotLabel]) => (
+                  <WeeklyMenuGrid
+                    key={slotKey}
+                    weeklyMenu={weeklyMenu}
+                    setWeekSlot={setWeekSlot}
+                    menuItems={menuItems}
+                    dishTypes={dishTypes}
+                    slotKey={slotKey}
+                    slotLabel={slotLabel}
+                  />
+                ))}
+              </>
+            )}
+
+            {weekView === "days" && (
             <div className="flex flex-col gap-2 mb-4">
               {WEEK_DAYS.map(([dayKey, dayLabel], dayIdx) => {
                 const dateObj = dateForWeekdayIndex(dayIdx);
@@ -3890,6 +4131,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 );
               })}
             </div>
+            )}
 
             {openPicker && (
               <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.5)" }} onClick={() => setOpenPicker(null)}>
