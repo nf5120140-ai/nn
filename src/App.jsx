@@ -3365,6 +3365,47 @@ function useHebrewHolidays() {
   return { holidays, loadingHolidays };
 }
 
+/** Weekly Torah portions from Hebcal, keyed by the Shabbat they're read on. */
+function useParshiot() {
+  const [parshiot, setParshiot] = useState([]);
+
+  useEffect(() => {
+    const start = new Date();
+    start.setDate(start.getDate() - 7);
+    const end = new Date();
+    end.setDate(end.getDate() + 120);
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    // s=on adds the weekly parasha to the results.
+    const url = `https://www.hebcal.com/hebcal?v=1&cfg=json&s=on&start=${fmt(start)}&end=${fmt(end)}&lg=he`;
+
+    fetch(url)
+      .then((r) => r.json())
+      .then((data) => {
+        const items = (data.items || [])
+          .filter((it) => it.category === "parashat")
+          .map((it) => ({ date: it.date.slice(0, 10), title: it.hebrew || it.title }));
+        setParshiot(items);
+      })
+      .catch(() => setParshiot([]));
+  }, []);
+
+  return parshiot;
+}
+
+/** The Saturday that closes the week starting on the given Sunday. */
+function shabbatOfWeek(weekStartIsoStr) {
+  const d = new Date(weekStartIsoStr);
+  d.setDate(d.getDate() + 6);
+  return d.toISOString().slice(0, 10);
+}
+
+/** ISO Sunday of next week. */
+function nextWeekStartIso() {
+  const d = new Date(weekStartIso());
+  d.setDate(d.getDate() + 7);
+  return d.toISOString().slice(0, 10);
+}
+
 function HebrewCalendarWidget() {
   const { holidays, loadingHolidays } = useHebrewHolidays();
   const [open, setOpen] = useState(false);
@@ -3430,6 +3471,15 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [selectedForOrder, setSelectedForOrder] = useState([]);
   const [openPicker, setOpenPicker] = useState(null);
   const [weekView, setWeekView] = useState("grid"); // "grid" (like the Excel sheet) | "days"
+  const [menuWeek, setMenuWeek] = useState("next"); // which week the printed menu is for
+  const [parshaOverride, setParshaOverride] = useState("");
+  const parshiot = useParshiot();
+
+  // The menu you plan is normally for the coming week, so that's the default.
+  const targetWeekStart = menuWeek === "next" ? nextWeekStartIso() : weekStartIso();
+  const targetShabbat = shabbatOfWeek(targetWeekStart);
+  const autoParsha = parshiot.find((p) => p.date === targetShabbat)?.title || "";
+  const parshaTitle = parshaOverride.trim() || autoParsha;
   const { holidays } = useHebrewHolidays();
 
   function dateForWeekdayIndex(idx) {
@@ -3636,7 +3686,12 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
     function tableFor(slotKey, slotLabel) {
       const header = days
-        .map(([, label], idx) => `<th>${label}<div class="date">${weekdayDateLabel(idx)}</div></th>`)
+        .map(([, label], idx) => {
+          const d = new Date(targetWeekStart);
+          d.setDate(d.getDate() + idx);
+          const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+          return `<th>${label}<div class="date">${dateStr}</div></th>`;
+        })
         .join("");
 
       const body = types
@@ -3690,8 +3745,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           </style>
         </head>
         <body>
-          <h1>תפריט שבועי</h1>
-          <div class="sub">${weekLabel(weekStartIso())}</div>
+          <h1>${parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי"}</h1>
+          <div class="sub">${weekLabel(targetWeekStart)}</div>
           ${tables || '<p style="text-align:center">לא שובצו מנות לשבוע הזה</p>'}
           <script>window.onload = () => window.print();</script>
         </body>
@@ -4044,6 +4099,49 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 className="w-24 p-2 rounded-2xl border text-center mb-2"
                 style={{ borderColor: C.kraftDark }}
               />
+              <div className="p-3 rounded-2xl mb-2" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+                <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+                  התפריט הוא עבור
+                </label>
+                <div className="flex gap-2 mb-2">
+                  <button
+                    onClick={() => setMenuWeek("next")}
+                    className="flex-1 py-1.5 rounded-xl text-xs font-bold"
+                    style={{ background: menuWeek === "next" ? C.ink : C.paper, color: menuWeek === "next" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+                  >
+                    שבוע הבא
+                  </button>
+                  <button
+                    onClick={() => setMenuWeek("this")}
+                    className="flex-1 py-1.5 rounded-xl text-xs font-bold"
+                    style={{ background: menuWeek === "this" ? C.ink : C.paper, color: menuWeek === "this" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+                  >
+                    השבוע הזה
+                  </button>
+                </div>
+
+                <div className="text-center py-2 mb-2 rounded-xl" style={{ background: C.paper }}>
+                  <div className="text-xs" style={{ color: C.steel }}>כותרת ההדפסה:</div>
+                  <div className="wh-display font-black text-base" style={{ color: C.ink }}>
+                    {parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי"}
+                  </div>
+                  <div className="text-xs" style={{ color: C.steel }}>{weekLabel(targetWeekStart)}</div>
+                </div>
+
+                <input
+                  value={parshaOverride}
+                  onChange={(e) => setParshaOverride(e.target.value)}
+                  placeholder={autoParsha ? `לדריסה ידנית (כרגע: ${autoParsha})` : "שם הפרשה (לא נטען אוטומטית)"}
+                  className="w-full p-2 rounded-xl border text-sm"
+                  style={{ borderColor: C.kraftDark }}
+                />
+                <p className="text-xs mt-1" style={{ color: C.steel }}>
+                  {autoParsha
+                    ? "הפרשה נטענת אוטומטית. השדה הזה רק אם רוצים לשנות (למשל שבת חול המועד)."
+                    : "לא הצלחתי לטעון את הפרשה - הזן ידנית."}
+                </p>
+              </div>
+
               <button
                 onClick={printWeeklyMenu}
                 className="w-full py-3 rounded-2xl text-sm font-bold"
