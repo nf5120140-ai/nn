@@ -1046,15 +1046,28 @@ function SetNewPasswordScreen({ onDone }) {
   );
 }
 
+/** An invite link looks like https://site/?join=<orgId> - pull the code out of it. */
+function orgIdFromUrl() {
+  try {
+    return new URLSearchParams(window.location.search).get("join") || "";
+  } catch (e) {
+    return "";
+  }
+}
+
 function AuthGate({ onAuthed }) {
-  const [mode, setMode] = useState(() => (hasExistingAccount() ? "login" : "choose")); // choose | create | join | login
+  const invitedOrgId = orgIdFromUrl();
+  const [mode, setMode] = useState(() => {
+    if (invitedOrgId) return "join"; // arrived via an invite link
+    return hasExistingAccount() ? "login" : "choose";
+  });
   const [showTerms, setShowTerms] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [phone, setPhone] = useState("");
   const [orgName, setOrgName] = useState("");
-  const [joinOrgId, setJoinOrgId] = useState("");
+  const [joinOrgId, setJoinOrgId] = useState(invitedOrgId);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmNotice, setConfirmNotice] = useState(false);
@@ -1209,15 +1222,36 @@ function AuthGate({ onAuthed }) {
 
         {mode === "join" && (
           <ShelfTag accent={C.sage} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <p className="text-xs" style={{ color: C.steel }}>בקש מהמנהל שלך את קוד/מזהה הארגון (Org ID) שיש לו במסך ניהול.</p>
-            <input value={joinOrgId} onChange={(e) => setJoinOrgId(e.target.value)} placeholder="Org ID" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} autoFocus />
-            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="השם שלך" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            {invitedOrgId ? (
+              <div className="p-2 rounded-xl text-center" style={{ background: "#E8F6E8", border: `1px solid ${C.sage}` }}>
+                <div className="text-sm font-bold" style={{ color: C.sage }}>✓ הוזמנת לארגון</div>
+                <div className="text-xs" style={{ color: C.steel }}>קוד הארגון כבר מולא. רק מלא את הפרטים שלך למטה.</div>
+              </div>
+            ) : (
+              <p className="text-xs" style={{ color: C.steel }}>בקש מהמנהל שלך את קוד/מזהה הארגון (Org ID) שיש לו במסך ניהול.</p>
+            )}
+            <input
+              value={joinOrgId}
+              onChange={(e) => setJoinOrgId(e.target.value)}
+              placeholder="Org ID"
+              className="p-3 rounded-2xl border"
+              style={{
+                borderColor: invitedOrgId ? C.sage : C.kraftDark,
+                direction: "ltr",
+                background: invitedOrgId ? "#F4FBF4" : "#fff",
+              }}
+              autoFocus={!invitedOrgId}
+            />
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="השם שלך" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} autoFocus={!!invitedOrgId} />
             <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="טלפון (אופציונלי)" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
             <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
             <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
             {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
             <button onClick={doJoin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
               {busy ? "מצטרף..." : "הצטרף והירשם"}
+            </button>
+            <button onClick={() => setMode("login")} className="text-xs underline" style={{ color: C.accent }}>
+              כבר יש לי חשבון - התחבר
             </button>
             <button onClick={() => setMode("choose")} className="text-xs" style={{ color: C.steel }}>חזרה</button>
           </ShelfTag>
@@ -7298,20 +7332,23 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
   function sendInvite() {
     const siteUrl = typeof window !== "undefined" ? window.location.origin : "";
     const apkUrl = (settings?.apkUrl || "").trim();
+    // One tap: this link pre-fills the org code, so nobody has to copy anything.
+    const joinUrl = `${siteUrl}/?join=${encodeURIComponent(currentUser.orgId)}`;
 
     const lines = [
       "שלום! מוזמן/ת להצטרף לאפליקציית ניהול המשימות והמלאי שלנו.",
       "",
-      `🔗 קישור לאפליקציה: ${siteUrl}`,
+      "👈 לחץ על הקישור והירשם - הכל כבר ממולא:",
+      joinUrl,
     ];
-    if (apkUrl) lines.push(`📱 להורדת האפליקציה לאנדרואיד (APK): ${apkUrl}`);
+    if (apkUrl) lines.push("", `📱 להורדת האפליקציה לאנדרואיד: ${apkUrl}`);
     lines.push(
       "",
-      "איך נרשמים:",
-      "1. פתח את הקישור",
-      '2. לחץ "הצטרף לארגון קיים"',
-      `3. הזן את מזהה הארגון: ${currentUser.orgId}`,
-      "4. הירשם עם המייל והסיסמה שלך"
+      "──────────",
+      "אם הקישור לא עובד, הירשם ידנית עם קוד הארגון הזה:",
+      "",
+      currentUser.orgId, // alone on its own line - one long-press selects just the code
+      ""
     );
 
     const res = sendViaChannel(inviteChannel, {
@@ -7374,8 +7411,23 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
         <p className="text-xs mb-1" style={{ color: C.steel }}>או שתף ידנית את מזהה הארגון:</p>        <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.ink, color: "#fff", direction: "ltr", wordBreak: "break-all", fontFamily: "monospace" }}>
           {currentUser.orgId}
         </div>
-        <button onClick={copyOrgId} className="w-full py-1.5 rounded-xl text-xs font-bold mb-3" style={{ background: C.paper, color: C.ink }}>
+        <button onClick={copyOrgId} className="w-full py-1.5 rounded-xl text-xs font-bold mb-2" style={{ background: C.paper, color: C.ink }}>
           {copied ? "הועתק ✓" : "העתק מזהה ארגון"}
+        </button>
+        <button
+          onClick={async () => {
+            const link = `${window.location.origin}/?join=${encodeURIComponent(currentUser.orgId)}`;
+            try {
+              await navigator.clipboard.writeText(link);
+              showToast("קישור ההזמנה הועתק ✓");
+            } catch (e) {
+              showToast("לא ניתן להעתיק - העתק ידנית מהשדה למעלה");
+            }
+          }}
+          className="w-full py-1.5 rounded-xl text-xs font-bold mb-3"
+          style={{ background: C.accent, color: "#fff" }}
+        >
+          🔗 העתק קישור הזמנה (ממלא את הקוד לבד)
         </button>
 
         <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
