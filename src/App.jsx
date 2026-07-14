@@ -3470,6 +3470,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [orderExtras, setOrderExtras] = useState({});    // productId -> qty, for items NOT in the menu
   const [extrasOpen, setExtrasOpen] = useState(false);
   const [extraSearch, setExtraSearch] = useState("");
+  const [pendingOrder, setPendingOrder] = useState(null); // review sheet before anything is sent
   const [orderSearch, setOrderSearch] = useState("");
   const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
   const [selectedForOrder, setSelectedForOrder] = useState([]);
@@ -3631,13 +3632,21 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       if (showToast) showToast("סמן קודם לפחות מוצר אחד לשליחה");
       return;
     }
-    const res = sendViaChannel(channel, {
-      phone: resolvedPhone(),
-      email: resolvedEmail(),
-      text: buildStockMessage(),
-      subject: ORDER_SUBJECT,
+    const items = products
+      .filter((p) => selectedForOrder.includes(p.id))
+      .map((p) => ({ product: p, qty: qtys[p.id] ?? 1 }))
+      .filter(({ qty }) => Number(qty) > 0);
+
+    if (items.length === 0) {
+      showToast("אין מוצרים עם כמות גדולה מאפס");
+      return;
+    }
+    setPendingOrder({
+      items,
+      title: "הזמנה לפי סף מלאי",
+      supplierId: selectedSupplierId === "__manual__" ? "__unassigned__" : selectedSupplierId,
+      isRequest: false,
     });
-    if (!res.ok && showToast) showToast(res.error);
   }
 
   // Group a set of rows (product + qty) by the product's assigned supplier.
@@ -3810,7 +3819,165 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     );
   }
 
+  /* Every send path funnels through here first. Shows exactly what's going out,
+     to whom, on which channel, with the real message text - then sends. */
+  function OrderSummarySheet() {
+    if (!pendingOrder) return null;
+    const { items, supplierId, title, isRequest } = pendingOrder;
+
+    const supplierName =
+      supplierId && supplierId !== "__unassigned__"
+        ? suppliers.find((s) => s.id === supplierId)?.name || "ספק"
+        : "ספק כללי";
+
+    let dest = "";
+    if (supplierId && supplierId !== "__unassigned__") {
+      const sup = suppliers.find((s) => s.id === supplierId);
+      dest = channel === "email" ? sup?.email || "" : sup?.phone || "";
+    } else {
+      dest = channel === "email" ? resolvedEmail() : resolvedPhone();
+    }
+
+    const total = items.reduce((sum, { product, qty }) => sum + Number(product.price || 0) * Number(qty), 0);
+    const messageText = items.map(({ product, qty }) => `- ${qty} ${product.unit} ${product.name}`).join("\n");
+    const missingDest = !isRequest && !dest;
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setPendingOrder(null)}>
+        <div
+          className="w-full wh-body"
+          style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "88vh", overflowY: "auto", padding: 16 }}
+          onClick={(e) => e.stopPropagation()}
+          dir="rtl"
+        >
+          <div className="flex justify-between items-start mb-3">
+            <div>
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>
+                {isRequest ? "סיכום בקשת הזמנה" : "סיכום הזמנה"}
+              </div>
+              <div className="text-xs" style={{ color: C.steel }}>{title}</div>
+            </div>
+            <button onClick={() => setPendingOrder(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
+              ביטול
+            </button>
+          </div>
+
+          {/* Where it's going */}
+          <ShelfTag accent={missingDest ? C.stamp : C.accent} style={{ marginBottom: 12 }}>
+            <div className="flex justify-between text-sm">
+              <span style={{ color: C.steel }}>ספק:</span>
+              <b style={{ color: C.ink }}>{supplierName}</b>
+            </div>
+            {!isRequest && (
+              <>
+                <div className="flex justify-between text-sm mt-1">
+                  <span style={{ color: C.steel }}>ערוץ:</span>
+                  <b style={{ color: channelMeta(channel).color }}>
+                    {channelMeta(channel).icon} {channelMeta(channel).label}
+                  </b>
+                </div>
+                <div className="flex justify-between text-sm mt-1">
+                  <span style={{ color: C.steel }}>יעד:</span>
+                  <b style={{ color: missingDest ? C.stamp : C.ink, direction: "ltr" }}>
+                    {dest || "לא הוגדר!"}
+                  </b>
+                </div>
+              </>
+            )}
+            {isRequest && (
+              <p className="text-xs mt-2" style={{ color: C.steel }}>
+                הבקשה תישלח למנהל לאישור. היא לא יוצאת לספק עדיין.
+              </p>
+            )}
+          </ShelfTag>
+
+          {missingDest && (
+            <ShelfTag accent={C.stamp} style={{ marginBottom: 12 }}>
+              <p className="text-sm font-bold" style={{ color: C.stamp }}>
+                אין {channel === "email" ? "מייל" : "טלפון"} ל{supplierName}
+              </p>
+              <p className="text-xs" style={{ color: C.steel }}>
+                הוסף בניהול ← הגדרות ← ספקים, או החלף ערוץ.
+              </p>
+            </ShelfTag>
+          )}
+
+          {/* Line by line */}
+          <div className="rounded-2xl overflow-hidden mb-3" style={{ border: `1px solid ${C.kraftDark}` }}>
+            <div className="flex text-xs font-bold px-3 py-2" style={{ background: C.ink, color: "#fff" }}>
+              <span className="flex-1">מוצר</span>
+              <span style={{ width: 70, textAlign: "center" }}>כמות</span>
+              <span style={{ width: 70, textAlign: "left" }}>מחיר</span>
+            </div>
+            {items.map(({ product, qty }, i) => (
+              <div
+                key={product.id}
+                className="flex items-center px-3 py-2 text-sm"
+                style={{ background: i % 2 ? "#F7FAFD" : "#fff", borderTop: `1px solid ${C.kraftDark}` }}
+              >
+                <span className="flex-1 font-bold" style={{ color: C.ink }}>{product.name}</span>
+                <span style={{ width: 70, textAlign: "center", color: C.ink }}>
+                  {qty} {product.unit}
+                </span>
+                <span style={{ width: 70, textAlign: "left", color: C.steel }}>
+                  ₪{(Number(product.price || 0) * Number(qty)).toFixed(0)}
+                </span>
+              </div>
+            ))}
+            <div className="flex px-3 py-2 text-sm font-bold" style={{ background: "#EFEAFF", borderTop: `2px solid ${C.ink}` }}>
+              <span className="flex-1" style={{ color: C.ink }}>סה"כ {items.length} מוצרים</span>
+              <span style={{ color: C.ink }}>₪{total.toFixed(0)}</span>
+            </div>
+          </div>
+
+          {!isRequest && (
+            <details className="mb-3">
+              <summary className="text-xs font-bold cursor-pointer" style={{ color: C.accent }}>
+                תצוגה מקדימה של ההודעה שתישלח
+              </summary>
+              <pre
+                className="text-xs mt-2 p-3 rounded-2xl"
+                style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, color: C.ink, whiteSpace: "pre-wrap", fontFamily: "inherit" }}
+              >
+                {messageText}
+              </pre>
+            </details>
+          )}
+
+          <button
+            onClick={() => {
+              const p = pendingOrder;
+              setPendingOrder(null);
+              if (p.isRequest) submitOrderRequest(p.items, p.supplierId, p.sourceLabel);
+              else doSendGroupOrder(p.items, p.title, p.supplierId);
+            }}
+            disabled={missingDest}
+            className="w-full py-3 rounded-2xl wh-display font-bold"
+            style={{
+              background: missingDest ? C.kraftDark : isRequest ? C.accent : channelMeta(channel).color,
+              color: "#fff",
+              opacity: missingDest ? 0.6 : 1,
+            }}
+          >
+            {isRequest
+              ? "📤 שלח בקשה לאישור"
+              : `${channelMeta(channel).icon} אשר ושלח ל${supplierName}`}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /* Opens the review sheet. Nothing leaves the app until the user confirms there. */
   function sendGroupOrder(items, title, supplierId) {
+    if (!items || items.length === 0) {
+      showToast("לא נבחרו מוצרים להזמנה");
+      return;
+    }
+    setPendingOrder({ items, title, supplierId, isRequest: false });
+  }
+
+  function doSendGroupOrder(items, title, supplierId) {
     const lines = items.map(({ product, qty }) => `- ${qty} ${product.unit} ${product.name}`);
     let phone = "";
     let email = "";
@@ -4245,7 +4412,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                       onClick={() =>
                         mayApprove
                           ? sendGroupOrder(items, "📋 הזמנה לפי תפריט", supplierId)
-                          : submitOrderRequest(items, supplierId, "לפי מנות בודדות")
+                          : setPendingOrder({ items, title: "לפי מנות בודדות", supplierId, isRequest: true, sourceLabel: "לפי מנות בודדות" })
                       }
                       className="w-full py-3 mb-2 rounded-2xl wh-display font-bold"
                       style={{ background: mayApprove ? channelMeta(channel).color : C.accent, color: "#fff" }}
@@ -4545,7 +4712,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                       onClick={() =>
                         mayApprove
                           ? sendGroupOrder(items, "📅 הזמנה לפי תפריט שבועי", supplierId)
-                          : submitOrderRequest(items, supplierId, "לפי תפריט שבועי")
+                          : setPendingOrder({ items, title: "לפי תפריט שבועי", supplierId, isRequest: true, sourceLabel: "לפי תפריט שבועי" })
                       }
                       className="w-full py-3 mb-2 rounded-2xl wh-display font-bold"
                       style={{ background: mayApprove ? channelMeta(channel).color : C.accent, color: "#fff" }}
@@ -4561,6 +4728,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           </>
         )
       )}
+
+      <OrderSummarySheet />
     </div>
   );
 }
