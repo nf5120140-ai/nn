@@ -2253,7 +2253,7 @@ function App() {
     setLoaded(false);
     seenNotifIdsRef.current = null;
     (async () => {
-      const [orgProfiles, p, t, s, n, m, w, r, sl, loc, dt, tc, orq, ur, ut, oh] = await Promise.all([
+      const [orgProfiles, p, t, s, n, m, w, r, sl, oh, loc, dt, tc, orq, ur, ut] = await Promise.all([
         (async () => {
           try {
             const list = await window.auth.getOrgProfiles();
