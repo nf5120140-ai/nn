@@ -6025,6 +6025,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
 
   const allSections = [
     ["orderrequests", "בקשות הזמנה"],
+    ["unitrequests", "בקשות מהמחסן"],
     ["products", "מוצרים"],
     ["users", "עובדים"],
     ["menu", "תפריט"],
