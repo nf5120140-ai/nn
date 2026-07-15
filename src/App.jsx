@@ -5124,16 +5124,19 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
       showToast("שגיאה: לא ניתן לקרוא את התמונה השמורה");
     }
 
-    const canShareFiles = !!(file && navigator.share && navigator.canShare && navigator.canShare({ files: [file] }));
-
-    if (canShareFiles) {
-      // Try richest first, then progressively simpler, because some Android builds
-      // reject text+files, or title+files, but accept files alone.
+    // Don't trust navigator.canShare here: inside an installed PWA (WebAPK) it often
+    // reports false for files even though the share actually works. The real test is
+    // to just try it. We attempt richest-first, then progressively simpler payloads.
+    if (file && navigator.share) {
       const attempts = [
+        { files: [file], text, title: "משימה" },
         { files: [file], text },
         { files: [file] },
       ];
       for (const payload of attempts) {
+        // Skip a payload the browser can explicitly reject up front, but never let
+        // a *missing* canShare stop us.
+        if (navigator.canShare && !navigator.canShare(payload)) continue;
         try {
           await navigator.share(payload);
           if (!payload.text) {
@@ -5142,28 +5145,22 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
           }
           return; // success
         } catch (e) {
-          if (e && e.name === "AbortError") return; // user closed the sheet - stop
+          if (e && e.name === "AbortError") return; // user closed the sheet
           console.error("share attempt failed", payload, e);
-          // otherwise fall through to the next, simpler attempt
+          // try the next, simpler payload
         }
-      }
-      // Every share attempt threw (not aborted) - fall through to manual fallback.
-    } else {
-      // Tell the user *why* we can't share the image directly.
-      if (!navigator.share) {
-        showToast("הדפדפן לא תומך בשיתוף. פתח מהאפליקציה המותקנת (הוסף למסך הבית)");
-      } else if (!navigator.canShare) {
-        showToast("הדפדפן לא תומך בשיתוף קבצים");
-      } else {
-        showToast("המכשיר לא מאפשר לשתף תמונה ישירות - התמונה תרד לצירוף ידני");
       }
     }
 
-    // Manual fallback: download the photo + copy the text, then open the chat.
+    // Nothing worked (or no share support): download the photo + copy the text,
+    // then open the chat so the image can be attached manually.
+    if (!navigator.share) {
+      showToast("הדפדפן לא תומך בשיתוף - התמונה תרד לצירוף ידני");
+    }
     try { await navigator.clipboard.writeText(text); } catch (_) {}
     downloadDataUrl(photo, `task-${task.id}.jpg`);
     window.open(waUrl, "_blank");
-    showToast("התמונה ירדה למכשיר והטקסט הועתק - צרף את התמונה בוואטסאפ ידנית");
+    showToast("התמונה ירדה והטקסט הועתק - צרף את התמונה בוואטסאפ ידנית");
   }
 
   return (
