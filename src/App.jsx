@@ -2067,7 +2067,67 @@ function UnitRequestTab({
 }
 
 /* ---------- Main App ---------- */
-export default function App() {
+/* Catches render crashes so the app shows a recovery screen instead of going white.
+   Also lets the user jump back to a safe tab without reinstalling. */
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("App crashed:", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="min-h-screen flex items-center justify-center p-6" style={{ background: "#F3F6FB", fontFamily: "Arial,sans-serif" }} dir="rtl">
+          <div className="w-full max-w-xs text-center">
+            <div className="text-5xl mb-4">😕</div>
+            <h1 style={{ color: "#14213D", fontWeight: 900, fontSize: 20, marginBottom: 8 }}>משהו השתבש</h1>
+            <p style={{ color: "#5B6B85", fontSize: 14, marginBottom: 20 }}>
+              אירעה תקלה זמנית. הנתונים שלך שמורים. נסה לטעון מחדש.
+            </p>
+            <button
+              onClick={() => { window.location.hash = ""; window.location.reload(); }}
+              className="w-full p-3 rounded-2xl font-bold"
+              style={{ background: "#14213D", color: "#fff", border: "none", marginBottom: 8 }}
+            >
+              טען מחדש
+            </button>
+            <button
+              onClick={() => {
+                try { localStorage.setItem("kitchen-force-tab", "tasks"); } catch (e) {}
+                window.location.hash = "";
+                window.location.reload();
+              }}
+              className="w-full p-3 rounded-2xl font-bold"
+              style={{ background: "#fff", color: "#14213D", border: "1px solid #DCE4F0" }}
+            >
+              פתח במסך המשימות
+            </button>
+            <p style={{ color: "#8894a8", fontSize: 11, marginTop: 16, direction: "ltr", wordBreak: "break-all" }}>
+              {String(this.state.error?.message || this.state.error).slice(0, 120)}
+            </p>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+export default function AppWithBoundary() {
+  return (
+    <ErrorBoundary>
+      <App />
+    </ErrorBoundary>
+  );
+}
+
+function App() {
   const [splashDone, setSplashDone] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [passwordRecovery, setPasswordRecovery] = useState(() =>
@@ -2092,7 +2152,17 @@ export default function App() {
   const [unitRequests, setUnitRequests] = useState([]);
   const [unitTemplates, setUnitTemplates] = useState({});
   const [currentUser, setCurrentUser] = useState(null);
-  const [tab, setTab] = useState("dashboard");
+  const [tab, setTab] = useState(() => {
+    // If the previous session crashed and the user chose "open tasks", respect that once.
+    try {
+      const forced = localStorage.getItem("kitchen-force-tab");
+      if (forced) {
+        localStorage.removeItem("kitchen-force-tab");
+        return forced;
+      }
+    } catch (e) {}
+    return "dashboard";
+  });
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scanResult, setScanResult] = useState(null); // { code, product|null }
   const [toast, setToast] = useState("");
@@ -3134,18 +3204,25 @@ function DonutChart({ segments, total, size = 150 }) {
 function Dashboard({ tasks, products, orderHistory, users, currentUser, unitRequests, onGoTo }) {
   const now = Date.now();
 
-  const open = tasks.filter((t) => t.status !== "done");
-  const inProgress = tasks.filter((t) => t.status === "in_progress");
-  const newTasks = tasks.filter((t) => t.status !== "done" && t.status !== "in_progress");
-  const done = tasks.filter((t) => t.status === "done");
+  // Guard every input - the dashboard can render during the first load pass,
+  // before some arrays exist, and a single undefined here white-screens the app.
+  const allTasks = Array.isArray(tasks) ? tasks : [];
+  const allProducts = Array.isArray(products) ? products : [];
+  const allOrders = Array.isArray(orderHistory) ? orderHistory : [];
+  const allUnitReqs = Array.isArray(unitRequests) ? unitRequests : [];
+
+  const open = allTasks.filter((t) => t.status !== "done");
+  const inProgress = allTasks.filter((t) => t.status === "in_progress");
+  const newTasks = allTasks.filter((t) => t.status !== "done" && t.status !== "in_progress");
+  const done = allTasks.filter((t) => t.status === "done");
   const urgent = open.filter((t) => t.priority === "urgent");
-  const overdueFollowups = tasks.filter((t) => t.followUpAt && t.followUpAt < now && t.status !== "done");
-  const lowStock = products.filter((p) => Number(p.quantity) <= Number(p.threshold));
-  const pendingUnit = (unitRequests || []).filter((r) => r.status === "submitted");
+  const overdueFollowups = allTasks.filter((t) => t.followUpAt && t.followUpAt < now && t.status !== "done");
+  const lowStock = allProducts.filter((p) => Number(p.quantity) <= Number(p.threshold));
+  const pendingUnit = allUnitReqs.filter((r) => r.status === "submitted");
 
   // week's orders
   const weekAgo = now - 7 * 86400000;
-  const weekOrders = (orderHistory || []).filter((o) => o.createdAt >= weekAgo);
+  const weekOrders = allOrders.filter((o) => o.createdAt >= weekAgo);
   const weekSpend = weekOrders.reduce((sum, o) => sum + Number(o.total || 0), 0);
 
   const statusSegments = [
@@ -3224,10 +3301,10 @@ function Dashboard({ tasks, products, orderHistory, users, currentUser, unitRequ
       <ShelfTag accent={C.ink} style={{ marginBottom: 16 }}>
         <div className="wh-display font-bold text-sm mb-3" style={{ color: C.ink }}>סטטוס משימות</div>
         <div className="flex items-center gap-4">
-          <DonutChart segments={statusSegments} total={tasks.length} />
+          <DonutChart segments={statusSegments} total={allTasks.length} />
           <div className="flex-1 flex flex-col gap-2">
             {statusSegments.map((s) => {
-              const pct = tasks.length ? Math.round((s.value / tasks.length) * 100) : 0;
+              const pct = allTasks.length ? Math.round((s.value / allTasks.length) * 100) : 0;
               return (
                 <div key={s.label} className="flex items-center gap-2">
                   <span style={{ width: 12, height: 12, borderRadius: 6, background: s.color, display: "inline-block" }} />
