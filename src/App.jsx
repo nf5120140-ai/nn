@@ -6010,7 +6010,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, orderHistory }) {
+function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, orderHistory, unitTemplates, persistUnitTemplates }) {
   const [section, setSection] = useState(initialSection || "products");
 
   // A notification can deep-link straight into a specific admin screen.
@@ -6123,6 +6123,10 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
           currentUser={currentUser}
           showToast={showToast}
           notifyUser={notifyUser}
+          unitTemplates={unitTemplates}
+          persistUnitTemplates={persistUnitTemplates}
+          users={users}
+          settings={settings}
         />
       )}
       {section === "taskcats" && (
@@ -7027,9 +7031,14 @@ function UnitRequestsAdmin({
   currentUser,
   showToast,
   notifyUser,
+  unitTemplates,
+  persistUnitTemplates,
+  users,
+  settings,
 }) {
   const [tab, setTab] = useState("pending");
   const [editing, setEditing] = useState(null); // { requestId, items, note }
+  const [managingTemplate, setManagingTemplate] = useState(null); // unitId whose fixed list we're editing
 
   const all = [...(unitRequests || [])].sort((a, b) => (b.submittedAt || b.createdAt) - (a.submittedAt || a.createdAt));
   const pending = all.filter((r) => r.status === "submitted");
@@ -7038,10 +7047,79 @@ function UnitRequestsAdmin({
 
   const stockOf = (id) => Number(products.find((p) => p.id === id)?.quantity ?? 0);
 
+  /* Build the plain-text list from whatever items are on screen. */
+  function buildListText(reqOrItems, unitName, weekOf) {
+    const items = Array.isArray(reqOrItems) ? reqOrItems : reqOrItems.items || [];
+    const lines = items
+      .filter((i) => (i.give ?? i.qty) > 0)
+      .map((i) => `▫️ ${i.name}: ${i.give ?? i.qty} ${i.unit || ""}`);
+    return [
+      `🧺 רשימת ליקוט למחסן`,
+      unitName ? `יחידה: ${unitName}` : "",
+      weekOf ? `שבוע: ${weekLabel(weekOf)}` : "",
+      "",
+      ...lines,
+      "",
+      `סה"כ ${lines.length} פריטים`,
+    ].filter(Boolean).join("\n");
+  }
+
+  /* Send the picking list to a worker on WhatsApp. */
+  function sendListWhatsapp(items, unitName, weekOf) {
+    const text = buildListText(items, unitName, weekOf);
+    // No specific number - open the share/chooser so the manager picks the worker.
+    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, "_blank");
+  }
+
+  /* Print a clean picking sheet to take to the warehouse. */
+  function printList(items, unitName, weekOf) {
+    const rows = items
+      .filter((i) => (i.give ?? i.qty) > 0)
+      .map((i) => `<tr><td>☐</td><td>${i.name}</td><td style="text-align:center">${i.give ?? i.qty} ${i.unit || ""}</td></tr>`)
+      .join("");
+    const html = `
+      <!doctype html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><title>רשימת ליקוט</title>
+      <style>
+        @page { size: A4; margin: 15mm; }
+        body { font-family: Arial, sans-serif; color: #111; }
+        h1 { font-size: 22px; margin: 0 0 4px; }
+        .sub { color: #666; font-size: 13px; margin-bottom: 16px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #444; padding: 10px 8px; font-size: 15px; }
+        thead th { background: #2E86C4; color: #fff; }
+        td:first-child { width: 32px; text-align: center; font-size: 20px; }
+      </style></head><body>
+        <h1>🧺 רשימת ליקוט למחסן</h1>
+        <div class="sub">${unitName ? `יחידה: ${unitName} · ` : ""}${weekOf ? weekLabel(weekOf) : ""}</div>
+        <table><thead><tr><th>✓</th><th>מוצר</th><th>כמות</th></tr></thead><tbody>${rows}</tbody></table>
+        <script>window.onload=()=>window.print();</script>
+      </body></html>`;
+    const win = window.open("", "_blank");
+    win.document.write(html);
+    win.document.close();
+  }
+
+  /* Delete a whole request permanently. */
+  async function deleteRequest(reqId, unitName) {
+    if (!window.confirm(`למחוק לצמיתות את הבקשה של ${unitName}? לא ניתן לשחזר.`)) return;
+    await persistUnitRequests((unitRequests || []).filter((r) => r.id !== reqId));
+    setEditing(null);
+    showToast("הבקשה נמחקה");
+  }
+
+  /* Clear all completed history. */
+  async function clearHistory() {
+    if (!window.confirm("למחוק את כל היסטוריית הבקשות שטופלו? לא ניתן לשחזר.")) return;
+    await persistUnitRequests((unitRequests || []).filter((r) => r.status === "submitted"));
+    showToast("ההיסטוריה נמחקה");
+  }
+
   function openReview(r) {
     setEditing({
       requestId: r.id,
-      // Default the issued amount to what they asked for, capped at what we actually have.
+      unitName: r.unitName,
+      weekOf: r.weekOf,
       items: (r.items || []).map((i) => ({ ...i, give: Math.min(i.qty, stockOf(i.productId)) })),
       note: "",
     });
@@ -7054,7 +7132,6 @@ function UnitRequestsAdmin({
     }));
   }
 
-  /* One tap to drop a line entirely, instead of having to zero out the quantity. */
   function removeItem(productId) {
     setEditing((cur) => ({ ...cur, items: cur.items.filter((i) => i.productId !== productId) }));
   }
@@ -7256,6 +7333,24 @@ function UnitRequestsAdmin({
           style={{ borderColor: C.kraftDark }}
         />
 
+        {/* Take the list to the warehouse: send to a worker or print. */}
+        <div className="flex gap-2 mb-3">
+          <button
+            onClick={() => sendListWhatsapp(editing.items, editing.unitName, editing.weekOf)}
+            className="flex-1 py-2.5 rounded-2xl font-bold text-sm"
+            style={{ background: "#25D366", color: "#fff" }}
+          >
+            💬 שלח לעובד
+          </button>
+          <button
+            onClick={() => printList(editing.items, editing.unitName, editing.weekOf)}
+            className="flex-1 py-2.5 rounded-2xl font-bold text-sm"
+            style={{ background: C.accent, color: "#fff" }}
+          >
+            🖨️ הדפס
+          </button>
+        </div>
+
         <button onClick={fulfill} className="w-full py-3 rounded-2xl wh-display font-bold mb-2" style={{ background: C.sage, color: "#fff" }}>
           ✓ נפק והורד מהמלאי
         </button>
@@ -7269,9 +7364,18 @@ function UnitRequestsAdmin({
         <p className="text-xs text-center mb-3" style={{ color: C.steel }}>
           השתמש בזה אם מסרת להם ידנית, או אם כבר עדכנת את המלאי בעצמך.
         </p>
-        <button onClick={reject} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>
-          דחה בקשה
-        </button>
+        <div className="flex gap-2">
+          <button onClick={reject} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>
+            דחה בקשה
+          </button>
+          <button
+            onClick={() => deleteRequest(editing.requestId, editing.unitName)}
+            className="flex-1 py-2 rounded-2xl font-bold text-sm"
+            style={{ background: "#fff", color: C.stamp, border: `1.5px solid ${C.stamp}` }}
+          >
+            🗑️ מחק בקשה
+          </button>
+        </div>
       </div>
     );
   }
@@ -7298,8 +7402,32 @@ function UnitRequestsAdmin({
         >
           טופלו
         </button>
+        <button
+          onClick={() => setTab("templates")}
+          className="flex-1 py-2 rounded-2xl text-sm font-bold"
+          style={{ background: tab === "templates" ? C.ink : C.kraft, color: tab === "templates" ? C.paper : C.ink }}
+        >
+          רשימות קבועות
+        </button>
       </div>
 
+      {tab === "templates" && (
+        <UnitTemplatesManager
+          unitTemplates={unitTemplates}
+          persistUnitTemplates={persistUnitTemplates}
+          users={users}
+          products={products}
+          showToast={showToast}
+        />
+      )}
+
+      {tab === "done" && done.length > 0 && (
+        <button onClick={clearHistory} className="w-full py-2 rounded-2xl font-bold text-sm mb-3" style={{ background: "#fff", color: C.stamp, border: `1.5px solid ${C.stamp}` }}>
+          🗑️ נקה את כל ההיסטוריה
+        </button>
+      )}
+
+      {tab !== "templates" && (
       <div className="flex flex-col gap-2">
         {shown.length === 0 && (
           <p className="text-sm text-center py-8" style={{ color: C.steel }}>
@@ -7352,6 +7480,140 @@ function UnitRequestsAdmin({
             </ShelfTag>
           );
         })}
+      </div>
+      )}
+    </div>
+  );
+}
+
+function UnitTemplatesManager({ unitTemplates, persistUnitTemplates, users, products, showToast }) {
+  const [selectedUnit, setSelectedUnit] = useState("");
+  const [addSearch, setAddSearch] = useState("");
+
+  const templates = unitTemplates || {};
+  // Any user who has a saved fixed list, plus units you might want to build one for.
+  const unitIds = Object.keys(templates).filter((id) => (templates[id] || []).length > 0);
+  const unitName = (id) => users.find((u) => u.id === id)?.name || "יחידה";
+
+  const activeUnit = selectedUnit || unitIds[0] || "";
+  const list = templates[activeUnit] || [];
+
+  async function updateList(next) {
+    await persistUnitTemplates({ ...templates, [activeUnit]: next });
+  }
+
+  async function setQty(productId, qty) {
+    const p = products.find((x) => x.id === productId);
+    if (!p) return;
+    const q = Math.max(0, Number(qty) || 0);
+    const next = list.filter((i) => i.productId !== productId);
+    if (q > 0) next.push({ productId, qty: q });
+    await updateList(next);
+  }
+
+  async function removeFromList(productId) {
+    await updateList(list.filter((i) => i.productId !== productId));
+  }
+
+  async function clearList() {
+    if (!window.confirm(`למחוק את כל הרשימה הקבועה של ${unitName(activeUnit)}?`)) return;
+    const next = { ...templates };
+    delete next[activeUnit];
+    await persistUnitTemplates(next);
+    showToast("הרשימה הקבועה נמחקה");
+  }
+
+  if (unitIds.length === 0 && !selectedUnit) {
+    return (
+      <ShelfTag accent={C.steel}>
+        <p className="text-sm text-center" style={{ color: C.steel }}>
+          אין עדיין רשימות קבועות. יחידה יוצרת רשימה קבועה מהמסך שלה ("שמור כקבועה"),
+          ואז תוכל לנהל אותה כאן.
+        </p>
+      </ShelfTag>
+    );
+  }
+
+  const pickable = products
+    .filter((p) => !list.some((i) => i.productId === p.id))
+    .filter((p) => !addSearch || p.name.includes(addSearch));
+
+  return (
+    <div>
+      {unitIds.length > 1 && (
+        <select
+          value={activeUnit}
+          onChange={(e) => setSelectedUnit(e.target.value)}
+          className="w-full p-2 rounded-2xl border mb-3 text-sm"
+          style={{ borderColor: C.kraftDark }}
+        >
+          {unitIds.map((id) => (
+            <option key={id} value={id}>{unitName(id)} ({(templates[id] || []).length} מוצרים)</option>
+          ))}
+        </select>
+      )}
+
+      <ShelfTag accent={C.accent} style={{ marginBottom: 12 }}>
+        <div className="flex justify-between items-center">
+          <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
+            רשימה קבועה: {unitName(activeUnit)}
+          </div>
+          {list.length > 0 && (
+            <button onClick={clearList} className="text-xs px-2 py-1 rounded-xl font-bold" style={{ background: C.stamp, color: "#fff" }}>
+              מחק הכל
+            </button>
+          )}
+        </div>
+      </ShelfTag>
+
+      <div className="flex flex-col gap-2 mb-4">
+        {list.length === 0 && <p className="text-sm text-center py-4" style={{ color: C.steel }}>הרשימה ריקה</p>}
+        {list.map((i) => {
+          const p = products.find((x) => x.id === i.productId);
+          if (!p) return null;
+          return (
+            <ShelfTag key={i.productId} accent={C.sage}>
+              <div className="flex justify-between items-center">
+                <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={i.qty}
+                    onChange={(e) => setQty(i.productId, e.target.value)}
+                    className="w-16 text-center p-2 rounded-2xl border"
+                    style={{ borderColor: C.kraftDark }}
+                  />
+                  <span className="text-xs" style={{ color: C.steel }}>{p.unit}</span>
+                  <button onClick={() => removeFromList(i.productId)} className="rounded-xl font-bold" style={{ background: C.stamp, color: "#fff", width: 30, height: 30 }}>
+                    ✕
+                  </button>
+                </div>
+              </div>
+            </ShelfTag>
+          );
+        })}
+      </div>
+
+      <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>הוסף מוצר לרשימה</div>
+      <input
+        value={addSearch}
+        onChange={(e) => setAddSearch(e.target.value)}
+        placeholder="חיפוש מוצר..."
+        className="w-full p-2 rounded-2xl border mb-2 text-sm"
+        style={{ borderColor: C.kraftDark }}
+      />
+      <div className="flex flex-col gap-1.5">
+        {pickable.slice(0, 30).map((p) => (
+          <button
+            key={p.id}
+            onClick={() => { setQty(p.id, 1); setAddSearch(""); }}
+            className="flex justify-between items-center p-2.5 rounded-2xl text-right"
+            style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}
+          >
+            <span className="text-sm font-bold" style={{ color: C.ink }}>{p.name}</span>
+            <span className="text-lg font-bold" style={{ color: C.sage }}>+</span>
+          </button>
+        ))}
       </div>
     </div>
   );
