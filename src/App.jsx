@@ -2092,7 +2092,7 @@ export default function App() {
   const [unitRequests, setUnitRequests] = useState([]);
   const [unitTemplates, setUnitTemplates] = useState({});
   const [currentUser, setCurrentUser] = useState(null);
-  const [tab, setTab] = useState("tasks");
+  const [tab, setTab] = useState("dashboard");
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scanResult, setScanResult] = useState(null); // { code, product|null }
   const [toast, setToast] = useState("");
@@ -2307,6 +2307,7 @@ export default function App() {
       setLocations(finalLocations || []);
       setDishTypes(finalDishTypes || []);
       setTaskCategories(finalTaskCategories || []);
+      if (typeof window !== "undefined") window.__taskCats = finalTaskCategories || [];
       setOrderRequests(orq || []);
       setUnitRequests(ur || []);
       setUnitTemplates(ut || {});
@@ -2802,6 +2803,17 @@ export default function App() {
             </div>
           </ShelfTag>
         )}
+        {tab === "dashboard" && (
+          <Dashboard
+            tasks={tasks}
+            products={products}
+            orderHistory={orderHistory}
+            users={users}
+            currentUser={currentUser}
+            unitRequests={unitRequests}
+            onGoTo={(t) => setTab(t)}
+          />
+        )}
         {tab === "inventory" && (
           <InventoryTab
             products={products}
@@ -2915,6 +2927,7 @@ export default function App() {
               <div className="text-xs" style={{ color: "#fff" }}>{currentUser.name} · {roleLabel(currentUser.role)}</div>
             </div>
             <div className="flex flex-col p-3 gap-2 flex-1">
+              <DrawerItem label="🏠 בית" active={tab === "dashboard"} onClick={() => { setTab("dashboard"); setShowMenu(false); }} />
               {(isManager(currentUser) || currentUser.permissions?.inventory !== false) && (
                 <DrawerItem label="מלאי" active={tab === "inventory"} onClick={() => { setTab("inventory"); setShowMenu(false); }} />
               )}
@@ -3073,6 +3086,200 @@ function DrawerItem({ label, active, onClick, badge, badgeColor }) {
         </span>
       )}
     </button>
+  );
+}
+
+/* ---------- Dashboard (home screen) ---------- */
+function DonutChart({ segments, total, size = 150 }) {
+  const stroke = 26;
+  const r = (size - stroke) / 2;
+  const cx = size / 2;
+  const circ = 2 * Math.PI * r;
+  let offset = 0;
+
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <circle cx={cx} cy={cx} r={r} fill="none" stroke={C.kraft} strokeWidth={stroke} />
+      {total > 0 &&
+        segments.map((seg, i) => {
+          if (seg.value === 0) return null;
+          const len = (seg.value / total) * circ;
+          const el = (
+            <circle
+              key={i}
+              cx={cx}
+              cy={cx}
+              r={r}
+              fill="none"
+              stroke={seg.color}
+              strokeWidth={stroke}
+              strokeDasharray={`${len} ${circ - len}`}
+              strokeDashoffset={-offset}
+              transform={`rotate(-90 ${cx} ${cx})`}
+            />
+          );
+          offset += len;
+          return el;
+        })}
+      <text x={cx} y={cx - 4} textAnchor="middle" className="wh-display" style={{ fontSize: 30, fontWeight: 900, fill: C.ink }}>
+        {total}
+      </text>
+      <text x={cx} y={cx + 16} textAnchor="middle" style={{ fontSize: 11, fill: C.steel }}>
+        סה"כ משימות
+      </text>
+    </svg>
+  );
+}
+
+function Dashboard({ tasks, products, orderHistory, users, currentUser, unitRequests, onGoTo }) {
+  const now = Date.now();
+
+  const open = tasks.filter((t) => t.status !== "done");
+  const inProgress = tasks.filter((t) => t.status === "in_progress");
+  const newTasks = tasks.filter((t) => t.status !== "done" && t.status !== "in_progress");
+  const done = tasks.filter((t) => t.status === "done");
+  const urgent = open.filter((t) => t.priority === "urgent");
+  const overdueFollowups = tasks.filter((t) => t.followUpAt && t.followUpAt < now && t.status !== "done");
+  const lowStock = products.filter((p) => Number(p.quantity) <= Number(p.threshold));
+  const pendingUnit = (unitRequests || []).filter((r) => r.status === "submitted");
+
+  // week's orders
+  const weekAgo = now - 7 * 86400000;
+  const weekOrders = (orderHistory || []).filter((o) => o.createdAt >= weekAgo);
+  const weekSpend = weekOrders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+
+  const statusSegments = [
+    { label: "חדש", value: newTasks.length, color: C.accent },
+    { label: "בטיפול", value: inProgress.length, color: C.mustard },
+    { label: "הושלם", value: done.length, color: C.sage },
+  ];
+
+  // by category
+  const byCat = {};
+  open.forEach((t) => {
+    const key = t.categoryId || "none";
+    byCat[key] = (byCat[key] || 0) + 1;
+  });
+
+  const greeting = (() => {
+    const h = new Date().getHours();
+    if (h < 12) return "בוקר טוב";
+    if (h < 17) return "צהריים טובים";
+    if (h < 21) return "ערב טוב";
+    return "לילה טוב";
+  })();
+
+  return (
+    <div>
+      <div className="mb-4">
+        <div className="wh-display font-black text-xl" style={{ color: C.ink }}>
+          {greeting}, {currentUser.name} 👋
+        </div>
+        <div className="text-sm" style={{ color: C.steel }}>
+          {new Date().toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long" })}
+        </div>
+      </div>
+
+      {/* Alert row */}
+      {(urgent.length > 0 || overdueFollowups.length > 0 || pendingUnit.length > 0) && (
+        <div className="flex flex-col gap-2 mb-4">
+          {urgent.length > 0 && (
+            <button onClick={() => onGoTo("tasks")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "#FDECEC", border: `1px solid ${C.stamp}` }}>
+              <span className="text-xl">⚠️</span>
+              <span className="text-sm font-bold" style={{ color: C.stamp }}>{urgent.length} משימות דחופות פתוחות</span>
+            </button>
+          )}
+          {overdueFollowups.length > 0 && (
+            <button onClick={() => onGoTo("tasks")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "#FFF4E5", border: `1px solid ${C.mustard}` }}>
+              <span className="text-xl">⏰</span>
+              <span className="text-sm font-bold" style={{ color: C.ink }}>{overdueFollowups.length} תזכורות המשך באיחור</span>
+            </button>
+          )}
+          {pendingUnit.length > 0 && currentUser.role === "manager" && (
+            <button onClick={() => onGoTo("admin")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "#EFEAFF", border: `1px solid ${C.accent}` }}>
+              <span className="text-xl">🧺</span>
+              <span className="text-sm font-bold" style={{ color: C.ink }}>{pendingUnit.length} בקשות מהמחסן ממתינות</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Metric cards */}
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        <button onClick={() => onGoTo("tasks")} className="text-right">
+          <DashCard icon="📋" label="משימות פתוחות" value={open.length} color={C.mustard} />
+        </button>
+        <button onClick={() => onGoTo("tasks")} className="text-right">
+          <DashCard icon="✅" label="הושלמו" value={done.length} color={C.sage} />
+        </button>
+        <button onClick={() => onGoTo("order")} className="text-right">
+          <DashCard icon="🛒" label="מוצרים בחוסר" value={lowStock.length} color={lowStock.length > 0 ? C.stamp : C.sage} />
+        </button>
+        <button onClick={() => onGoTo("order")} className="text-right">
+          <DashCard icon="📦" label="הזמנות השבוע" value={weekOrders.length} sub={`₪${weekSpend.toFixed(0)}`} color={C.accent} />
+        </button>
+      </div>
+
+      {/* Status donut */}
+      <ShelfTag accent={C.ink} style={{ marginBottom: 16 }}>
+        <div className="wh-display font-bold text-sm mb-3" style={{ color: C.ink }}>סטטוס משימות</div>
+        <div className="flex items-center gap-4">
+          <DonutChart segments={statusSegments} total={tasks.length} />
+          <div className="flex-1 flex flex-col gap-2">
+            {statusSegments.map((s) => {
+              const pct = tasks.length ? Math.round((s.value / tasks.length) * 100) : 0;
+              return (
+                <div key={s.label} className="flex items-center gap-2">
+                  <span style={{ width: 12, height: 12, borderRadius: 6, background: s.color, display: "inline-block" }} />
+                  <span className="text-sm flex-1" style={{ color: C.ink }}>{s.label}</span>
+                  <span className="text-sm font-bold" style={{ color: C.ink }}>{s.value}</span>
+                  <span className="text-xs" style={{ color: C.steel }}>({pct}%)</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </ShelfTag>
+
+      {/* By category */}
+      {Object.keys(byCat).length > 0 && (
+        <ShelfTag accent={C.accent}>
+          <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>משימות פתוחות לפי קטגוריה</div>
+          <div className="flex flex-col gap-1.5">
+            {Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([catId, count]) => {
+              const cat = catId === "none" ? null : (window.__taskCats || []).find((c) => c.id === catId);
+              const name = cat ? `${cat.icon || "📋"} ${cat.name}` : "ללא קטגוריה";
+              const col = cat ? categoryColor(cat.name) : C.steel;
+              const max = Math.max(...Object.values(byCat));
+              return (
+                <div key={catId}>
+                  <div className="flex justify-between text-sm mb-0.5">
+                    <span style={{ color: C.ink }}>{name}</span>
+                    <span className="font-bold" style={{ color: C.ink }}>{count}</span>
+                  </div>
+                  <div className="rounded-full overflow-hidden" style={{ background: C.kraft, height: 6 }}>
+                    <div style={{ background: col, height: "100%", width: `${(count / max) * 100}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </ShelfTag>
+      )}
+    </div>
+  );
+}
+
+function DashCard({ icon, label, value, sub, color }) {
+  return (
+    <div className="rounded-2xl p-3" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${color}`, boxShadow: "0 2px 8px rgba(20,33,61,0.05)" }}>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs" style={{ color: C.steel }}>{label}</span>
+        <span className="text-lg">{icon}</span>
+      </div>
+      <div className="wh-display font-black" style={{ color, fontSize: 30 }}>{value}</div>
+      {sub && <div className="text-xs" style={{ color: C.steel }}>{sub}</div>}
+    </div>
   );
 }
 
