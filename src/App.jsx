@@ -42,6 +42,7 @@ const KEYS = {
   weeklyMenu: "kitchen-weekly-menu",
   reminders: "kitchen-reminders",
   stockLog: "kitchen-stock-log",
+  orderHistory: "kitchen-order-history",
   locations: "kitchen-locations",
   dishTypes: "kitchen-dish-types",
   taskCategories: "kitchen-task-categories",
@@ -2083,6 +2084,7 @@ export default function App() {
   const [weeklyMenu, setWeeklyMenu] = useState({});
   const [reminders, setReminders] = useState([]);
   const [stockLog, setStockLog] = useState([]);
+  const [orderHistory, setOrderHistory] = useState([]);
   const [locations, setLocations] = useState([]);
   const [dishTypes, setDishTypes] = useState([]);
   const [taskCategories, setTaskCategories] = useState([]);
@@ -2181,7 +2183,7 @@ export default function App() {
     setLoaded(false);
     seenNotifIdsRef.current = null;
     (async () => {
-      const [orgProfiles, p, t, s, n, m, w, r, sl, loc, dt, tc, orq, ur, ut] = await Promise.all([
+      const [orgProfiles, p, t, s, n, m, w, r, sl, loc, dt, tc, orq, ur, ut, oh] = await Promise.all([
         (async () => {
           try {
             const list = await window.auth.getOrgProfiles();
@@ -2200,6 +2202,7 @@ export default function App() {
         loadKey(KEYS.weeklyMenu, {}),
         loadKey(KEYS.reminders, []),
         loadKey(KEYS.stockLog, []),
+        loadKey(KEYS.orderHistory, []),
         loadKey(KEYS.locations, null),
         loadKey(KEYS.dishTypes, null),
         loadKey(KEYS.taskCategories, null),
@@ -2300,6 +2303,7 @@ export default function App() {
       setWeeklyMenu(w || {});
       setReminders(finalReminders);
       setStockLog(sl || []);
+      setOrderHistory(oh || []);
       setLocations(finalLocations || []);
       setDishTypes(finalDishTypes || []);
       setTaskCategories(finalTaskCategories || []);
@@ -2322,6 +2326,7 @@ export default function App() {
       [KEYS.weeklyMenu]: async () => setWeeklyMenu((await loadKey(KEYS.weeklyMenu, {})) || {}),
       [KEYS.reminders]: async () => setReminders((await loadKey(KEYS.reminders, [])) || []),
       [KEYS.stockLog]: async () => setStockLog((await loadKey(KEYS.stockLog, [])) || []),
+      [KEYS.orderHistory]: async () => setOrderHistory((await loadKey(KEYS.orderHistory, [])) || []),
       [KEYS.locations]: async () => setLocations((await loadKey(KEYS.locations, [])) || []),
       [KEYS.dishTypes]: async () => setDishTypes((await loadKey(KEYS.dishTypes, [])) || []),
       [KEYS.taskCategories]: async () => setTaskCategories((await loadKey(KEYS.taskCategories, [])) || []),
@@ -2502,6 +2507,15 @@ export default function App() {
   async function persistStockLog(next) {
     setStockLog(next);
     await saveKey(KEYS.stockLog, next);
+  }
+  async function persistOrderHistory(next) {
+    setOrderHistory(next);
+    await saveKey(KEYS.orderHistory, next);
+  }
+  async function recordOrder(entry) {
+    // Keep the last 300 orders - plenty of history without bloating storage.
+    const next = [{ id: genId(), createdAt: Date.now(), ...entry }, ...orderHistory].slice(0, 300);
+    await persistOrderHistory(next);
   }
   async function logStockChange(productId, delta, userName) {
     if (!delta) return;
@@ -2819,6 +2833,7 @@ export default function App() {
             orderRequests={orderRequests}
             persistOrderRequests={persistOrderRequests}
             notifyManagers={notifyManagers}
+            recordOrder={recordOrder}
           />
         )}
         {tab === "tasks" && (
@@ -2877,6 +2892,8 @@ export default function App() {
             unitRequests={unitRequests}
             persistUnitRequests={persistUnitRequests}
             logStockChange={logStockChange}
+            tasks={tasks}
+            orderHistory={orderHistory}
           />
         )}
       </div>
@@ -4048,7 +4065,25 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       text: lines.join("\n"),
       subject: title ? `${title} — ${todayStr()}` : ORDER_SUBJECT,
     });
-    if (!res.ok && showToast) showToast(res.error);
+    if (!res.ok) {
+      if (showToast) showToast(res.error);
+      return;
+    }
+    if (recordOrder) {
+      const supName = supplierId && supplierId !== "__unassigned__"
+        ? suppliers.find((s) => s.id === supplierId)?.name || "ספק"
+        : "ספק כללי";
+      recordOrder({
+        kind: "order",
+        title: title || "הזמנה",
+        channel,
+        supplierId: supplierId || null,
+        supplierName: supName,
+        by: currentUser?.name || "",
+        items: items.map(({ product, qty }) => ({ name: product.name, unit: product.unit, qty, price: Number(product.price || 0) })),
+        total: items.reduce((sum, { product, qty }) => sum + Number(product.price || 0) * Number(qty), 0),
+      });
+    }
   }
 
   /* Print layout mirrors the Excel sheet this replaced:
@@ -5058,7 +5093,11 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
   }
 
   async function updateStatus(task, status) {
-    const next = tasks.map((t) => (t.id === task.id ? { ...t, status } : t));
+    const next = tasks.map((t) =>
+      t.id === task.id
+        ? { ...t, status, completedAt: status === "done" ? Date.now() : t.completedAt }
+        : t
+    );
     await persistTasks(next);
   }
 
@@ -5687,7 +5726,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed }) {
+function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, orderHistory }) {
   const [section, setSection] = useState(initialSection || "products");
 
   // A notification can deep-link straight into a specific admin screen.
@@ -5812,7 +5851,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
         <RemindersAdmin reminders={reminders} persistReminders={persistReminders} products={products} users={users} showToast={showToast} />
       )}
       {section === "analytics" && (
-        <AnalyticsAdmin products={products} stockLog={stockLog} />
+        <AnalyticsAdmin products={products} stockLog={stockLog} tasks={tasks} orderHistory={orderHistory} unitRequests={unitRequests} users={users} />
       )}
       {section === "settings" && (
         <SuppliersAdmin settings={settings} persistSettings={persistSettings} showToast={showToast} />
@@ -5821,7 +5860,277 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
   );
 }
 
-function AnalyticsAdmin({ products, stockLog }) {
+function AnalyticsAdmin({ products, stockLog, tasks = [], orderHistory = [], unitRequests = [], users = [] }) {
+  const [view, setView] = useState("overview"); // overview | stock | tasks | orders
+  const [range, setRange] = useState(30); // days
+  const [categoryFilter, setCategoryFilter] = useState("all");
+
+  const cutoff = Date.now() - range * 24 * 60 * 60 * 1000;
+
+  // ---- Task stats ----
+  const openTasks = tasks.filter((t) => t.status !== "done");
+  const doneTasks = tasks.filter((t) => t.status === "done");
+  const doneInRange = doneTasks.filter((t) => (t.completedAt || t.createdAt || 0) >= cutoff);
+  const overdueFollowups = tasks.filter((t) => t.followUpAt && t.followUpAt < Date.now() && t.status !== "done");
+  const perWorker = {};
+  tasks.forEach((t) => {
+    const u = users.find((x) => x.id === t.assignedToId);
+    const name = u?.name || "לא משויך";
+    if (!perWorker[name]) perWorker[name] = { open: 0, done: 0 };
+    if (t.status === "done") perWorker[name].done++;
+    else perWorker[name].open++;
+  });
+
+  // ---- Order stats ----
+  const ordersInRange = orderHistory.filter((o) => o.createdAt >= cutoff);
+  const orderTotal = ordersInRange.reduce((sum, o) => sum + Number(o.total || 0), 0);
+  const perSupplier = {};
+  ordersInRange.forEach((o) => {
+    const name = o.supplierName || "ספק כללי";
+    if (!perSupplier[name]) perSupplier[name] = { count: 0, total: 0 };
+    perSupplier[name].count++;
+    perSupplier[name].total += Number(o.total || 0);
+  });
+
+  const fmtDate = (ts) => new Date(ts).toLocaleDateString("he-IL", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
+
+  return (
+    <div>
+      <h2 className="wh-display font-black text-lg mb-3" style={{ color: C.ink }}>סיכום ונתונים</h2>
+
+      <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
+        {[["overview", "כללי"], ["tasks", "משימות"], ["orders", "הזמנות"], ["stock", "צריכת מלאי"]].map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setView(id)}
+            className="px-4 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
+            style={{ background: view === id ? C.ink : C.kraft, color: view === id ? C.paper : C.ink }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex gap-2 mb-4">
+        {[7, 30, 90].map((d) => (
+          <button
+            key={d}
+            onClick={() => setRange(d)}
+            className="flex-1 py-1.5 rounded-xl text-xs font-bold"
+            style={{ background: range === d ? C.accent : "#fff", color: range === d ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+          >
+            {d} ימים
+          </button>
+        ))}
+      </div>
+
+      {view === "overview" && (
+        <>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <StatCard label="משימות פתוחות" value={openTasks.length} color={C.mustard} />
+            <StatCard label={`הושלמו (${range} ימים)`} value={doneInRange.length} color={C.sage} />
+            <StatCard label={`הזמנות (${range} ימים)`} value={ordersInRange.length} color={C.accent} />
+            <StatCard label={`סכום הזמנות`} value={`₪${orderTotal.toFixed(0)}`} color={C.ink} />
+          </div>
+          {overdueFollowups.length > 0 && (
+            <ShelfTag accent={C.stamp} style={{ marginBottom: 12 }}>
+              <div className="font-bold text-sm" style={{ color: C.stamp }}>
+                ⏰ {overdueFollowups.length} תזכורות המשך באיחור
+              </div>
+              <p className="text-xs" style={{ color: C.steel }}>משימות שקבעת להן בדיקת המשך והתאריך עבר.</p>
+            </ShelfTag>
+          )}
+          <ShelfTag accent={C.steel}>
+            <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>עומס לפי עובד</div>
+            {Object.entries(perWorker).length === 0 ? (
+              <p className="text-xs" style={{ color: C.steel }}>אין נתונים</p>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {Object.entries(perWorker).sort((a, b) => b[1].open - a[1].open).map(([name, s]) => (
+                  <div key={name} className="flex justify-between text-sm">
+                    <span style={{ color: C.ink }}>{name}</span>
+                    <span style={{ color: C.steel }}>
+                      <b style={{ color: C.mustard }}>{s.open}</b> פתוחות · <b style={{ color: C.sage }}>{s.done}</b> הושלמו
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </ShelfTag>
+        </>
+      )}
+
+      {view === "tasks" && (
+        <>
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            <StatCard label="פתוחות" value={openTasks.length} color={C.mustard} small />
+            <StatCard label="הושלמו" value={doneTasks.length} color={C.sage} small />
+            <StatCard label="באיחור" value={overdueFollowups.length} color={C.stamp} small />
+          </div>
+          <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>
+            הושלמו לאחרונה
+          </div>
+          <div className="flex flex-col gap-2">
+            {doneTasks.sort((a, b) => (b.completedAt || b.createdAt || 0) - (a.completedAt || a.createdAt || 0)).slice(0, 20).map((t) => {
+              const u = users.find((x) => x.id === t.assignedToId);
+              return (
+                <ShelfTag key={t.id} accent={C.sage}>
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <div className="font-bold text-sm" style={{ color: C.ink }}>{t.title}</div>
+                      <div className="text-xs" style={{ color: C.steel }}>{u?.name || "—"}</div>
+                    </div>
+                    <span className="text-xs" style={{ color: C.steel }}>
+                      {t.completedAt ? fmtDate(t.completedAt) : ""}
+                    </span>
+                  </div>
+                </ShelfTag>
+              );
+            })}
+            {doneTasks.length === 0 && <p className="text-sm text-center py-6" style={{ color: C.steel }}>עדיין לא הושלמו משימות</p>}
+          </div>
+        </>
+      )}
+
+      {view === "orders" && (
+        <>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <StatCard label={`הזמנות (${range} ימים)`} value={ordersInRange.length} color={C.accent} />
+            <StatCard label="סכום כולל" value={`₪${orderTotal.toFixed(0)}`} color={C.ink} />
+          </div>
+
+          {Object.keys(perSupplier).length > 0 && (
+            <ShelfTag accent={C.accent} style={{ marginBottom: 12 }}>
+              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>לפי ספק</div>
+              <div className="flex flex-col gap-1.5">
+                {Object.entries(perSupplier).sort((a, b) => b[1].total - a[1].total).map(([name, s]) => (
+                  <div key={name} className="flex justify-between text-sm">
+                    <span style={{ color: C.ink }}>{name}</span>
+                    <span style={{ color: C.steel }}>{s.count} הזמנות · ₪{s.total.toFixed(0)}</span>
+                  </div>
+                ))}
+              </div>
+            </ShelfTag>
+          )}
+
+          <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>הזמנות אחרונות</div>
+          <div className="flex flex-col gap-2">
+            {ordersInRange.length === 0 && (
+              <ShelfTag accent={C.steel}>
+                <p className="text-sm text-center" style={{ color: C.steel }}>
+                  לא נשלחו הזמנות בטווח הזה.
+                  <br />
+                  <span className="text-xs">היסטוריית הזמנות נשמרת מרגע העדכון הזה והלאה.</span>
+                </p>
+              </ShelfTag>
+            )}
+            {ordersInRange.map((o) => (
+              <details key={o.id}>
+                <summary className="cursor-pointer">
+                  <ShelfTag accent={channelMeta(o.channel).color} style={{ display: "inline-block", width: "100%" }}>
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <div className="font-bold text-sm" style={{ color: C.ink }}>
+                          {channelMeta(o.channel).icon} {o.supplierName}
+                        </div>
+                        <div className="text-xs" style={{ color: C.steel }}>
+                          {fmtDate(o.createdAt)} · {o.items?.length || 0} מוצרים
+                          {o.by && ` · ${o.by}`}
+                        </div>
+                      </div>
+                      <span className="font-bold text-sm" style={{ color: C.ink }}>₪{Number(o.total || 0).toFixed(0)}</span>
+                    </div>
+                  </ShelfTag>
+                </summary>
+                <div className="px-3 py-2 text-xs" style={{ color: C.steel }}>
+                  {(o.items || []).map((it, i) => (
+                    <div key={i} className="flex justify-between">
+                      <span>{it.name}</span>
+                      <span>{it.qty} {it.unit}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ))}
+          </div>
+        </>
+      )}
+
+      {view === "stock" && (
+        <AnalyticsStock products={products} stockLog={stockLog} range={range} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} />
+      )}
+    </div>
+  );
+}
+
+function StatCard({ label, value, color, small }) {
+  return (
+    <div className="rounded-2xl p-3 text-center" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${color}` }}>
+      <div className="wh-display font-black" style={{ color, fontSize: small ? 22 : 28 }}>{value}</div>
+      <div className="text-xs" style={{ color: C.steel }}>{label}</div>
+    </div>
+  );
+}
+
+function AnalyticsStock({ products, stockLog, range, categoryFilter, setCategoryFilter }) {
+  const cutoff = Date.now() - range * 24 * 60 * 60 * 1000;
+  const relevantLog = stockLog.filter((e) => e.timestamp >= cutoff);
+
+  const perProduct = {};
+  relevantLog.forEach((e) => {
+    if (e.delta >= 0) return;
+    if (!perProduct[e.productId]) perProduct[e.productId] = 0;
+    perProduct[e.productId] += Math.abs(e.delta);
+  });
+
+  const rows = Object.entries(perProduct)
+    .map(([pid, consumed]) => {
+      const p = products.find((x) => x.id === pid);
+      if (!p) return null;
+      if (categoryFilter !== "all" && (p.category || "ללא קטגוריה") !== categoryFilter) return null;
+      return { product: p, consumed };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.consumed - a.consumed);
+
+  const categories = Array.from(new Set(products.map((p) => p.category || "ללא קטגוריה")));
+  const max = rows.length ? rows[0].consumed : 1;
+
+  return (
+    <>
+      <select
+        value={categoryFilter}
+        onChange={(e) => setCategoryFilter(e.target.value)}
+        className="p-2 rounded-2xl border w-full mb-3 text-sm"
+        style={{ borderColor: C.kraftDark }}
+      >
+        <option value="all">כל הקטגוריות</option>
+        {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+
+      <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>המוצרים הכי נצרכים</div>
+      {rows.length === 0 ? (
+        <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין תנועת מלאי בטווח הזה</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {rows.slice(0, 25).map(({ product, consumed }) => (
+            <div key={product.id}>
+              <div className="flex justify-between text-sm mb-0.5">
+                <span style={{ color: C.ink }}>{product.name}</span>
+                <span className="font-bold" style={{ color: C.ink }}>{consumed} {product.unit}</span>
+              </div>
+              <div className="rounded-full overflow-hidden" style={{ background: C.kraft, height: 8 }}>
+                <div style={{ background: C.accent, height: "100%", width: `${(consumed / max) * 100}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function OldAnalyticsAdmin({ products, stockLog }) {
   const [range, setRange] = useState(30); // days
   const [categoryFilter, setCategoryFilter] = useState("all");
 
