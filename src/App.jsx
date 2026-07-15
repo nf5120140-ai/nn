@@ -3997,6 +3997,25 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               ? "📤 שלח בקשה לאישור"
               : `${channelMeta(channel).icon} אשר ושלח ל${supplierName}`}
           </button>
+
+          {!isRequest && (settings?.whatsappGroupLink || "").trim() && (
+            <button
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(messageText);
+                  showToast("ההזמנה הועתקה - הדבק אותה בקבוצה");
+                } catch (e) {
+                  showToast("פותח את הקבוצה - העתק את ההזמנה מהתצוגה המקדימה");
+                }
+                window.open(settings.whatsappGroupLink.trim(), "_blank");
+                setPendingOrder(null);
+              }}
+              className="w-full py-3 mt-2 rounded-2xl wh-display font-bold"
+              style={{ background: "#128C7E", color: "#fff" }}
+            >
+              👥 שלח לקבוצת וואטסאפ
+            </button>
+          )}
         </div>
       </div>
     );
@@ -5096,9 +5115,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
     }
 
     // IMPORTANT: navigator.share() must be invoked inside the user gesture.
-    // Any `await` before it (e.g. fetch()) breaks that and the browser throws
-    // NotAllowedError - which is why the image never made it through before.
-    // dataUrlToFile is synchronous, so the gesture survives.
+    // dataUrlToFile is synchronous so the gesture survives.
     let file = null;
     try {
       file = dataUrlToFile(photo, "task.jpg");
@@ -5107,35 +5124,46 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
       showToast("שגיאה: לא ניתן לקרוא את התמונה השמורה");
     }
 
-    if (!navigator.share) {
-      showToast("הדפדפן הזה לא תומך בשיתוף כלל (נסה מהאפליקציה המותקנת)");
-    } else if (file && !navigator.canShare) {
-      showToast("הדפדפן לא תומך בבדיקת שיתוף קבצים");
-    } else if (file && !navigator.canShare({ files: [file] })) {
-      showToast("הדפדפן הזה לא מרשה שיתוף קבצים - נסה מהאפליקציה המותקנת באנדרואיד");
-    }
+    const canShareFiles = !!(file && navigator.share && navigator.canShare && navigator.canShare({ files: [file] }));
 
-    if (file && navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-      try {
-        await navigator.share({ text, files: [file] });
-        return;
-      } catch (e) {
-        if (e && e.name === "AbortError") return; // user closed the share sheet on purpose
-        console.error("navigator.share failed", e);
-        showToast(`השיתוף נכשל: ${e?.name || "שגיאה"}`);
+    if (canShareFiles) {
+      // Try richest first, then progressively simpler, because some Android builds
+      // reject text+files, or title+files, but accept files alone.
+      const attempts = [
+        { files: [file], text },
+        { files: [file] },
+      ];
+      for (const payload of attempts) {
+        try {
+          await navigator.share(payload);
+          if (!payload.text) {
+            try { await navigator.clipboard.writeText(text); } catch (_) {}
+            showToast("התמונה שותפה. הטקסט הועתק - הדבק כהערה");
+          }
+          return; // success
+        } catch (e) {
+          if (e && e.name === "AbortError") return; // user closed the sheet - stop
+          console.error("share attempt failed", payload, e);
+          // otherwise fall through to the next, simpler attempt
+        }
+      }
+      // Every share attempt threw (not aborted) - fall through to manual fallback.
+    } else {
+      // Tell the user *why* we can't share the image directly.
+      if (!navigator.share) {
+        showToast("הדפדפן לא תומך בשיתוף. פתח מהאפליקציה המותקנת (הוסף למסך הבית)");
+      } else if (!navigator.canShare) {
+        showToast("הדפדפן לא תומך בשיתוף קבצים");
+      } else {
+        showToast("המכשיר לא מאפשר לשתף תמונה ישירות - התמונה תרד לצירוף ידני");
       }
     }
 
-    // Fallback: no file sharing support. Put the text on the clipboard so it can be
-    // pasted as a caption, open the photo for manual attaching, and open the chat.
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch (e) {
-      /* clipboard may be unavailable - not fatal */
-    }
+    // Manual fallback: download the photo + copy the text, then open the chat.
+    try { await navigator.clipboard.writeText(text); } catch (_) {}
     downloadDataUrl(photo, `task-${task.id}.jpg`);
     window.open(waUrl, "_blank");
-    showToast("המכשיר לא תומך בשליחת תמונה ישירות - התמונה הורדה והטקסט הועתק, צרף אותם בוואטסאפ");
+    showToast("התמונה ירדה למכשיר והטקסט הועתק - צרף את התמונה בוואטסאפ ידנית");
   }
 
   return (
@@ -6219,6 +6247,34 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
   );
 }
 
+function GroupLinkEditor({ settings, persistSettings, showToast }) {
+  const [link, setLink] = useState(settings?.whatsappGroupLink || "");
+
+  async function save() {
+    const v = link.trim();
+    if (v && !v.includes("chat.whatsapp.com") && !v.startsWith("https://")) {
+      return showToast("הקישור לא נראה תקין - הוא צריך להתחיל ב-https://chat.whatsapp.com");
+    }
+    await persistSettings({ ...settings, whatsappGroupLink: v });
+    showToast(v ? "קישור הקבוצה נשמר ✓" : "קישור הקבוצה נמחק");
+  }
+
+  return (
+    <div className="flex gap-2">
+      <input
+        value={link}
+        onChange={(e) => setLink(e.target.value)}
+        placeholder="https://chat.whatsapp.com/..."
+        className="flex-1 p-2 rounded-2xl border text-sm"
+        style={{ borderColor: C.kraftDark, direction: "ltr" }}
+      />
+      <button onClick={save} className="px-4 rounded-2xl font-bold text-sm" style={{ background: "#128C7E", color: "#fff" }}>
+        שמור
+      </button>
+    </div>
+  );
+}
+
 function SuppliersAdmin({ settings, persistSettings, showToast }) {
   const suppliers = settings.suppliers || [];
   const empty = { name: "", phone: "", email: "" };
@@ -6291,6 +6347,21 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
 
   return (
     <div>
+      <ShelfTag accent="#128C7E" style={{ marginBottom: 16 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>👥 קבוצת וואטסאפ להזמנות</div>
+        <p className="text-xs mb-2" style={{ color: C.steel }}>
+          אם יש קבוצת ספקים בוואטסאפ, הדבק כאן את קישור ההזמנה שלה. אז בסיכום ההזמנה יופיע כפתור "שלח לקבוצה" שמעתיק את ההזמנה ופותח את הקבוצה.
+        </p>
+        <GroupLinkEditor settings={settings} persistSettings={persistSettings} showToast={showToast} />
+        <details className="mt-2">
+          <summary className="text-xs font-bold cursor-pointer" style={{ color: C.accent }}>איך משיגים את קישור הקבוצה?</summary>
+          <p className="text-xs mt-1" style={{ color: C.steel, lineHeight: 1.6 }}>
+            בוואטסאפ: פתח את הקבוצה ← שם הקבוצה למעלה ← "הזמנה באמצעות קישור" ← "העתק קישור". הדבק אותו כאן.
+            הקישור נראה כך: <span style={{ direction: "ltr", display: "inline-block" }}>chat.whatsapp.com/...</span>
+          </p>
+        </details>
+      </ShelfTag>
+
       <ShelfTag accent={C.accent} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 }}>
         <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>
           {editingId ? "עריכת ספק" : "הוספת ספק"}
