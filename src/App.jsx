@@ -6102,11 +6102,14 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
 function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, orderHistory, unitTemplates, persistUnitTemplates, personalPurchases, persistPersonalPurchases }) {
   const [section, setSection] = useState(initialSection || "products");
 
-  // A notification can deep-link straight into a specific admin screen.
+  // A notification can deep-link straight into a specific admin screen. Sync whenever
+  // the requested section changes, and clear the parent flag on the next tick so the
+  // section state is committed first (avoids landing on the default "products").
   useEffect(() => {
     if (!initialSection) return;
     setSection(initialSection);
-    if (onSectionConsumed) onSectionConsumed();
+    const id = setTimeout(() => onSectionConsumed && onSectionConsumed(), 0);
+    return () => clearTimeout(id);
   }, [initialSection]);
   const [showNav, setShowNav] = useState(false);
 
