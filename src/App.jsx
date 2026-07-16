@@ -5793,6 +5793,100 @@ function resizeImageToDataUrl(file, maxDim = 900, quality = 0.7) {
   });
 }
 
+/* Searchable location picker: a button that opens a bottom sheet with a search box,
+   grouped results. Replaces the long native <select> when there are many rooms. */
+function LocationPicker({ locations, value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+
+  const selected = (locations || []).find((l) => l.id === value);
+
+  const groups = Object.entries(
+    (locations || [])
+      .filter((loc) => !q || loc.name.includes(q) || (loc.group || "").includes(q))
+      .reduce((acc, loc) => {
+        const g = loc.group || "אחר";
+        (acc[g] = acc[g] || []).push(loc);
+        return acc;
+      }, {})
+  );
+
+  return (
+    <>
+      <button
+        onClick={() => { setOpen(true); setQ(""); }}
+        className="p-2 rounded-2xl border w-full text-right flex justify-between items-center"
+        style={{ borderColor: C.kraftDark, background: "#fff", color: selected ? C.ink : C.steel }}
+      >
+        <span>{selected ? `📍 ${selected.name}` : "בחר מקום (אופציונלי)"}</span>
+        <span style={{ color: C.steel }}>▾</span>
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.5)" }} onClick={() => setOpen(false)}>
+          <div
+            className="w-full wh-body"
+            style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "80vh", overflowY: "auto", padding: 16 }}
+            onClick={(e) => e.stopPropagation()}
+            dir="rtl"
+          >
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-bold" style={{ color: C.ink }}>בחר מקום</div>
+              <button onClick={() => setOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>
+                סגור
+              </button>
+            </div>
+
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="חיפוש מקום או חדר... (למשל: 207, מטבח)"
+              className="w-full p-3 rounded-2xl border mb-3"
+              style={{ borderColor: C.kraftDark, background: "#fff" }}
+              autoFocus
+            />
+
+            <button
+              onClick={() => { onChange(""); setOpen(false); }}
+              className="w-full p-2.5 rounded-2xl text-sm font-bold mb-2 text-right"
+              style={{ background: "#fff", color: C.steel, border: `1px solid ${C.kraftDark}` }}
+            >
+              — ללא מקום —
+            </button>
+
+            {groups.length === 0 && (
+              <p className="text-sm text-center py-6" style={{ color: C.steel }}>לא נמצא מקום תואם</p>
+            )}
+
+            {groups.map(([g, items]) => (
+              <div key={g} className="mb-3">
+                <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>{g}</div>
+                <div className="flex flex-col gap-1.5">
+                  {items.map((loc) => (
+                    <button
+                      key={loc.id}
+                      onClick={() => { onChange(loc.id); setOpen(false); }}
+                      className="p-2.5 rounded-2xl text-right font-bold text-sm flex items-center gap-2"
+                      style={{
+                        background: value === loc.id ? C.sage : "#fff",
+                        color: value === loc.id ? "#fff" : C.ink,
+                        border: `1px solid ${value === loc.id ? C.sage : C.kraftDark}`,
+                      }}
+                    >
+                      {loc.imageData && <img src={loc.imageData} alt="" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover" }} />}
+                      {value === loc.id && "✓ "}{loc.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCancel }) {
   const [title, setTitle] = useState(task.title || "");
   const [description, setDescription] = useState(task.description || "");
@@ -5926,28 +6020,11 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
     }
   }
 
-  const locationGroups = Object.entries(
-    (locations || []).reduce((acc, loc) => {
-      const g = loc.group || "אחר";
-      (acc[g] = acc[g] || []).push(loc);
-      return acc;
-    }, {})
-  );
-
   return (
     <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
       <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="כותרת" className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }} autoFocus />
       <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="פירוט (אופציונלי)" className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }} rows={2} />
-      <select value={locationId} onChange={(e) => setLocationId(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
-        <option value="">בחר מקום (אופציונלי)</option>
-        {locationGroups.map(([g, items]) => (
-          <optgroup key={g} label={g}>
-            {items.map((loc) => (
-              <option key={loc.id} value={loc.id}>{loc.name}</option>
-            ))}
-          </optgroup>
-        ))}
-      </select>
+      <LocationPicker locations={locations} value={locationId} onChange={setLocationId} />
       {locationId && (() => {
         const loc = (locations || []).find((l) => l.id === locationId);
         return loc?.imageData ? (
