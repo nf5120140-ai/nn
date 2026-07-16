@@ -49,6 +49,7 @@ const KEYS = {
   orderRequests: "kitchen-order-requests",
   unitRequests: "kitchen-unit-requests",
   unitTemplates: "kitchen-unit-templates",
+  personalPurchases: "kitchen-personal-purchases",
 };
 
 const SETUP_SQL = `create table kv_store (
@@ -186,6 +187,7 @@ const ADMIN_SECTIONS = [
   { id: "locations", label: "מקומות" },
   { id: "reminders", label: "תזכורות" },
   { id: "analytics", label: "אנליטיקה" },
+  { id: "personal", label: "קניות פרטיות" },
   { id: "orderrequests", label: "בקשות הזמנה" },
   { id: "unitrequests", label: "בקשות מהמחסן" },
   { id: "users", label: "עובדים" },
@@ -2151,6 +2153,7 @@ function App() {
   const [orderRequests, setOrderRequests] = useState([]);
   const [unitRequests, setUnitRequests] = useState([]);
   const [unitTemplates, setUnitTemplates] = useState({});
+  const [personalPurchases, setPersonalPurchases] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [tab, setTab] = useState(() => {
     // If the previous session crashed and the user chose "open tasks", respect that once.
@@ -2253,7 +2256,7 @@ function App() {
     setLoaded(false);
     seenNotifIdsRef.current = null;
     (async () => {
-      const [orgProfiles, p, t, s, n, m, w, r, sl, oh, loc, dt, tc, orq, ur, ut] = await Promise.all([
+      const [orgProfiles, p, t, s, n, m, w, r, sl, oh, loc, dt, tc, orq, ur, ut, pp] = await Promise.all([
         (async () => {
           try {
             const list = await window.auth.getOrgProfiles();
@@ -2279,6 +2282,7 @@ function App() {
         loadKey(KEYS.orderRequests, []),
         loadKey(KEYS.unitRequests, []),
         loadKey(KEYS.unitTemplates, {}),
+        loadKey(KEYS.personalPurchases, []),
       ]);
       const finalLocations = loc || [];
       let finalDishTypes = dt;
@@ -2381,6 +2385,7 @@ function App() {
       setOrderRequests(orq || []);
       setUnitRequests(ur || []);
       setUnitTemplates(ut || {});
+      setPersonalPurchases(pp || []);
       setLoaded(true);
     })();
   }, [currentUser?.id]);
@@ -2404,6 +2409,7 @@ function App() {
       [KEYS.orderRequests]: async () => setOrderRequests((await loadKey(KEYS.orderRequests, [])) || []),
       [KEYS.unitRequests]: async () => setUnitRequests((await loadKey(KEYS.unitRequests, [])) || []),
       [KEYS.unitTemplates]: async () => setUnitTemplates((await loadKey(KEYS.unitTemplates, {})) || {}),
+      [KEYS.personalPurchases]: async () => setPersonalPurchases((await loadKey(KEYS.personalPurchases, [])) || []),
     };
     window.auth.subscribeToOrgChanges((payload) => {
       const changedKey = payload.new?.key || payload.old?.key;
@@ -2613,6 +2619,10 @@ function App() {
   async function persistUnitTemplates(next) {
     setUnitTemplates(next);
     await saveKey(KEYS.unitTemplates, next);
+  }
+  async function persistPersonalPurchases(next) {
+    setPersonalPurchases(next);
+    await saveKey(KEYS.personalPurchases, next);
   }
   async function persistOrderRequests(next) {
     setOrderRequests(next);
@@ -2976,6 +2986,8 @@ function App() {
             logStockChange={logStockChange}
             tasks={tasks}
             orderHistory={orderHistory}
+            personalPurchases={personalPurchases}
+            persistPersonalPurchases={persistPersonalPurchases}
           />
         )}
       </div>
@@ -3012,7 +3024,7 @@ function App() {
               )}
               {(isManager(currentUser) || currentUser.permissions?.tasks !== false) && (
                 <DrawerItem
-                  label="משימות"
+                  label="משימות ותיקונים"
                   active={tab === "tasks"}
                   onClick={() => { setTab("tasks"); setShowMenu(false); }}
                   badge={myOpenTasks.length > 0 ? myOpenTasks.length : null}
@@ -5489,7 +5501,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
   return (
     <div>
       <div className="flex justify-between items-center mb-3">
-        <h2 className="wh-display font-black text-lg" style={{ color: C.ink }}>משימות ותקלות</h2>
+        <h2 className="wh-display font-black text-lg" style={{ color: C.ink }}>משימות ותיקונים</h2>
         <button
           onClick={() => setShowNew(true)}
           className="px-3 py-2 rounded-2xl text-sm font-bold"
@@ -6087,7 +6099,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, orderHistory, unitTemplates, persistUnitTemplates }) {
+function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, orderHistory, unitTemplates, persistUnitTemplates, personalPurchases, persistPersonalPurchases }) {
   const [section, setSection] = useState(initialSection || "products");
 
   // A notification can deep-link straight into a specific admin screen.
@@ -6111,6 +6123,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
     ["locations", "מקומות"],
     ["reminders", "תזכורות"],
     ["analytics", "ניתוח"],
+    ["personal", "קניות פרטיות"],
     ["settings", "ספקים"],
   ];
   // A supervisor only sees the admin screens the manager granted them.
@@ -6219,9 +6232,198 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
       {section === "analytics" && (
         <AnalyticsAdmin products={products} stockLog={stockLog} tasks={tasks} orderHistory={orderHistory} unitRequests={unitRequests} users={users} />
       )}
+      {section === "personal" && isManager(currentUser) && (
+        <PersonalPurchasesAdmin
+          products={products}
+          personalPurchases={personalPurchases}
+          persistPersonalPurchases={persistPersonalPurchases}
+          currentUser={currentUser}
+          users={users}
+          showToast={showToast}
+        />
+      )}
       {section === "settings" && (
         <SuppliersAdmin settings={settings} persistSettings={persistSettings} showToast={showToast} />
       )}
+    </div>
+  );
+}
+
+/* Manager-only ledger of items taken from institutional stock for personal use,
+   so they can be paid back. Does NOT touch inventory - it's a private tally. */
+function PersonalPurchasesAdmin({ products, personalPurchases, persistPersonalPurchases, currentUser, users, showToast }) {
+  const [adding, setAdding] = useState(false);
+  const [search, setSearch] = useState("");
+  const [filterPerson, setFilterPerson] = useState("all");
+
+  const list = Array.isArray(personalPurchases) ? personalPurchases : [];
+
+  // Who has entries (so a manager can track their own separately from others).
+  const buyers = Array.from(new Set(list.map((e) => e.byId))).map((id) => ({
+    id,
+    name: users.find((u) => u.id === id)?.name || "לא ידוע",
+  }));
+
+  const shown = filterPerson === "all" ? list : list.filter((e) => e.byId === filterPerson);
+  const unpaid = shown.filter((e) => !e.paid);
+  const paidTotal = shown.filter((e) => e.paid).reduce((s, e) => s + e.price * e.qty, 0);
+  const unpaidTotal = unpaid.reduce((s, e) => s + e.price * e.qty, 0);
+
+  async function addItem(product) {
+    const entry = {
+      id: genId(),
+      productId: product.id,
+      name: product.name,
+      unit: product.unit,
+      qty: 1,
+      price: Number(product.price || 0),
+      byId: currentUser.id,
+      byName: currentUser.name,
+      paid: false,
+      takenAt: Date.now(),
+    };
+    await persistPersonalPurchases([entry, ...list]);
+    setSearch("");
+  }
+
+  async function setQty(id, qty) {
+    await persistPersonalPurchases(list.map((e) => (e.id === id ? { ...e, qty: Math.max(1, Number(qty) || 1) } : e)));
+  }
+  async function setPrice(id, price) {
+    await persistPersonalPurchases(list.map((e) => (e.id === id ? { ...e, price: Math.max(0, Number(price) || 0) } : e)));
+  }
+  async function togglePaid(id) {
+    await persistPersonalPurchases(list.map((e) => (e.id === id ? { ...e, paid: !e.paid, paidAt: !e.paid ? Date.now() : null } : e)));
+  }
+  async function remove(id) {
+    await persistPersonalPurchases(list.filter((e) => e.id !== id));
+  }
+  async function markAllPaid() {
+    if (!window.confirm("לסמן את כל הפריטים שלא שולמו כשולמו?")) return;
+    await persistPersonalPurchases(list.map((e) => (shown.some((x) => x.id === e.id) && !e.paid ? { ...e, paid: true, paidAt: Date.now() } : e)));
+    showToast("סומנו כשולמו");
+  }
+
+  const pickable = products
+    .filter((p) => !search || p.name.includes(search))
+    .slice(0, 30);
+
+  const fmtDate = (ts) => new Date(ts).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+
+  return (
+    <div>
+      <h2 className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>קניות פרטיות</h2>
+      <p className="text-xs mb-4" style={{ color: C.steel }}>
+        פריטים שלקחת מהמלאי של המוסד לשימוש אישי, כדי לשלם עליהם בנפרד. זה רישום פרטי בלבד - הוא לא משנה את המלאי.
+      </p>
+
+      {buyers.length > 1 && (
+        <select
+          value={filterPerson}
+          onChange={(e) => setFilterPerson(e.target.value)}
+          className="w-full p-2 rounded-2xl border mb-3 text-sm"
+          style={{ borderColor: C.kraftDark }}
+        >
+          <option value="all">כולם</option>
+          {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+        </select>
+      )}
+
+      {/* Totals */}
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        <div className="rounded-2xl p-3 text-center" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${C.stamp}` }}>
+          <div className="wh-display font-black" style={{ color: C.stamp, fontSize: 26 }}>₪{unpaidTotal.toFixed(0)}</div>
+          <div className="text-xs" style={{ color: C.steel }}>חוב פתוח ({unpaid.length})</div>
+        </div>
+        <div className="rounded-2xl p-3 text-center" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${C.sage}` }}>
+          <div className="wh-display font-black" style={{ color: C.sage, fontSize: 26 }}>₪{paidTotal.toFixed(0)}</div>
+          <div className="text-xs" style={{ color: C.steel }}>שולם</div>
+        </div>
+      </div>
+
+      <button
+        onClick={() => setAdding((v) => !v)}
+        className="w-full py-3 rounded-2xl font-bold mb-3"
+        style={{ background: adding ? C.kraft : C.ink, color: adding ? C.ink : C.paper, border: adding ? `1px solid ${C.kraftDark}` : "none" }}
+      >
+        {adding ? "סגור" : "➕ הוסף מוצר שלקחתי"}
+      </button>
+
+      {adding && (
+        <ShelfTag accent={C.accent} style={{ marginBottom: 12 }}>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="חיפוש מוצר..."
+            className="w-full p-2 rounded-2xl border mb-2 text-sm"
+            style={{ borderColor: C.kraftDark }}
+            autoFocus
+          />
+          <div className="flex flex-col gap-1.5" style={{ maxHeight: 240, overflowY: "auto" }}>
+            {pickable.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => addItem(p)}
+                className="flex justify-between items-center p-2.5 rounded-2xl text-right"
+                style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}
+              >
+                <div>
+                  <div className="text-sm font-bold" style={{ color: C.ink }}>{p.name}</div>
+                  <div className="text-xs" style={{ color: C.steel }}>₪{Number(p.price || 0).toFixed(0)} ל{p.unit}</div>
+                </div>
+                <span className="text-lg font-bold" style={{ color: C.sage }}>+</span>
+              </button>
+            ))}
+          </div>
+        </ShelfTag>
+      )}
+
+      {unpaid.length > 0 && (
+        <button onClick={markAllPaid} className="w-full py-2 rounded-2xl font-bold text-sm mb-3" style={{ background: C.sage, color: "#fff" }}>
+          ✓ סמן הכל כשולם
+        </button>
+      )}
+
+      <div className="flex flex-col gap-2">
+        {shown.length === 0 && (
+          <p className="text-sm text-center py-8" style={{ color: C.steel }}>אין עדיין רישומים</p>
+        )}
+        {shown.map((e) => (
+          <ShelfTag key={e.id} accent={e.paid ? C.sage : C.stamp}>
+            <div className="flex justify-between items-start mb-2">
+              <div>
+                <div className="font-bold text-sm" style={{ color: C.ink }}>
+                  {e.name} {e.paid && <span style={{ color: C.sage }}>✓ שולם</span>}
+                </div>
+                <div className="text-xs" style={{ color: C.steel }}>
+                  {fmtDate(e.takenAt)}{filterPerson === "all" && buyers.length > 1 ? ` · ${e.byName}` : ""}
+                </div>
+              </div>
+              <button onClick={() => remove(e.id)} className="rounded-xl font-bold" style={{ background: C.stamp, color: "#fff", width: 28, height: 28 }}>✕</button>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
+                <span className="text-xs" style={{ color: C.steel }}>כמות</span>
+                <input type="number" value={e.qty} onChange={(ev) => setQty(e.id, ev.target.value)} className="w-14 text-center p-1.5 rounded-xl border" style={{ borderColor: C.kraftDark }} />
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-xs" style={{ color: C.steel }}>₪ ליח'</span>
+                <input type="number" value={e.price} onChange={(ev) => setPrice(e.id, ev.target.value)} className="w-16 text-center p-1.5 rounded-xl border" style={{ borderColor: C.kraftDark }} />
+              </div>
+              <div className="flex-1 text-left font-bold" style={{ color: C.ink }}>
+                ₪{(e.price * e.qty).toFixed(0)}
+              </div>
+            </div>
+            <button
+              onClick={() => togglePaid(e.id)}
+              className="w-full mt-2 py-1.5 rounded-xl font-bold text-xs"
+              style={{ background: e.paid ? C.kraft : C.sage, color: e.paid ? C.ink : "#fff", border: e.paid ? `1px solid ${C.kraftDark}` : "none" }}
+            >
+              {e.paid ? "בטל סימון תשלום" : "✓ סמן כשולם"}
+            </button>
+          </ShelfTag>
+        ))}
+      </div>
     </div>
   );
 }
@@ -7550,9 +7752,29 @@ function UnitRequestsAdmin({
                     </button>
                   </div>
                 ) : (
-                  <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: st.color, color: "#fff" }}>
-                    {st.label}
-                  </span>
+                  <div className="flex flex-col gap-1.5 items-end">
+                    <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: st.color, color: "#fff" }}>
+                      {st.label}
+                    </span>
+                    {r.status === "fulfilled" && (
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => sendListWhatsapp(r.issuedItems || r.items || [], r.unitName, r.weekOf)}
+                          className="px-3 py-1 rounded-2xl font-bold text-xs"
+                          style={{ background: "#25D366", color: "#fff" }}
+                        >
+                          💬
+                        </button>
+                        <button
+                          onClick={() => printList(r.issuedItems || r.items || [], r.unitName, r.weekOf)}
+                          className="px-3 py-1 rounded-2xl font-bold text-xs"
+                          style={{ background: C.accent, color: "#fff" }}
+                        >
+                          🖨️ הדפס
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
             </ShelfTag>
