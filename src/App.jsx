@@ -1751,6 +1751,17 @@ function weekStartIso(d = new Date()) {
   x.setHours(0, 0, 0, 0);
   return x.toISOString().slice(0, 10);
 }
+/** "16/7 14:30" - compact date+time for created stamps across the app. */
+function fmtStamp(ts) {
+  if (!ts) return "";
+  return new Date(ts).toLocaleString("he-IL", {
+    day: "numeric",
+    month: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 function weekLabel(iso) {
   const start = new Date(iso);
   const end = new Date(start);
@@ -2905,8 +2916,6 @@ function App() {
             showToast={showToast}
             isManager={isManager(currentUser)}
             logStockChange={logStockChange}
-            initialSection={adminSection}
-            onSectionConsumed={() => setAdminSection(null)}
           />
         )}
         {tab === "order" && (
@@ -2988,6 +2997,8 @@ function App() {
             orderHistory={orderHistory}
             personalPurchases={personalPurchases}
             persistPersonalPurchases={persistPersonalPurchases}
+            initialSection={adminSection}
+            onSectionConsumed={() => setAdminSection(null)}
           />
         )}
       </div>
@@ -5654,6 +5665,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
                   )}
                   <div className="text-xs mt-2" style={{ color: C.steel }}>
                     שויך ל: <b style={{ color: C.ink }}>{assignee?.name || "לא משויך"}</b> · נוצר ע"י {t.createdBy}
+                    {t.createdAt && <> · 🕐 {fmtStamp(t.createdAt)}</>}
                   </div>
 
                   {t.followUpAt && t.status !== "done" && (
@@ -6311,7 +6323,7 @@ function PersonalPurchasesAdmin({ products, personalPurchases, persistPersonalPu
     .filter((p) => !search || p.name.includes(search))
     .slice(0, 30);
 
-  const fmtDate = (ts) => new Date(ts).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+  const fmtDate = (ts) => new Date(ts).toLocaleString("he-IL", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
 
   return (
     <div>
