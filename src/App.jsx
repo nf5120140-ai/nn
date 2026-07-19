@@ -2736,7 +2736,7 @@ function App() {
     );
   }
 
-async function handleScanDetected(code) {
+  async function handleScanDetected(code) {
     const product = products.find((p) => p.barcode === code);
     if (product) {
       const newQty = Math.max((product.quantity || 0) - 1, 0);
@@ -3399,6 +3399,10 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
   const [showSummary, setShowSummary] = useState(false);
   const [viewMode, setViewMode] = useState("category"); // "category" | "name"
   const [activeCategory, setActiveCategory] = useState("all"); // "all" | specific category name
+  const [hwMode, setHwMode] = useState(false);
+  const [hwValue, setHwValue] = useState("");
+  const [hwLog, setHwLog] = useState([]);
+  const hwInputRef = useRef(null);
   const filtered = products.filter((p) => p.name.includes(search) || p.barcode.includes(search));
   const filteredByCategory =
     activeCategory === "all" ? filtered : filtered.filter((p) => (p.category || "ללא קטגוריה") === activeCategory);
@@ -3422,6 +3426,19 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
     const delta = Number(newQty) - Number(product.quantity);
     if (logStockChange) logStockChange(product.id, delta, currentUser.name);
     showToast(`${product.name}: עודכן ל-${newQty} (${currentUser.name})`);
+  }
+
+  function handleHardwareScan(rawCode) {
+    const code = String(rawCode).trim();
+    if (!code) return;
+    const product = products.find((p) => p.barcode === code);
+    if (!product) {
+      showToast(`❌ ברקוד לא מזוהה: ${code}`);
+      setHwLog((l) => [{ text: `❌ לא נמצא: ${code}`, ts: Date.now() }, ...l].slice(0, 8));
+      return;
+    }
+    adjustQty(product, -1);
+    setHwLog((l) => [{ text: `✅ ${product.name} → ${Math.max(0, Number(product.quantity) - 1)}`, ts: Date.now() }, ...l].slice(0, 8));
   }
 
   const summaryByCategory = Object.entries(
@@ -3492,7 +3509,46 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
         >
           📷 סרוק
         </button>
+        <button
+          onClick={() => setHwMode((v) => !v)}
+          className="px-4 rounded-2xl wh-display font-bold"
+          style={{ background: hwMode ? C.stamp : C.steel, color: "#fff" }}
+        >
+          🔌 סורק חומרה
+        </button>
       </div>
+
+      {hwMode && (
+        <ShelfTag accent={C.stamp} style={{ marginBottom: 16 }}>
+          <div className="text-xs mb-2 font-bold" style={{ color: C.steel }}>
+            חבר את הסורק (USB/בלוטות'), לחץ בתוך התיבה, וסרוק. כל סריקה מורידה 1 מהמלאי.
+          </div>
+          <input
+            ref={hwInputRef}
+            value={hwValue}
+            onChange={(e) => setHwValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleHardwareScan(hwValue);
+                setHwValue("");
+                if (hwInputRef.current) hwInputRef.current.focus();
+              }
+            }}
+            placeholder="ממתין לסריקה..."
+            className="w-full p-3 rounded-2xl border wh-display"
+            style={{ borderColor: C.stamp, background: "#fff", direction: "ltr", fontSize: 18 }}
+            autoFocus
+          />
+          {hwLog.length > 0 && (
+            <div className="mt-3 flex flex-col gap-1">
+              {hwLog.map((entry) => (
+                <div key={entry.ts} className="text-sm" style={{ color: C.ink }}>{entry.text}</div>
+              ))}
+            </div>
+          )}
+        </ShelfTag>
+      )}
 
       {scanResult && (
         <ScanResultCard
@@ -6816,10 +6872,9 @@ function OldAnalyticsAdmin({ products, stockLog }) {
 }
 
 function LocationsAdmin({ locations, persistLocations, showToast }) {
-const empty = { name: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "", unitVisible: true, imageData: null };
+  const empty = { name: "", group: "", imageData: null };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
-  const [scanningBarcode, setScanningBarcode] = useState(false);
   const [imageBusy, setImageBusy] = useState(false);
   const [search, setSearch] = useState("");
   const fileInputRef = useRef(null);
@@ -8757,6 +8812,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
   const empty = { name: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "", unitVisible: true, imageData: null };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
+  const [scanningBarcode, setScanningBarcode] = useState(false);
   const fileInputRef = useRef(null);
   const [importing, setImporting] = useState(false);
   const [pasteMode, setPasteMode] = useState(false);
@@ -9092,7 +9148,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם מוצר</label>
           <input placeholder="שם מוצר" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
         </div>
-       <div>
+        <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>ברקוד</label>
           <div className="flex gap-2">
             <input placeholder="ברקוד" value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} className="p-2 rounded-2xl border flex-1" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
