@@ -50,6 +50,8 @@ const KEYS = {
   unitRequests: "kitchen-unit-requests",
   unitTemplates: "kitchen-unit-templates",
   personalPurchases: "kitchen-personal-purchases",
+  messages: "kitchen-messages",
+  chatReads: "kitchen-chat-reads",
 };
 
 const SETUP_SQL = `create table kv_store (
@@ -2136,6 +2138,493 @@ class ErrorBoundary extends React.Component {
   }
 }
 
+/* ---------- Kiosk scan station ---------- */
+let _kioskAudioCtx = null;
+function playBeep(kind) {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    if (!_kioskAudioCtx) _kioskAudioCtx = new Ctx();
+    const ctx = _kioskAudioCtx;
+    if (ctx.state === "suspended") ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const now = ctx.currentTime;
+    if (kind === "error") { osc.type = "square"; osc.frequency.value = 200; }
+    else { osc.type = "sine"; osc.frequency.value = 880; }
+    const dur = kind === "error" ? 0.4 : 0.15;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.5, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    osc.start(now);
+    osc.stop(now + dur);
+  } catch (e) { /* ignore */ }
+}
+
+function KioskScanner({ products, persistProducts, logStockChange, currentUser, onExit, onSwitchMode }) {
+  const productsRef = useRef(products);
+  const [last, setLast] = useState(null); // { ok, name, qty, code }
+  const [count, setCount] = useState(0);
+
+  useEffect(() => { productsRef.current = products; }, [products]);
+
+  function handleScan(raw) {
+    const code = String(raw).trim();
+    if (!code) return;
+    const product = productsRef.current.find((p) => p.barcode === code);
+    if (!product) {
+      playBeep("error");
+      setLast({ ok: false, code });
+      return;
+    }
+    const newQty = Math.max((product.quantity || 0) - 1, 0);
+    const next = productsRef.current.map((p) =>
+      p.id === product.id ? { ...p, quantity: newQty } : p
+    );
+    productsRef.current = next; // update immediately so rapid scans stay correct
+    persistProducts(next);
+    if (logStockChange) logStockChange(product.id, -1, currentUser?.name || "תחנת סריקה");
+    playBeep("ok");
+    setLast({ ok: true, name: product.name, qty: newQty, code });
+    setCount((c) => c + 1);
+  }
+
+  // Capture scans globally (hardware scanner types like a keyboard, ends with Enter).
+  const handleScanRef = useRef(handleScan);
+  handleScanRef.current = handleScan;
+  useEffect(() => {
+    let buffer = "";
+    let lastTime = 0;
+    function onKey(e) {
+      const now = Date.now();
+      if (now - lastTime > 100) buffer = "";
+      lastTime = now;
+      if (e.key === "Enter") {
+        if (buffer) { handleScanRef.current(buffer); buffer = ""; }
+        return;
+      }
+      if (e.key && e.key.length === 1) buffer += e.key;
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Keep the screen awake while the station is running.
+  useEffect(() => {
+    let lock = null;
+    async function acquire() {
+      try { if (navigator.wakeLock) lock = await navigator.wakeLock.request("screen"); } catch (e) {}
+    }
+    acquire();
+    const onVis = () => { if (document.visibilityState === "visible") acquire(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      try { lock && lock.release(); } catch (e) {}
+    };
+  }, []);
+
+  const bg = last ? (last.ok ? "#1f6b3a" : "#7a1f1f") : "#1f2a24";
+
+  return (
+    <div
+      dir="rtl"
+      style={{
+        position: "fixed", inset: 0, zIndex: 60, background: bg,
+        transition: "background 0.15s", display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center", color: "#fff",
+        fontFamily: "'Heebo', sans-serif", padding: 24, textAlign: "center",
+      }}
+    >
+      <button
+        onClick={() => { if (window.confirm("לצאת ממצב תחנת סריקה?")) onExit(); }}
+        style={{ position: "absolute", top: 16, left: 16, background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", borderRadius: 16, padding: "8px 16px", fontSize: 14 }}
+      >
+        יציאה
+      </button>
+      {onSwitchMode && (
+        <button
+          onClick={onSwitchMode}
+          style={{ position: "absolute", top: 56, left: 16, background: "rgba(255,255,255,0.12)", color: "#fff", border: "none", borderRadius: 16, padding: "6px 14px", fontSize: 13 }}
+        >
+          📷 מצב מצלמה
+        </button>
+      )}
+      <div style={{ position: "absolute", top: 20, right: 20, fontSize: 15, opacity: 0.7 }}>
+        נסרקו: {count}
+      </div>
+
+      {!last && (
+        <div>
+          <div style={{ fontSize: 80, marginBottom: 12 }}>📦</div>
+          <div style={{ fontSize: 30, fontWeight: 700 }}>מוכן לסריקה</div>
+          <div style={{ fontSize: 17, opacity: 0.75, marginTop: 8 }}>העבר מוצר מול הסורק</div>
+        </div>
+      )}
+
+      {last && last.ok && (
+        <div>
+          <div style={{ fontSize: 70, marginBottom: 4 }}>✅</div>
+          <div style={{ fontSize: 36, fontWeight: 900, lineHeight: 1.2 }}>{last.name}</div>
+          <div style={{ fontSize: 20, marginTop: 14, opacity: 0.9 }}>נשאר במלאי</div>
+          <div style={{ fontSize: 96, fontWeight: 900, lineHeight: 1, fontFamily: "'Rubik', sans-serif" }}>{last.qty}</div>
+        </div>
+      )}
+
+      {last && !last.ok && (
+        <div>
+          <div style={{ fontSize: 70, marginBottom: 4 }}>❌</div>
+          <div style={{ fontSize: 32, fontWeight: 900 }}>ברקוד לא מזוהה</div>
+          <div style={{ fontSize: 18, marginTop: 12, opacity: 0.85, direction: "ltr" }}>{last.code}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KioskCameraScanner({ products, persistProducts, logStockChange, currentUser, onExit, onSwitchMode }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const rafRef = useRef(null);
+  const productsRef = useRef(products);
+  const lastCodeRef = useRef({ code: null, ts: 0 });
+  const [last, setLast] = useState(null);
+  const [count, setCount] = useState(0);
+  const [flash, setFlash] = useState(null); // "ok" | "err"
+  const [err, setErr] = useState("");
+
+  useEffect(() => { productsRef.current = products; }, [products]);
+
+  function processCode(raw) {
+    const code = String(raw).trim();
+    if (!code) return;
+    const now = Date.now();
+    if (lastCodeRef.current.code === code && now - lastCodeRef.current.ts < 2500) return;
+    lastCodeRef.current = { code, ts: now };
+
+    const product = productsRef.current.find((p) => p.barcode === code);
+    if (!product) {
+      playBeep("error");
+      setLast({ ok: false, code });
+      setFlash("err"); setTimeout(() => setFlash(null), 300);
+      return;
+    }
+    const newQty = Math.max((product.quantity || 0) - 1, 0);
+    const next = productsRef.current.map((p) => (p.id === product.id ? { ...p, quantity: newQty } : p));
+    productsRef.current = next;
+    persistProducts(next);
+    if (logStockChange) logStockChange(product.id, -1, currentUser?.name || "תחנת מצלמה");
+    playBeep("ok");
+    setLast({ ok: true, name: product.name, qty: newQty, code });
+    setCount((c) => c + 1);
+    setFlash("ok"); setTimeout(() => setFlash(null), 300);
+  }
+
+  const processRef = useRef(processCode);
+  processRef.current = processCode;
+
+  useEffect(() => {
+    let cancelled = false;
+    function stop() {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
+    }
+    async function start() {
+      if (!("BarcodeDetector" in window)) {
+        setErr("הדפדפן במכשיר הזה לא תומך בסריקת מצלמה רציפה. השתמש במצב סורק חומרה.");
+        return;
+      }
+      let formats;
+      try {
+        const supported = await window.BarcodeDetector.getSupportedFormats();
+        const wanted = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "qr_code"];
+        formats = wanted.filter((f) => supported.includes(f));
+        if (!formats.length) throw new Error("no formats");
+      } catch (e) { setErr("סריקת מצלמה לא נתמכת במכשיר הזה."); return; }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+        if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
+        const detector = new window.BarcodeDetector({ formats });
+        const loop = async () => {
+          if (cancelled || !videoRef.current) return;
+          try {
+            const codes = await detector.detect(videoRef.current);
+            if (codes && codes.length) processRef.current(codes[0].rawValue);
+          } catch (e) { /* ignore per-frame errors */ }
+          rafRef.current = requestAnimationFrame(loop);
+        };
+        loop();
+      } catch (e) {
+        setErr("לא ניתן להפעיל את המצלמה. בדוק הרשאות מצלמה בדפדפן.");
+      }
+    }
+    start();
+    return () => { cancelled = true; stop(); };
+  }, []);
+
+  useEffect(() => {
+    let lock = null;
+    async function acquire() { try { if (navigator.wakeLock) lock = await navigator.wakeLock.request("screen"); } catch (e) {} }
+    acquire();
+    const onVis = () => { if (document.visibilityState === "visible") acquire(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { document.removeEventListener("visibilitychange", onVis); try { lock && lock.release(); } catch (e) {} };
+  }, []);
+
+  return (
+    <div dir="rtl" style={{ position: "fixed", inset: 0, zIndex: 60, background: "#000", overflow: "hidden" }}>
+      <video
+        ref={videoRef}
+        muted
+        playsInline
+        autoPlay
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+      />
+
+      {flash && (
+        <div style={{ position: "absolute", inset: 0, background: flash === "ok" ? "rgba(31,107,58,0.45)" : "rgba(122,31,31,0.45)" }} />
+      )}
+
+      {!err && (
+        <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", width: "70%", maxWidth: 360, height: 160, border: "3px solid rgba(255,255,255,0.85)", borderRadius: 16 }} />
+      )}
+
+      <button
+        onClick={() => { if (window.confirm("לצאת ממצב תחנת סריקה?")) onExit(); }}
+        style={{ position: "absolute", top: 16, left: 16, background: "rgba(0,0,0,0.5)", color: "#fff", border: "none", borderRadius: 16, padding: "8px 16px", fontSize: 14 }}
+      >
+        יציאה
+      </button>
+      {onSwitchMode && (
+        <button
+          onClick={onSwitchMode}
+          style={{ position: "absolute", top: 56, left: 16, background: "rgba(0,0,0,0.5)", color: "#fff", border: "none", borderRadius: 16, padding: "6px 14px", fontSize: 13 }}
+        >
+          🔌 מצב סורק חומרה
+        </button>
+      )}
+      <div style={{ position: "absolute", top: 20, right: 20, color: "#fff", fontSize: 15, background: "rgba(0,0,0,0.4)", padding: "4px 10px", borderRadius: 12 }}>
+        נסרקו: {count}
+      </div>
+
+      <div
+        style={{
+          position: "absolute", bottom: 0, left: 0, right: 0, padding: 24, textAlign: "center",
+          background: "linear-gradient(transparent, rgba(0,0,0,0.78))", color: "#fff", fontFamily: "'Heebo', sans-serif",
+        }}
+      >
+        {err ? (
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#ffd7d7" }}>{err}</div>
+        ) : !last ? (
+          <div style={{ fontSize: 22, fontWeight: 700 }}>הצג מוצר מול המצלמה</div>
+        ) : last.ok ? (
+          <div>
+            <div style={{ fontSize: 30, fontWeight: 900 }}>{last.name}</div>
+            <div style={{ fontSize: 18, marginTop: 4 }}>
+              נשאר במלאי: <span style={{ fontSize: 30, fontWeight: 900, fontFamily: "'Rubik', sans-serif" }}>{last.qty}</span>
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 24, fontWeight: 900, color: "#ffd7d7" }}>❌ ברקוד לא מזוהה</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUser }) {
+  const [messages, setMessages] = useState([]);
+  const [reads, setReads] = useState({});
+  const [open, setOpen] = useState(false);
+  const [activeThread, setActiveThread] = useState(null); // manager: selected worker id
+  const [text, setText] = useState("");
+  const bodyRef = useRef(null);
+  const myId = currentUser?.id;
+
+  async function reload() {
+    try {
+      const m = await loadKey(KEYS.messages, []);
+      const r = await loadKey(KEYS.chatReads, {});
+      setMessages(Array.isArray(m) ? m : []);
+      setReads(r && typeof r === "object" ? r : {});
+    } catch (e) { /* ignore */ }
+  }
+
+  useEffect(() => {
+    reload();
+    const t = setInterval(reload, 4000);
+    return () => clearInterval(t);
+  }, []);
+
+  const lastRead = reads[myId] || 0;
+  const unread = messages.filter((msg) =>
+    isManager
+      ? msg.fromRole !== "manager" && msg.ts > lastRead
+      : msg.threadId === myId && msg.fromRole === "manager" && msg.ts > lastRead
+  ).length;
+
+  async function markRead() {
+    const next = { ...reads, [myId]: Date.now() };
+    setReads(next);
+    try { await saveKey(KEYS.chatReads, next); } catch (e) {}
+  }
+
+  function openChat() {
+    setOpen(true);
+    if (!isManager) { setActiveThread(myId); markRead(); }
+    else { setActiveThread(null); }
+  }
+
+  useEffect(() => {
+    if (open && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [open, messages, activeThread]);
+
+  async function send() {
+    const t = text.trim();
+    if (!t) return;
+    const threadId = isManager ? activeThread : myId;
+    if (!threadId) return;
+    const msg = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      threadId,
+      fromId: myId,
+      fromName: currentUser?.name || "",
+      fromRole: isManager ? "manager" : "worker",
+      text: t,
+      ts: Date.now(),
+    };
+    setText("");
+    try {
+      const latest = await loadKey(KEYS.messages, []);
+      const arr = Array.isArray(latest) ? latest : [];
+      const nextArr = [...arr, msg];
+      await saveKey(KEYS.messages, nextArr);
+      setMessages(nextArr);
+    } catch (e) {}
+    try {
+      if (isManager) { if (notifyUser) notifyUser(threadId, "הודעה חדשה מההנהלה", null); }
+      else if (notifyManagers) notifyManagers(`הודעה חדשה מ${currentUser?.name || "עובד"}`, null);
+    } catch (e) {}
+    markRead();
+  }
+
+  const userName = (id) => (users.find((u) => u.id === id) || {}).name || "עובד";
+  const fmtTime = (ts) => { try { return new Date(ts).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
+
+  const threads = (() => {
+    const map = {};
+    for (const m of messages) if (!map[m.threadId] || m.ts > map[m.threadId].ts) map[m.threadId] = m;
+    return Object.keys(map).map((tid) => ({ threadId: tid, last: map[tid] })).sort((a, b) => b.last.ts - a.last.ts);
+  })();
+
+  const threadMessages = messages
+    .filter((m) => m.threadId === (isManager ? activeThread : myId))
+    .sort((a, b) => a.ts - b.ts);
+
+  const inThread = !isManager || activeThread;
+
+  return (
+    <>
+      <button
+        onClick={openChat}
+        title="צ'אט עם ההנהלה"
+        style={{
+          position: "fixed", bottom: 88, right: 16, zIndex: 40,
+          width: 56, height: 56, borderRadius: "50%", border: "none",
+          background: C.ink, color: "#fff", fontSize: 24,
+          boxShadow: "0 4px 14px rgba(0,0,0,0.28)", cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}
+      >
+        💬
+        {unread > 0 && (
+          <span style={{ position: "absolute", top: -2, right: -2, background: "#dc2626", color: "#fff", borderRadius: 12, minWidth: 22, height: 22, fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
+            {unread}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div dir="rtl" style={{ position: "fixed", inset: 0, zIndex: 70, background: C.paper, display: "flex", flexDirection: "column", fontFamily: "'Heebo', sans-serif" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 14, background: C.ink, color: "#fff" }}>
+            {isManager && activeThread && (
+              <button onClick={() => setActiveThread(null)} style={{ background: "transparent", border: "none", color: "#fff", fontSize: 20, cursor: "pointer" }}>›</button>
+            )}
+            <div style={{ fontWeight: 800, fontSize: 17, flex: 1 }}>
+              {isManager ? (activeThread ? `שיחה עם ${userName(activeThread)}` : "פניות עובדים") : "צ'אט עם ההנהלה"}
+            </div>
+            <button onClick={() => setOpen(false)} style={{ background: "transparent", border: "none", color: "#fff", fontSize: 22, cursor: "pointer" }}>✕</button>
+          </div>
+
+          {isManager && !activeThread ? (
+            <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
+              {threads.length === 0 && (
+                <div style={{ textAlign: "center", color: C.steel, marginTop: 40 }}>אין פניות עדיין</div>
+              )}
+              {threads.map(({ threadId, last }) => {
+                const isUnread = last.fromRole !== "manager" && last.ts > lastRead;
+                return (
+                  <button
+                    key={threadId}
+                    onClick={() => { setActiveThread(threadId); markRead(); }}
+                    style={{ width: "100%", textAlign: "right", background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 14, padding: 12, marginBottom: 8, cursor: "pointer" }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontWeight: 800, color: C.ink }}>{userName(threadId)}</span>
+                      <span style={{ fontSize: 12, color: C.steel }}>{fmtTime(last.ts)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                      <span style={{ fontSize: 13, color: C.steel, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "80%" }}>
+                        {last.fromRole === "manager" ? "אתה: " : ""}{last.text}
+                      </span>
+                      {isUnread && <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#dc2626" }} />}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div ref={bodyRef} style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              {threadMessages.length === 0 && (
+                <div style={{ textAlign: "center", color: C.steel, marginTop: 40 }}>
+                  {isManager ? "אין הודעות בשיחה" : "כתוב הודעה כדי לפנות להנהלה"}
+                </div>
+              )}
+              {threadMessages.map((m) => {
+                const mine = m.fromId === myId;
+                return (
+                  <div key={m.id} style={{ alignSelf: mine ? "flex-start" : "flex-end", maxWidth: "78%", background: mine ? C.ink : "#fff", color: mine ? "#fff" : C.ink, border: mine ? "none" : `1px solid ${C.kraftDark}`, borderRadius: 14, padding: "8px 12px" }}>
+                    {!mine && <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, marginBottom: 2 }}>{m.fromRole === "manager" ? "ההנהלה" : m.fromName}</div>}
+                    <div style={{ fontSize: 15, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.text}</div>
+                    <div style={{ fontSize: 10, opacity: 0.6, marginTop: 3, textAlign: "left" }}>{fmtTime(m.ts)}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {inThread && (
+            <div style={{ display: "flex", gap: 8, padding: 10, borderTop: `1px solid ${C.kraftDark}`, background: "#fff" }}>
+              <input
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); send(); } }}
+                placeholder="הקלד הודעה..."
+                style={{ flex: 1, padding: "10px 14px", borderRadius: 20, border: `1px solid ${C.kraftDark}`, fontSize: 15 }}
+              />
+              <button onClick={send} style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 20, padding: "0 20px", fontWeight: 700, cursor: "pointer" }}>שלח</button>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function AppWithBoundary() {
   return (
     <ErrorBoundary>
@@ -2740,6 +3229,30 @@ function App() {
     );
   }
 
+  const kioskParam =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("kiosk")
+      : null;
+  if (kioskParam === "1" || kioskParam === "camera") {
+    const goToKiosk = (val) => {
+      const u = new URL(window.location.href);
+      u.searchParams.set("kiosk", val);
+      window.location.href = u.toString();
+    };
+    const exitKiosk = () => { window.location.href = window.location.pathname; };
+    const kioskProps = {
+      products,
+      persistProducts,
+      logStockChange,
+      currentUser,
+      onExit: exitKiosk,
+    };
+    if (kioskParam === "camera") {
+      return <KioskCameraScanner {...kioskProps} onSwitchMode={() => goToKiosk("1")} />;
+    }
+    return <KioskScanner {...kioskProps} onSwitchMode={() => goToKiosk("camera")} />;
+  }
+
   async function handleScanDetected(code) {
     const product = products.find((p) => p.barcode === code);
     if (product) {
@@ -3148,6 +3661,8 @@ function App() {
           </div>
         </div>
       )}
+
+      <InternalChat currentUser={currentUser} users={users} isManager={isManager(currentUser)} notifyManagers={notifyManagers} notifyUser={notifyUser} />
       </div>
     </div>
   );
