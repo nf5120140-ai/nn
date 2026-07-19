@@ -6816,9 +6816,10 @@ function OldAnalyticsAdmin({ products, stockLog }) {
 }
 
 function LocationsAdmin({ locations, persistLocations, showToast }) {
-  const empty = { name: "", group: "", imageData: null };
+const empty = { name: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "", unitVisible: true, imageData: null };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
+  const [scanningBarcode, setScanningBarcode] = useState(false);
   const [imageBusy, setImageBusy] = useState(false);
   const [search, setSearch] = useState("");
   const fileInputRef = useRef(null);
@@ -9091,10 +9092,32 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם מוצר</label>
           <input placeholder="שם מוצר" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
         </div>
-        <div>
+       <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>ברקוד</label>
-          <input placeholder="ברקוד" value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+          <div className="flex gap-2">
+            <input placeholder="ברקוד" value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} className="p-2 rounded-2xl border flex-1" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+            <button
+              type="button"
+              onClick={() => setScanningBarcode(true)}
+              className="px-4 rounded-2xl font-bold whitespace-nowrap"
+              style={{ background: C.steel, color: "#fff" }}
+            >
+              📷 סרוק
+            </button>
+          </div>
         </div>
+        {scanningBarcode && (
+          <BarcodeScanner
+            onDetected={(code) => {
+              const clash = products.find((p) => p.barcode === code && p.id !== editingId);
+              if (clash) showToast && showToast(`⚠️ הברקוד כבר משויך ל"${clash.name}"`);
+              else showToast && showToast(`ברקוד נקלט: ${code}`);
+              setForm((f) => ({ ...f, barcode: code }));
+              setScanningBarcode(false);
+            }}
+            onClose={() => setScanningBarcode(false)}
+          />
+        )}
         <div className="flex gap-2">
           <div className="flex-1">
             <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>כמות במלאי</label>
