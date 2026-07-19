@@ -2887,10 +2887,19 @@ function App() {
 
       finalReminders = finalReminders.map((rem) => {
         if (!rem.active) return rem;
-        const triggerDate = mostRecentDateForWeekday(rem.dayOfWeek);
+        let triggerDate;
+        if (rem.scheduleType === "date") {
+          if (!rem.date) return rem;
+          const todayIso = new Date().toISOString().slice(0, 10);
+          if (todayIso < rem.date) return rem; // not due yet
+          triggerDate = rem.date;
+        } else {
+          triggerDate = mostRecentDateForWeekday(rem.dayOfWeek);
+        }
         if (rem.lastTriggeredDate === triggerDate) return rem;
         const product = finalProducts.find((pp) => pp.id === rem.productId);
-        const title = product ? `תזכורת: בדוק ${product.name}` : `תזכורת: ${rem.title}`;
+        const subject = product ? product.name : rem.categoryId ? `קטגוריה ${rem.categoryId}` : "";
+        const title = subject ? `תזכורת הזמנה: ${subject}` : `תזכורת: ${rem.title}`;
         finalTasks = [
           ...finalTasks,
           {
@@ -2910,7 +2919,9 @@ function App() {
           { id: genId(), userId: rem.assignedToId, message: title, read: false, createdAt: Date.now() },
         ];
         remindersChanged = true;
-        return { ...rem, lastTriggeredDate: triggerDate };
+        const updated = { ...rem, lastTriggeredDate: triggerDate };
+        if (rem.scheduleType === "date") updated.active = false; // one-time: don't fire again
+        return updated;
       });
 
       if (remindersChanged) {
@@ -3485,7 +3496,7 @@ function App() {
             users={users}
             currentUser={currentUser}
             unitRequests={unitRequests}
-            onGoTo={(t) => setTab(t)}
+            onGoTo={(t, section) => { if (section) setAdminSection(section); setTab(t); }}
           />
         )}
         {tab === "inventory" && (
@@ -3881,7 +3892,7 @@ function Dashboard({ tasks, products, orderHistory, users, currentUser, unitRequ
             </button>
           )}
           {pendingUnit.length > 0 && currentUser.role === "manager" && (
-            <button onClick={() => onGoTo("admin")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "#EFEAFF", border: `1px solid ${C.accent}` }}>
+            <button onClick={() => onGoTo("admin", "unitrequests")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "#EFEAFF", border: `1px solid ${C.accent}` }}>
               <span className="text-xl">🧺</span>
               <span className="text-sm font-bold" style={{ color: C.ink }}>{pendingUnit.length} בקשות מהמחסן ממתינות</span>
             </button>
@@ -7669,12 +7680,14 @@ function LocationsAdmin({ locations, persistLocations, showToast }) {
 }
 
 function RemindersAdmin({ reminders, persistReminders, products, users, showToast }) {
-  const empty = { title: "", productId: "", assignedToId: users[0]?.id || "", dayOfWeek: 0, active: true };
+  const empty = { title: "", productId: "", categoryId: "", assignedToId: users[0]?.id || "", scheduleType: "weekly", dayOfWeek: 0, date: "", active: true };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
+  const categories = Array.from(new Set(products.map((p) => p.category).filter(Boolean)));
 
   async function save() {
-    if (!form.title.trim() && !form.productId) return showToast("יש להזין כותרת או לבחור מוצר");
+    if (!form.title.trim() && !form.productId && !form.categoryId) return showToast("יש להזין כותרת, מוצר או קטגוריה");
+    if (form.scheduleType === "date" && !form.date) return showToast("בחר תאריך לתזכורת");
     let next;
     if (editingId) {
       next = reminders.map((r) => (r.id === editingId ? { ...form, id: editingId, lastTriggeredDate: r.lastTriggeredDate } : r));
@@ -7709,6 +7722,13 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
           </select>
         </div>
         <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>או קטגוריה שלמה (אופציונלי)</label>
+          <select value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="">— ללא קטגוריה —</option>
+            {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>כותרת/פירוט התזכורת</label>
           <input
             value={form.title}
@@ -7719,11 +7739,25 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
           />
         </div>
         <div>
-          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>יום בשבוע לתזכורת</label>
-          <select value={form.dayOfWeek} onChange={(e) => setForm({ ...form, dayOfWeek: Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
-            {WEEK_DAYS.map(([key, label], idx) => <option key={key} value={idx}>{label}</option>)}
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מתי להזכיר</label>
+          <select value={form.scheduleType} onChange={(e) => setForm({ ...form, scheduleType: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="weekly">כל שבוע ביום קבוע</option>
+            <option value="date">בתאריך מסוים (חד־פעמי)</option>
           </select>
         </div>
+        {form.scheduleType === "date" ? (
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תאריך</label>
+            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+          </div>
+        ) : (
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>יום בשבוע לתזכורת</label>
+            <select value={form.dayOfWeek} onChange={(e) => setForm({ ...form, dayOfWeek: Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+              {WEEK_DAYS.map(([key, label], idx) => <option key={key} value={idx}>{label}</option>)}
+            </select>
+          </div>
+        )}
         <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שלח תזכורת לעובד</label>
           <select value={form.assignedToId} onChange={(e) => setForm({ ...form, assignedToId: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
@@ -7756,16 +7790,16 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
             <div key={r.id} className="p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, opacity: r.active ? 1 : 0.5 }}>
               <div className="flex justify-between items-center">
                 <div>
-                  <div className="font-bold text-sm" style={{ color: C.ink }}>{product ? `בדוק ${product.name}` : r.title}</div>
+                  <div className="font-bold text-sm" style={{ color: C.ink }}>{product ? `בדוק ${product.name}` : r.categoryId ? `הזמנה: ${r.categoryId}` : r.title}</div>
                   <div className="text-xs" style={{ color: C.steel }}>
-                    {WEEK_DAYS[r.dayOfWeek]?.[1]} · {assignee ? assignee.name : "—"} {!r.active && "· מושהה"}
+                    {r.scheduleType === "date" ? `בתאריך ${r.date}` : WEEK_DAYS[r.dayOfWeek]?.[1]} · {assignee ? assignee.name : "—"} {!r.active && "· מושהה"}
                   </div>
                 </div>
                 <div className="flex gap-2">
                   <button onClick={() => toggleActive(r)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>
                     {r.active ? "השהה" : "הפעל"}
                   </button>
-                  <button onClick={() => { setForm(r); setEditingId(r.id); }} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+                  <button onClick={() => { setForm({ scheduleType: "weekly", categoryId: "", date: "", ...r }); setEditingId(r.id); }} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
                   <button onClick={() => remove(r.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
                 </div>
               </div>
