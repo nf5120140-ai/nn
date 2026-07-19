@@ -2736,9 +2736,19 @@ function App() {
     );
   }
 
-  function handleScanDetected(code) {
+async function handleScanDetected(code) {
     const product = products.find((p) => p.barcode === code);
-    setScanResult({ code, product: product || null });
+    if (product) {
+      const newQty = Math.max((product.quantity || 0) - 1, 0);
+      const next = products.map((p) =>
+        p.id === product.id ? { ...p, quantity: newQty } : p
+      );
+      await persistProducts(next);
+      await logStockChange(product.id, -1, currentUser?.name || "סריקה");
+      setScanResult({ code, product: { ...product, quantity: newQty } });
+    } else {
+      setScanResult({ code, product: null });
+    }
     setScannerOpen(false);
   }
 
