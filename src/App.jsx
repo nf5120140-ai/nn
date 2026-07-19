@@ -2706,6 +2706,23 @@ function App() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [adminSection, setAdminSection] = useState(null); // set when a notification points at an admin screen
   const [focusTaskId, setFocusTaskId] = useState(null);   // task to auto-open after tapping a notification
+
+  // When a push notification is tapped, the app opens with the target in the URL.
+  // Read it once on startup, navigate to the right screen, then clean the URL.
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const t = params.get("tab");
+      const s = params.get("section");
+      const tk = params.get("taskId");
+      if (t || s || tk) {
+        if (s) setAdminSection(s);
+        if (tk) setFocusTaskId(tk);
+        if (t) setTab(t);
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+    } catch (e) { /* ignore */ }
+  }, []);
   const [showMenu, setShowMenu] = useState(false);
   const [locked, setLocked] = useState(() => isBiometricEnabled());
   const [biometricPrompt, setBiometricPrompt] = useState(false);
@@ -3168,12 +3185,21 @@ function App() {
      2. A real Web Push - the only thing that reaches a phone whose app is CLOSED.
      Push is best-effort: if the Edge Function is down or we're offline, the in-app
      notification still lands, and the OS notification fires next time the app opens. */
-  async function pushTo(userIds, title, body) {
+  async function pushTo(userIds, title, body, link) {
     try {
       if (!window.auth?.sendPush) return;
       const ids = userIds.filter(Boolean);
       if (ids.length === 0) return;
-      await window.auth.sendPush({ userIds: ids, title, body, url: "/" });
+      let url = "/";
+      if (link) {
+        const p = new URLSearchParams();
+        if (link.tab) p.set("tab", link.tab);
+        if (link.section) p.set("section", link.section);
+        if (link.taskId) p.set("taskId", link.taskId);
+        const qs = p.toString();
+        if (qs) url = "/?" + qs;
+      }
+      await window.auth.sendPush({ userIds: ids, title, body, url });
     } catch (e) {
       console.error("push send failed (in-app notification still delivered)", e);
     }
@@ -3187,7 +3213,7 @@ function App() {
       ...managers.map((u) => ({ id: genId(), userId: u.id, message, link, read: false, createdAt: Date.now() })),
     ];
     await persistNotifications(next);
-    pushTo(managers.map((u) => u.id), "ניהול משק חכם", message);
+    pushTo(managers.map((u) => u.id), "ניהול משק חכם", message, link);
   }
   /* `link` tells the notification bell where to jump when tapped, e.g.
      { tab: "tasks", taskId } or { tab: "admin", section: "unitrequests" }. */
@@ -3197,7 +3223,7 @@ function App() {
       { id: genId(), userId, message, link, read: false, createdAt: Date.now() },
     ];
     await persistNotifications(next);
-    pushTo([userId], "ניהול משק חכם", message);
+    pushTo([userId], "ניהול משק חכם", message, link);
   }
 
   const lowStock = products.filter((p) => Number(p.quantity) <= Number(p.threshold));
