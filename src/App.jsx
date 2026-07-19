@@ -2471,6 +2471,7 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
   const [reads, setReads] = useState({});
   const [open, setOpen] = useState(false);
   const [activeThread, setActiveThread] = useState(null); // manager: selected worker id
+  const [picking, setPicking] = useState(false);
   const [text, setText] = useState("");
   const bodyRef = useRef(null);
   const myId = currentUser?.id;
@@ -2592,7 +2593,29 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
 
           {isManager && !activeThread ? (
             <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
-              {threads.length === 0 && (
+              <button
+                onClick={() => setPicking((v) => !v)}
+                style={{ width: "100%", background: C.ink, color: "#fff", border: "none", borderRadius: 14, padding: 12, marginBottom: 10, fontWeight: 700, cursor: "pointer" }}
+              >
+                ✏️ הודעה חדשה לעובד
+              </button>
+              {picking && (
+                <div style={{ marginBottom: 10 }}>
+                  {users.filter((u) => u.id !== myId).length === 0 && (
+                    <div style={{ textAlign: "center", color: C.steel, padding: 8 }}>אין עובדים אחרים</div>
+                  )}
+                  {users.filter((u) => u.id !== myId).map((u) => (
+                    <button
+                      key={u.id}
+                      onClick={() => { setActiveThread(u.id); setPicking(false); markRead(); }}
+                      style={{ width: "100%", textAlign: "right", background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 12, padding: 10, marginBottom: 6, cursor: "pointer", fontWeight: 700, color: C.ink }}
+                    >
+                      {u.name}{u.role === "manager" ? " (מנהל)" : ""}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {threads.length === 0 && !picking && (
                 <div style={{ textAlign: "center", color: C.steel, marginTop: 40 }}>אין פניות עדיין</div>
               )}
               {threads.map(({ threadId, last }) => {
