@@ -3076,6 +3076,19 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded, currentUser?.id, tasks]);
 
+  // Reading = marking as read: while the bell panel is open, clear the unread
+  // flag for this user's notifications after a moment, so the badge count clears.
+  useEffect(() => {
+    if (!showNotifications) return;
+    const hasUnread = notifications.some((n) => n.userId === currentUser?.id && !n.read);
+    if (!hasUnread) return;
+    const t = setTimeout(() => {
+      persistNotifications(notifications.map((n) => (n.userId === currentUser?.id ? { ...n, read: true } : n)));
+    }, 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showNotifications]);
+
   /* Tapping a notification takes you to whatever it's about, marks it read,
      and closes the panel. Older notifications have no link - they just get marked read. */
   async function openNotification(n) {
