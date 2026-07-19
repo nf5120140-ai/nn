@@ -638,15 +638,19 @@ function BarcodeScanner({ onDetected, onClose }) {
         </button>
       </div>
 
-      {mode === "loading" && (
-        <div className="flex-1 flex items-center justify-center">
-          <p style={{ color: C.paper }} className="text-sm">מפעיל מצלמה...</p>
-        </div>
-      )}
-
-      {mode === "native" && (
-        <div className="flex-1 flex items-center justify-center px-4">
-          <video ref={videoRef} className="rounded-lg w-full max-w-sm" muted playsInline />
+      {(mode === "loading" || mode === "native") && (
+        <div className="flex-1 flex flex-col items-center justify-center px-4 gap-3">
+          <video
+            ref={videoRef}
+            className="rounded-lg w-full max-w-sm"
+            style={{ background: "#000" }}
+            muted
+            playsInline
+            autoPlay
+          />
+          {mode === "loading" && (
+            <p style={{ color: C.paper }} className="text-sm">מפעיל מצלמה...</p>
+          )}
         </div>
       )}
 
