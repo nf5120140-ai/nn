@@ -1795,6 +1795,7 @@ function UnitRequestTab({
   const [view, setView] = useState("current"); // current | template | history
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("all");
+  const [noteDraft, setNoteDraft] = useState("");
 
   const thisWeek = weekStartIso();
   const mine = (unitRequests || []).filter((r) => r.unitId === currentUser.id);
@@ -1810,6 +1811,26 @@ function UnitRequestTab({
     .filter((p) => (catFilter === "all" ? true : (p.category || "ללא קטגוריה") === catFilter));
 
   const locked = current?.status === "submitted";
+
+  useEffect(() => { setNoteDraft(current?.note || ""); }, [current?.id, current?.status]);
+
+  async function saveNote(text) {
+    if (locked) return;
+    const base = current || {
+      id: genId(),
+      unitId: currentUser.id,
+      unitName: currentUser.name,
+      weekOf: thisWeek,
+      status: "open",
+      createdAt: Date.now(),
+      items: [],
+      note: "",
+    };
+    if ((base.note || "") === (text || "")) return;
+    const updated = { ...base, note: text, updatedAt: Date.now() };
+    const others = (unitRequests || []).filter((r) => r.id !== updated.id);
+    await persistUnitRequests([...others, updated]);
+  }
 
   async function upsertCurrent(items) {
     const base = current || {
@@ -1858,7 +1879,7 @@ function UnitRequestTab({
   async function submit() {
     if (!current || (current.items || []).length === 0) return showToast("הבקשה ריקה");
     const others = (unitRequests || []).filter((r) => r.id !== current.id);
-    await persistUnitRequests([...others, { ...current, status: "submitted", submittedAt: Date.now() }]);
+    await persistUnitRequests([...others, { ...current, note: noteDraft, status: "submitted", submittedAt: Date.now() }]);
     if (notifyManagers) {
       await notifyManagers(`🧺 ${currentUser.name} שלח בקשה שבועית (${current.items.length} מוצרים) - ממתינה לאישורך`, { tab: "admin", section: "unitrequests" });
     }
@@ -1925,6 +1946,15 @@ function UnitRequestTab({
                   </div>
                 ))}
               </div>
+              <textarea
+                value={noteDraft}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                onBlur={() => saveNote(noteDraft)}
+                disabled={locked}
+                placeholder="הערה למחסן (לא חובה)..."
+                className="w-full mt-3 p-2 rounded-2xl border text-sm"
+                style={{ borderColor: C.kraftDark, minHeight: 56, resize: "vertical", background: locked ? C.kraft : "#fff" }}
+              />
               {!locked && (
                 <div className="flex gap-2 mt-3">
                   <button onClick={submit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
@@ -8130,6 +8160,16 @@ function UnitRequestsAdmin({
             </p>
           </ShelfTag>
         )}
+
+        {(() => {
+          const reqNote = (all.find((r) => r.id === editing.requestId) || {}).note;
+          return reqNote ? (
+            <ShelfTag accent={C.accent} style={{ marginBottom: 12 }}>
+              <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>📝 הערת המזמין</div>
+              <div className="text-sm" style={{ color: C.ink, whiteSpace: "pre-wrap" }}>{reqNote}</div>
+            </ShelfTag>
+          ) : null;
+        })()}
 
         <div className="flex justify-between items-center mb-2">
           <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
