@@ -2655,6 +2655,60 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
   );
 }
 
+function NotifItem({ n, onOpen, onDelete, onSnooze }) {
+  const [dx, setDx] = useState(0);
+  const startX = useRef(null);
+  const moved = useRef(false);
+  const THRESHOLD = 80;
+
+  function onTouchStart(e) { startX.current = e.touches[0].clientX; moved.current = false; }
+  function onTouchMove(e) {
+    if (startX.current == null) return;
+    const d = e.touches[0].clientX - startX.current;
+    if (Math.abs(d) > 6) moved.current = true;
+    setDx(d);
+  }
+  function onTouchEnd() {
+    if (dx < -THRESHOLD) onDelete(n);
+    else if (dx > THRESHOLD) onSnooze(n);
+    setDx(0);
+    startX.current = null;
+  }
+  function handleClick() { if (!moved.current) onOpen(n); }
+
+  return (
+    <div style={{ position: "relative", overflow: "hidden", borderRadius: 12 }}>
+      <div
+        style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center",
+          justifyContent: dx < 0 ? "flex-start" : "flex-end", padding: "0 16px",
+          background: dx < 0 ? "#dc2626" : "#2563eb", color: "#fff", fontWeight: 700, fontSize: 14,
+        }}
+      >
+        {dx < 0 ? "🗑 מחק" : "⏰ הזכר אחר כך"}
+      </div>
+      <button
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onClick={handleClick}
+        className="p-2 rounded-xl text-sm text-right flex items-center gap-2 w-full"
+        style={{
+          position: "relative",
+          transform: `translateX(${dx}px)`,
+          transition: startX.current == null ? "transform 0.2s" : "none",
+          background: n.read ? C.paper : "#EFEAFF",
+          color: C.ink,
+          border: `1px solid ${n.read ? C.kraftDark : "#D8CEFF"}`,
+        }}
+      >
+        <span className="flex-1">{n.message}</span>
+        {n.link && <span style={{ color: C.accent, fontWeight: 700 }}>‹</span>}
+      </button>
+    </div>
+  );
+}
+
 export default function AppWithBoundary() {
   return (
     <ErrorBoundary>
@@ -2704,6 +2758,8 @@ function App() {
   const [scanResult, setScanResult] = useState(null); // { code, product|null }
   const [toast, setToast] = useState("");
   const [showNotifications, setShowNotifications] = useState(false);
+  const [snoozeTarget, setSnoozeTarget] = useState(null);
+  const [snoozeTime, setSnoozeTime] = useState("");
   const [adminSection, setAdminSection] = useState(null); // set when a notification points at an admin screen
   const [focusTaskId, setFocusTaskId] = useState(null);   // task to auto-open after tapping a notification
 
@@ -3104,6 +3160,28 @@ function App() {
     if (target) setTab(target);
   }
 
+  async function deleteNotification(n) {
+    await persistNotifications(notifications.filter((x) => x.id !== n.id));
+  }
+  function tomorrowAt(h, m) {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(h, m, 0, 0);
+    return d.getTime();
+  }
+  function timeToTs(hhmm) {
+    const [h, m] = hhmm.split(":").map(Number);
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+  async function snoozeNotification(n, untilTs) {
+    await persistNotifications(notifications.map((x) => (x.id === n.id ? { ...x, snoozedUntil: untilTs, read: false } : x)));
+    setSnoozeTarget(null);
+    setSnoozeTime("");
+  }
+
   function showToast(msg) {
     setToast(msg);
     setTimeout(() => setToast(""), 2200);
@@ -3255,7 +3333,7 @@ function App() {
     ? tasks.filter((t) => t.assignedToId === currentUser.id && t.status !== "done")
     : [];
   const myNotifications = currentUser
-    ? notifications.filter((n) => n.userId === currentUser.id).sort((a, b) => b.createdAt - a.createdAt)
+    ? notifications.filter((n) => n.userId === currentUser.id && (!n.snoozedUntil || n.snoozedUntil <= Date.now())).sort((a, b) => b.createdAt - a.createdAt)
     : [];
   const unreadCount = myNotifications.filter((n) => !n.read).length;
   const pendingRequestCount = (orderRequests || []).filter((r) => r.status === "pending").length;
@@ -3429,24 +3507,31 @@ function App() {
           ) : (
             <div className="flex flex-col gap-2">
               {myNotifications.map((n) => (
-                <button
-                  key={n.id}
-                  onClick={() => openNotification(n)}
-                  className="p-2 rounded-xl text-sm text-right flex items-center gap-2"
-                  style={{
-                    background: n.read ? C.paper : "#EFEAFF",
-                    color: C.ink,
-                    cursor: n.link ? "pointer" : "default",
-                    border: `1px solid ${n.read ? C.kraftDark : "#D8CEFF"}`,
-                  }}
-                >
-                  <span className="flex-1">{n.message}</span>
-                  {n.link && <span style={{ color: C.accent, fontWeight: 700 }}>‹</span>}
-                </button>
+                <NotifItem key={n.id} n={n} onOpen={openNotification} onDelete={deleteNotification} onSnooze={setSnoozeTarget} />
               ))}
             </div>
           )}
         </div>
+      )}
+
+      {snoozeTarget && (
+        <>
+          <div className="fixed inset-0 z-50" style={{ background: "rgba(35,31,61,0.4)" }} onClick={() => { setSnoozeTarget(null); setSnoozeTime(""); }} />
+          <div className="fixed left-4 right-4 z-50 rounded-2xl p-4 wh-body" style={{ top: "28%", background: "#fff", boxShadow: "0 8px 24px rgba(35,31,61,0.25)" }} dir="rtl">
+            <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>⏰ הזכר לי אחר כך</div>
+            <div className="text-xs mb-3" style={{ color: C.steel }}>{snoozeTarget.message}</div>
+            <div className="flex flex-col gap-2">
+              <button onClick={() => snoozeNotification(snoozeTarget, Date.now() + 3600000)} className="py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>בעוד שעה</button>
+              <button onClick={() => snoozeNotification(snoozeTarget, Date.now() + 3 * 3600000)} className="py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>בעוד 3 שעות</button>
+              <button onClick={() => snoozeNotification(snoozeTarget, tomorrowAt(8, 0))} className="py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>מחר בבוקר (08:00)</button>
+              <div className="flex gap-2 items-center mt-1">
+                <input type="time" value={snoozeTime} onChange={(e) => setSnoozeTime(e.target.value)} className="p-2 rounded-2xl border flex-1" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+                <button onClick={() => { if (snoozeTime) snoozeNotification(snoozeTarget, timeToTs(snoozeTime)); }} className="px-4 py-2 rounded-2xl font-bold text-sm whitespace-nowrap" style={{ background: C.ink, color: "#fff" }}>בשעה שבחרת</button>
+              </div>
+            </div>
+            <button onClick={() => { setSnoozeTarget(null); setSnoozeTime(""); }} className="w-full mt-3 py-2 rounded-2xl font-bold text-sm" style={{ background: "transparent", color: C.steel }}>ביטול</button>
+          </div>
+        </>
       )}
 
       {/* Toast */}
