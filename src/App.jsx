@@ -269,7 +269,38 @@ function cachedProfile() {
   }
 }
 
-async function loadKey(key, fallback) {
+/* ---------- Per-organization data isolation ----------
+   Every stored key is namespaced by the logged-in user's org, so two institutions
+   never share the same row in kv_store. The base keys (KEYS.*) are used everywhere
+   in the app; the org prefix is added ONLY here, at the storage boundary, so all
+   call sites and the offline cache and the dirty queue are isolated automatically.
+   Legacy rows written before this change carry no prefix and are migrated per-org
+   from the backup screen. */
+let ACTIVE_ORG = null;
+const ACTIVE_ORG_LS = "kitchen-active-org";
+function getActiveOrg() {
+  if (ACTIVE_ORG) return ACTIVE_ORG;
+  try {
+    ACTIVE_ORG = localStorage.getItem(ACTIVE_ORG_LS) || null;
+  } catch (e) {}
+  return ACTIVE_ORG;
+}
+function setActiveOrg(orgId) {
+  ACTIVE_ORG = orgId || null;
+  try {
+    if (orgId) localStorage.setItem(ACTIVE_ORG_LS, orgId);
+    else localStorage.removeItem(ACTIVE_ORG_LS);
+  } catch (e) {}
+}
+const ORG_SEP = "::";
+/** Turn a base key (e.g. "kitchen-products") into an org-scoped key. */
+function nsKey(baseKey) {
+  const org = getActiveOrg();
+  return org ? `${org}${ORG_SEP}${baseKey}` : baseKey;
+}
+
+async function loadKey(baseKey, fallback) {
+  const key = nsKey(baseKey);
   const cached = await cacheGet(key);
 
   // Local changes that haven't reached the server yet must win over whatever the
@@ -296,7 +327,8 @@ async function loadKey(key, fallback) {
   return cached !== undefined ? cached : fallback;
 }
 
-async function saveKey(key, value) {
+async function saveKey(baseKey, value) {
+  const key = nsKey(baseKey);
   await cacheSet(key, value); // always land locally first, so nothing is ever lost
 
   if (!isOnline()) {
@@ -312,6 +344,18 @@ async function saveKey(key, value) {
     console.error("storage save failed, queued for sync", key, e);
     markDirty(key);
     return { synced: false };
+  }
+}
+
+/** Read a legacy, un-namespaced row straight from the server (used only by the
+    one-time migration in the backup screen). Returns undefined if absent. */
+async function loadLegacyRaw(baseKey) {
+  try {
+    const res = await window.storage.get(baseKey, true);
+    return res ? JSON.parse(res.value) : undefined;
+  } catch (e) {
+    console.error("legacy read failed", baseKey, e);
+    return undefined;
   }
 }
 
@@ -2977,6 +3021,8 @@ function App() {
 
   useEffect(() => {
     if (authProfile) {
+      // Lock all storage reads/writes to this org BEFORE the data-load effect runs.
+      setActiveOrg(authProfile.org_id);
       setCurrentUser({
         id: authProfile.id,
         name: authProfile.display_name || authProfile.email || "משתמש",
@@ -2987,6 +3033,7 @@ function App() {
         permissions: { ...DEFAULT_PERMISSIONS, ...(authProfile.permissions || {}) },
       });
     } else {
+      setActiveOrg(null);
       setCurrentUser(null);
     }
   }, [authProfile]);
@@ -3184,8 +3231,19 @@ function App() {
       [KEYS.personalPurchases]: async () => setPersonalPurchases((await loadKey(KEYS.personalPurchases, [])) || []),
     };
     window.auth.subscribeToOrgChanges((payload) => {
-      const changedKey = payload.new?.key || payload.old?.key;
-      const reloader = reloadMap[changedKey];
+      const rawKey = payload.new?.key || payload.old?.key;
+      if (!rawKey) return;
+      const org = getActiveOrg();
+      let baseKey;
+      if (!org) {
+        baseKey = rawKey;
+      } else if (rawKey.startsWith(org + ORG_SEP)) {
+        baseKey = rawKey.slice((org + ORG_SEP).length);
+      } else {
+        // A change belonging to a different org (or a legacy un-namespaced row).
+        return;
+      }
+      const reloader = reloadMap[baseKey];
       if (reloader) reloader();
     })
       .then((fn) => {
@@ -7265,6 +7323,7 @@ function countOf(v) {
 function BackupAdmin({ currentUser, showToast }) {
   const [busy, setBusy] = useState(false);
   const [summary, setSummary] = useState(null);
+  const [legacyInfo, setLegacyInfo] = useState(null);
   const fileRef = useRef(null);
 
   async function handleExport() {
@@ -7346,6 +7405,53 @@ function BackupAdmin({ currentUser, showToast }) {
     }
   }
 
+  // One-time: pull the old, un-separated data (written before the per-org fix)
+  // into THIS organization. Run once, from the org that owns the data.
+  async function checkLegacy() {
+    setBusy(true);
+    try {
+      const counts = [];
+      let total = 0;
+      for (const [key, label] of BACKUP_KEYS) {
+        const v = await loadLegacyRaw(key);
+        const n = countOf(v);
+        total += n;
+        if (n > 0) counts.push([label, n]);
+      }
+      setLegacyInfo({ counts, total });
+      if (total === 0) showToast && showToast("לא נמצאו נתונים ישנים להעברה");
+    } catch (e) {
+      console.error("legacy check failed", e);
+      showToast && showToast("שגיאה בבדיקה");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleMigrateLegacy() {
+    const ok1 = window.confirm(
+      "העברת הנתונים הישנים (הלא-מופרדים) אל המוסד הנוכחי.\n\nהרץ פעם אחת בלבד, ומהמוסד שאליו הנתונים שייכים. הפעולה תדרוס את נתוני המוסד הנוכחי בנתונים הישנים.\n\nלהמשיך?"
+    );
+    if (!ok1) return;
+    setBusy(true);
+    try {
+      let moved = 0;
+      for (const [key] of BACKUP_KEYS) {
+        const v = await loadLegacyRaw(key);
+        if (v !== undefined) {
+          await saveKey(key, v);
+          moved++;
+        }
+      }
+      showToast && showToast(`הועברו ${moved} קטגוריות. טוען מחדש...`);
+      setTimeout(() => window.location.reload(), 900);
+    } catch (e) {
+      console.error("migration failed", e);
+      showToast && showToast("שגיאה בהעברה");
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       <div>
@@ -7381,6 +7487,52 @@ function BackupAdmin({ currentUser, showToast }) {
               </div>
             ))}
           </div>
+        )}
+      </div>
+
+      {/* One-time migration of legacy (un-separated) data */}
+      <div className="rounded-2xl p-4" style={{ background: C.kraft, border: `1px solid ${C.mustard}` }}>
+        <div className="font-bold text-sm mb-1" style={{ color: C.ink }}>העברת נתונים קיימים למוסד זה</div>
+        <p className="text-xs mb-3" style={{ color: C.steel }}>
+          חד-פעמי. אם לפני העדכון הנתונים לא היו מופרדים בין מוסדות, לחץ כאן כדי לשייך את הנתונים הקיימים למוסד הזה.
+          הרץ פעם אחת בלבד, מהמוסד שאליו הנתונים שייכים.
+        </p>
+        <button
+          onClick={checkLegacy}
+          disabled={busy}
+          className="w-full py-2.5 rounded-2xl font-bold text-sm mb-2"
+          style={{ background: "transparent", color: C.ink, border: `1.5px solid ${C.mustard}`, opacity: busy ? 0.6 : 1 }}
+        >
+          בדוק אילו נתונים קיימים
+        </button>
+
+        {legacyInfo && (
+          <div className="rounded-xl p-3 text-xs mb-2" style={{ background: C.paper, color: C.steel }}>
+            {legacyInfo.total === 0 ? (
+              <div>לא נמצאו נתונים ישנים להעברה.</div>
+            ) : (
+              <>
+                <div className="font-bold mb-1" style={{ color: C.ink }}>נמצאו נתונים להעברה:</div>
+                {legacyInfo.counts.map(([label, n]) => (
+                  <div key={label} className="flex justify-between py-0.5">
+                    <span>{label}</span>
+                    <span dir="ltr">{n}</span>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
+
+        {legacyInfo && legacyInfo.total > 0 && (
+          <button
+            onClick={handleMigrateLegacy}
+            disabled={busy}
+            className="w-full py-3 rounded-2xl font-bold text-sm"
+            style={{ background: C.mustard, color: C.ink, opacity: busy ? 0.6 : 1 }}
+          >
+            העבר את הנתונים האלה למוסד זה
+          </button>
         )}
       </div>
 
