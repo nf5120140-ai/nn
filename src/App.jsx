@@ -47,6 +47,7 @@ const KEYS = {
   dishTypes: "kitchen-dish-types",
   taskCategories: "kitchen-task-categories",
   orderRequests: "kitchen-order-requests",
+  orderDrafts: "kitchen-order-drafts",
   unitRequests: "kitchen-unit-requests",
   unitTemplates: "kitchen-unit-templates",
   personalPurchases: "kitchen-personal-purchases",
@@ -4606,6 +4607,34 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [weekView, setWeekView] = useState("grid"); // "grid" (like the Excel sheet) | "days"
   const [menuWeek, setMenuWeek] = useState("next"); // which week the printed menu is for
   const [parshaOverride, setParshaOverride] = useState("");
+
+  const [drafts, setDrafts] = useState([]);
+  useEffect(() => {
+    loadKey(KEYS.orderDrafts, []).then((d) => setDrafts(Array.isArray(d) ? d : [])).catch(() => {});
+  }, []);
+  async function persistDrafts(next) { setDrafts(next); await saveKey(KEYS.orderDrafts, next); }
+  function saveDraftFromPending() {
+    if (!pendingOrder) return;
+    const draft = {
+      id: genId(),
+      createdAt: Date.now(),
+      by: currentUser?.name || "",
+      supplierId: pendingOrder.supplierId,
+      title: pendingOrder.title || "הזמנה",
+      items: pendingOrder.items.map(({ product, qty }) => ({ productId: product.id, name: product.name, unit: product.unit, price: Number(product.price || 0), qty })),
+    };
+    persistDrafts([draft, ...drafts]);
+    setPendingOrder(null);
+    showToast("ההזמנה נשמרה כטיוטה");
+  }
+  function loadDraft(draft) {
+    const items = draft.items.map((it) => ({
+      product: products.find((p) => p.id === it.productId) || { id: it.productId, name: it.name, unit: it.unit, price: it.price },
+      qty: it.qty,
+    }));
+    setPendingOrder({ items, supplierId: draft.supplierId, title: draft.title || "הזמנה", isRequest: !mayApprove, sourceLabel: draft.title || "הזמנה" });
+  }
+  function deleteDraft(id) { persistDrafts(drafts.filter((d) => d.id !== id)); }
   const parshiot = useParshiot();
 
   // The menu you plan is normally for the coming week, so that's the default.
@@ -5095,6 +5124,14 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               : `${channelMeta(channel).icon} אשר ושלח ל${supplierName}`}
           </button>
 
+          <button
+            onClick={saveDraftFromPending}
+            className="w-full py-3 mt-2 rounded-2xl wh-display font-bold"
+            style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+          >
+            💾 שמור כטיוטה
+          </button>
+
           {!isRequest && (settings?.whatsappGroupLink || "").trim() && (
             <button
               onClick={async () => {
@@ -5249,6 +5286,23 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
   return (
     <div>
+      {drafts.length > 0 && (
+        <details className="mb-4">
+          <summary className="text-sm font-bold cursor-pointer" style={{ color: C.accent }}>💾 טיוטות שמורות ({drafts.length})</summary>
+          <div className="mt-2 flex flex-col gap-2">
+            {drafts.map((d) => (
+              <div key={d.id} className="flex items-center gap-2 p-2 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+                <div className="flex-1">
+                  <div className="text-sm font-bold" style={{ color: C.ink }}>{d.items.length} מוצרים · {new Date(d.createdAt).toLocaleDateString("he-IL")}</div>
+                  <div className="text-xs" style={{ color: C.steel }}>{d.by}</div>
+                </div>
+                <button onClick={() => loadDraft(d)} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>טען</button>
+                <button onClick={() => deleteDraft(d.id)} className="px-3 py-1 rounded-2xl text-sm" style={{ background: C.kraft, color: C.ink }}>מחק</button>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
       <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
         <button
           onClick={() => setOrderMode("stock")}
