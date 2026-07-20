@@ -4773,10 +4773,10 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     // Anyone else raises a request for approval. (This used to bypass approval.)
     setPendingOrder({
       items,
-      title: "לפי סף מלאי",
+      title: "הזמנה",
       supplierId: selectedSupplierId === "__manual__" ? "__unassigned__" : selectedSupplierId,
       isRequest: !mayApprove,
-      sourceLabel: "לפי סף מלאי",
+      sourceLabel: "הזמנה",
     });
   }
 
@@ -5465,7 +5465,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                   const items = products
                     .filter((p) => selectedForOrder.includes(p.id))
                     .map((p) => ({ product: p, qty: qtys[p.id] ?? 1 }));
-                  submitOrderRequest(items, selectedSupplierId, "לפי סף מלאי");
+                  submitOrderRequest(items, selectedSupplierId, "הזמנה");
                 }}
                 className="w-full py-3 rounded-2xl wh-display font-bold"
                 style={{ background: C.accent, color: "#fff" }}
