@@ -7100,6 +7100,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
     ["analytics", "ניתוח"],
     ["personal", "קניות פרטיות"],
     ["settings", "ספקים"],
+    ["backup", "גיבוי ושחזור"],
   ];
   // A supervisor only sees the admin screens the manager granted them.
   const sections = allSections.filter(([id]) => canSeeAdminSection(currentUser, id));
@@ -7220,6 +7221,195 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
       {section === "settings" && (
         <SuppliersAdmin settings={settings} persistSettings={persistSettings} showToast={showToast} />
       )}
+      {section === "backup" && isManager(currentUser) && (
+        <BackupAdmin currentUser={currentUser} showToast={showToast} />
+      )}
+    </div>
+  );
+}
+
+/* ---------- Backup & restore ----------
+   Reads/writes every data key through the same loadKey/saveKey helpers the rest of
+   the app uses, so it captures the real persisted state and will keep working
+   unchanged after we namespace the keys per-organization. Manager-only.
+   NOTE: user accounts and org membership live in the auth layer (Supabase profiles),
+   not in kv_store, so they are NOT part of this backup and are unaffected by data changes. */
+const BACKUP_KEYS = [
+  [KEYS.products, "מוצרים"],
+  [KEYS.tasks, "משימות"],
+  [KEYS.settings, "הגדרות"],
+  [KEYS.notifications, "התראות"],
+  [KEYS.menuItems, "פריטי תפריט"],
+  [KEYS.weeklyMenu, "תפריט שבועי"],
+  [KEYS.reminders, "תזכורות"],
+  [KEYS.stockLog, "יומן מלאי"],
+  [KEYS.orderHistory, "היסטוריית הזמנות"],
+  [KEYS.locations, "מקומות"],
+  [KEYS.dishTypes, "סוגי מנות"],
+  [KEYS.taskCategories, "קטגוריות משימות"],
+  [KEYS.orderRequests, "בקשות הזמנה"],
+  [KEYS.orderDrafts, "טיוטות הזמנה"],
+  [KEYS.unitRequests, "בקשות מהמחסן"],
+  [KEYS.unitTemplates, "תבניות מחסן"],
+  [KEYS.personalPurchases, "קניות פרטיות"],
+  [KEYS.messages, "צ'אט פנימי"],
+  [KEYS.chatReads, "סימוני קריאה"],
+];
+
+function countOf(v) {
+  if (Array.isArray(v)) return v.length;
+  if (v && typeof v === "object") return Object.keys(v).length;
+  return v == null ? 0 : 1;
+}
+
+function BackupAdmin({ currentUser, showToast }) {
+  const [busy, setBusy] = useState(false);
+  const [summary, setSummary] = useState(null);
+  const fileRef = useRef(null);
+
+  async function handleExport() {
+    setBusy(true);
+    try {
+      const data = {};
+      const counts = [];
+      for (const [key, label] of BACKUP_KEYS) {
+        const v = await loadKey(key, null);
+        data[key] = v;
+        counts.push([label, countOf(v)]);
+      }
+      const payload = {
+        __format: "wh-mosad-backup",
+        __version: 1,
+        orgId: currentUser?.orgId || null,
+        exportedAt: new Date().toISOString(),
+        data,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const tag = (currentUser?.orgId || "data").slice(0, 8);
+      a.href = url;
+      a.download = `gibuy-mosad-${tag}-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setSummary({ when: new Date().toLocaleString("he-IL"), counts });
+      showToast && showToast("הגיבוי נוצר והורד ✓");
+    } catch (e) {
+      console.error("export failed", e);
+      showToast && showToast("שגיאה ביצירת הגיבוי");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleImportFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // let the same file be picked again later
+    if (!file) return;
+
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch (err) {
+      showToast && showToast("הקובץ אינו קובץ גיבוי תקין");
+      return;
+    }
+    if (!payload || payload.__format !== "wh-mosad-backup" || !payload.data) {
+      showToast && showToast("זה לא קובץ גיבוי של האפליקציה");
+      return;
+    }
+
+    const keys = Object.keys(payload.data);
+    const when = payload.exportedAt ? new Date(payload.exportedAt).toLocaleString("he-IL") : "לא ידוע";
+    const ok1 = window.confirm(
+      `שחזור גיבוי מתאריך ${when}.\n\nהפעולה תדרוס את כל הנתונים הנוכחיים ותחזיר את הנתונים מהקובץ (${keys.length} קטגוריות).\n\nלא ניתן לבטל. להמשיך?`
+    );
+    if (!ok1) return;
+    const ok2 = window.confirm("אישור אחרון — הנתונים הנוכחיים יימחקו ויוחלפו בגיבוי. להמשיך?");
+    if (!ok2) return;
+
+    setBusy(true);
+    try {
+      for (const key of keys) {
+        if (payload.data[key] === undefined) continue;
+        await saveKey(key, payload.data[key]);
+      }
+      showToast && showToast("השחזור הושלם. טוען מחדש...");
+      setTimeout(() => window.location.reload(), 900);
+    } catch (err) {
+      console.error("restore failed", err);
+      showToast && showToast("שגיאה בשחזור");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="wh-display font-black text-lg" style={{ color: C.ink }}>גיבוי ושחזור נתונים</h2>
+        <p className="text-sm mt-1" style={{ color: C.steel }}>
+          כאן ניתן להוריד עותק מלא של כל נתוני האפליקציה לקובץ, ולשחזר אותו במקרה הצורך.
+          מומלץ ליצור גיבוי לפני כל שינוי משמעותי.
+        </p>
+      </div>
+
+      {/* Export */}
+      <div className="rounded-2xl p-4" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+        <div className="font-bold text-sm mb-1" style={{ color: C.ink }}>הורדת גיבוי</div>
+        <p className="text-xs mb-3" style={{ color: C.steel }}>
+          יורד קובץ <span dir="ltr">JSON</span> עם כל הנתונים. שמור אותו במקום בטוח (למשל במייל לעצמך או ב-Drive).
+        </p>
+        <button
+          onClick={handleExport}
+          disabled={busy}
+          className="w-full py-3 rounded-2xl font-bold text-sm"
+          style={{ background: C.accent, color: "#fff", opacity: busy ? 0.6 : 1 }}
+        >
+          {busy ? "רגע..." : "צור גיבוי והורד"}
+        </button>
+
+        {summary && (
+          <div className="mt-3 rounded-xl p-3 text-xs" style={{ background: C.paper, color: C.steel }}>
+            <div className="font-bold mb-1" style={{ color: C.ink }}>גיבוי אחרון: {summary.when}</div>
+            {summary.counts.map(([label, n]) => (
+              <div key={label} className="flex justify-between py-0.5">
+                <span>{label}</span>
+                <span dir="ltr">{n}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Restore */}
+      <div className="rounded-2xl p-4" style={{ background: C.kraft, border: `1px solid ${C.stamp}` }}>
+        <div className="font-bold text-sm mb-1" style={{ color: C.stamp }}>שחזור מגיבוי</div>
+        <p className="text-xs mb-3" style={{ color: C.steel }}>
+          שחזור <b>ידרוס את כל הנתונים הנוכחיים</b> ויחליף אותם בתוכן הקובץ. השתמש בזה רק אם אתה בטוח.
+        </p>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json,.json"
+          onChange={handleImportFile}
+          style={{ display: "none" }}
+        />
+        <button
+          onClick={() => fileRef.current && fileRef.current.click()}
+          disabled={busy}
+          className="w-full py-3 rounded-2xl font-bold text-sm"
+          style={{ background: "transparent", color: C.stamp, border: `1.5px solid ${C.stamp}`, opacity: busy ? 0.6 : 1 }}
+        >
+          בחר קובץ גיבוי לשחזור
+        </button>
+      </div>
+
+      <p className="text-[11px] leading-relaxed" style={{ color: C.steel }}>
+        הערה: חשבונות המשתמשים והשיוך למוסד נשמרים בשכבת ההתחברות (לא בקובץ הזה), ולכן אינם מושפעים משינויי נתונים.
+      </p>
     </div>
   );
 }
