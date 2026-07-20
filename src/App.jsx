@@ -2733,10 +2733,12 @@ function NotifItem({ n, onOpen, onDelete, onSnooze }) {
   );
 }
 
-function KioskReport({ tasks, persistTasks, taskCategories, notifyManagers, onExit }) {
+function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyManagers, onExit }) {
   const [name, setName] = useState("");
   const [categoryId, setCategoryId] = useState("");
-  const [location, setLocation] = useState("");
+  const [locQuery, setLocQuery] = useState("");
+  const [locationId, setLocationId] = useState("");
+  const [showSug, setShowSug] = useState(false);
   const [desc, setDesc] = useState("");
   const [urgent, setUrgent] = useState(false);
   const [sent, setSent] = useState(false);
@@ -2754,14 +2756,15 @@ function KioskReport({ tasks, persistTasks, taskCategories, notifyManagers, onEx
 
   async function submit() {
     if (!desc.trim()) return;
-    const title = cat ? `${cat.name}${location.trim() ? " · " + location.trim() : ""}` : desc.trim().slice(0, 40);
+    const title = cat ? `${cat.name}${locQuery.trim() ? " · " + locQuery.trim() : ""}` : desc.trim().slice(0, 40);
     const created = {
       id: genId(),
       title,
       description: desc.trim(),
       assignedToId: "",
       priority: urgent ? "urgent" : "normal",
-      location: location.trim(),
+      location: locQuery.trim(),
+      locationId: locationId || "",
       categoryId: categoryId || "",
       status: "open",
       createdAt: Date.now(),
@@ -2771,9 +2774,13 @@ function KioskReport({ tasks, persistTasks, taskCategories, notifyManagers, onEx
     await persistTasks([created, ...tasks]);
     if (notifyManagers) notifyManagers(`🛠️ דיווח חדש מ${created.createdBy}: ${title}`, { tab: "tasks" });
     setSent(true);
-    setName(""); setCategoryId(""); setLocation(""); setDesc(""); setUrgent(false);
+    setName(""); setCategoryId(""); setLocQuery(""); setLocationId(""); setShowSug(false); setDesc(""); setUrgent(false);
     setTimeout(() => setSent(false), 2600);
   }
+
+  const locSuggestions = (locations || [])
+    .filter((l) => locQuery.trim() && (l.name.includes(locQuery.trim()) || (l.group || "").includes(locQuery.trim())) && l.name !== locQuery.trim())
+    .slice(0, 8);
 
   const field = { padding: "12px 14px", borderRadius: 14, border: `1px solid ${C.kraftDark}`, width: "100%", fontSize: 16, background: "#fff" };
 
@@ -2807,9 +2814,28 @@ function KioskReport({ tasks, persistTasks, taskCategories, notifyManagers, onEx
             </div>
           )}
 
-          <div>
+          <div style={{ position: "relative" }}>
             <label style={{ fontSize: 13, fontWeight: 700, color: C.steel, display: "block", marginBottom: 4 }}>מיקום / חדר</label>
-            <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="לדוגמה: חדר אוכל, מקלחות קומה 2" style={field} />
+            <input
+              value={locQuery}
+              onChange={(e) => { setLocQuery(e.target.value); setLocationId(""); setShowSug(true); }}
+              onFocus={() => setShowSug(true)}
+              placeholder="התחל להקליד מקום..."
+              style={field}
+            />
+            {showSug && locSuggestions.length > 0 && (
+              <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 5, background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 14, marginTop: 4, overflow: "hidden", boxShadow: "0 6px 18px rgba(35,31,61,0.15)" }}>
+                {locSuggestions.map((l) => (
+                  <button
+                    key={l.id}
+                    onClick={() => { setLocQuery(l.name); setLocationId(l.id); setShowSug(false); }}
+                    style={{ display: "block", width: "100%", textAlign: "right", padding: "10px 14px", border: "none", borderBottom: `1px solid ${C.kraft}`, background: "#fff", cursor: "pointer", fontSize: 15, color: C.ink }}
+                  >
+                    📍 {l.name}{l.group ? <span style={{ color: C.steel, fontSize: 13 }}>{" · " + l.group}</span> : null}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           <div>
@@ -3534,7 +3560,7 @@ function App() {
       onExit: exitKiosk,
     };
     if (kioskParam === "report") {
-      return <KioskReport tasks={tasks} persistTasks={persistTasks} taskCategories={taskCategories} notifyManagers={notifyManagers} onExit={exitKiosk} />;
+      return <KioskReport tasks={tasks} persistTasks={persistTasks} taskCategories={taskCategories} locations={locations} notifyManagers={notifyManagers} onExit={exitKiosk} />;
     }
     if (kioskParam === "camera") {
       return <KioskCameraScanner {...kioskProps} onSwitchMode={() => goToKiosk("1")} />;
