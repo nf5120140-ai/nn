@@ -2733,6 +2733,110 @@ function NotifItem({ n, onOpen, onDelete, onSnooze }) {
   );
 }
 
+function KioskReport({ tasks, persistTasks, taskCategories, notifyManagers, onExit }) {
+  const [name, setName] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [location, setLocation] = useState("");
+  const [desc, setDesc] = useState("");
+  const [urgent, setUrgent] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  useEffect(() => {
+    let lock = null;
+    async function acquire() { try { if (navigator.wakeLock) lock = await navigator.wakeLock.request("screen"); } catch (e) {} }
+    acquire();
+    const onVis = () => { if (document.visibilityState === "visible") acquire(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { document.removeEventListener("visibilitychange", onVis); try { lock && lock.release(); } catch (e) {} };
+  }, []);
+
+  const cat = (taskCategories || []).find((c) => c.id === categoryId);
+
+  async function submit() {
+    if (!desc.trim()) return;
+    const title = cat ? `${cat.name}${location.trim() ? " · " + location.trim() : ""}` : desc.trim().slice(0, 40);
+    const created = {
+      id: genId(),
+      title,
+      description: desc.trim(),
+      assignedToId: "",
+      priority: urgent ? "urgent" : "normal",
+      location: location.trim(),
+      categoryId: categoryId || "",
+      status: "open",
+      createdAt: Date.now(),
+      createdBy: name.trim() || "בחור",
+      comments: [],
+    };
+    await persistTasks([created, ...tasks]);
+    if (notifyManagers) notifyManagers(`🛠️ דיווח חדש מ${created.createdBy}: ${title}`, { tab: "tasks" });
+    setSent(true);
+    setName(""); setCategoryId(""); setLocation(""); setDesc(""); setUrgent(false);
+    setTimeout(() => setSent(false), 2600);
+  }
+
+  const field = { padding: "12px 14px", borderRadius: 14, border: `1px solid ${C.kraftDark}`, width: "100%", fontSize: 16, background: "#fff" };
+
+  return (
+    <div dir="rtl" style={{ position: "fixed", inset: 0, zIndex: 60, background: C.paper, overflowY: "auto", fontFamily: "'Heebo', sans-serif" }}>
+      <div style={{ background: C.ink, color: "#fff", padding: 16, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ fontWeight: 800, fontSize: 18 }}>🛠️ דיווח תקלה / בקשה</div>
+        <button onClick={() => { if (window.confirm("לצאת ממסך הדיווח?")) onExit(); }} style={{ background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", borderRadius: 14, padding: "6px 14px", fontSize: 13 }}>יציאה</button>
+      </div>
+
+      {sent ? (
+        <div style={{ padding: 40, textAlign: "center" }}>
+          <div style={{ fontSize: 72 }}>✅</div>
+          <div style={{ fontSize: 26, fontWeight: 900, color: C.ink, marginTop: 8 }}>הדיווח נשלח!</div>
+          <div style={{ fontSize: 16, color: C.steel, marginTop: 6 }}>תודה, ההנהלה קיבלה את הפנייה.</div>
+        </div>
+      ) : (
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, maxWidth: 520, margin: "0 auto" }}>
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 700, color: C.steel, display: "block", marginBottom: 4 }}>השם שלך</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="שם הבחור" style={field} />
+          </div>
+
+          {(taskCategories || []).length > 0 && (
+            <div>
+              <label style={{ fontSize: 13, fontWeight: 700, color: C.steel, display: "block", marginBottom: 4 }}>סוג התקלה</label>
+              <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} style={field}>
+                <option value="">— בחר (לא חובה) —</option>
+                {taskCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          )}
+
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 700, color: C.steel, display: "block", marginBottom: 4 }}>מיקום / חדר</label>
+            <input value={location} onChange={(e) => setLocation(e.target.value)} placeholder="לדוגמה: חדר אוכל, מקלחות קומה 2" style={field} />
+          </div>
+
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 700, color: C.steel, display: "block", marginBottom: 4 }}>פירוט / הערות</label>
+            <textarea value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="תאר את התקלה או הבקשה..." style={{ ...field, minHeight: 110, resize: "vertical" }} />
+          </div>
+
+          <button
+            onClick={() => setUrgent((v) => !v)}
+            style={{ ...field, textAlign: "right", fontWeight: 700, color: urgent ? "#fff" : C.ink, background: urgent ? C.stamp : "#fff", cursor: "pointer" }}
+          >
+            {urgent ? "🔴 סומן כדחוף" : "סמן כדחוף (אופציונלי)"}
+          </button>
+
+          <button
+            onClick={submit}
+            disabled={!desc.trim()}
+            style={{ padding: 16, borderRadius: 16, border: "none", background: desc.trim() ? C.sage : C.kraftDark, color: "#fff", fontSize: 18, fontWeight: 800, cursor: "pointer", opacity: desc.trim() ? 1 : 0.6, marginTop: 4 }}
+          >
+            שלח דיווח
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AppWithBoundary() {
   return (
     <ErrorBoundary>
@@ -3415,7 +3519,7 @@ function App() {
     typeof window !== "undefined"
       ? new URLSearchParams(window.location.search).get("kiosk")
       : null;
-  if (kioskParam === "1" || kioskParam === "camera") {
+  if (kioskParam === "1" || kioskParam === "camera" || kioskParam === "report") {
     const goToKiosk = (val) => {
       const u = new URL(window.location.href);
       u.searchParams.set("kiosk", val);
@@ -3429,6 +3533,9 @@ function App() {
       currentUser,
       onExit: exitKiosk,
     };
+    if (kioskParam === "report") {
+      return <KioskReport tasks={tasks} persistTasks={persistTasks} taskCategories={taskCategories} notifyManagers={notifyManagers} onExit={exitKiosk} />;
+    }
     if (kioskParam === "camera") {
       return <KioskCameraScanner {...kioskProps} onSwitchMode={() => goToKiosk("1")} />;
     }
