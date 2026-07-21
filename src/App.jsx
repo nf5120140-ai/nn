@@ -5323,12 +5323,28 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
             💾 שמור כטיוטה
           </button>
 
+          {!isRequest && (
+            <button
+              onClick={async () => {
+                try { await navigator.clipboard.writeText(messageText); } catch (e) {}
+                // wa.me/?text opens WhatsApp with the order already typed; the user
+                // taps the target chat/group (invite links can't carry text at all).
+                window.open(`https://wa.me/?text=${encodeURIComponent(messageText)}`, "_blank");
+                setPendingOrder(null);
+              }}
+              className="w-full py-3 mt-2 rounded-2xl wh-display font-bold"
+              style={{ background: "#25D366", color: "#fff" }}
+            >
+              📤 שלח בוואטסאפ (בחר את הקבוצה)
+            </button>
+          )}
+
           {!isRequest && (settings?.whatsappGroupLink || "").trim() && (
             <button
               onClick={async () => {
                 try {
                   await navigator.clipboard.writeText(messageText);
-                  showToast("ההזמנה הועתקה - הדבק אותה בקבוצה");
+                  showToast("ההזמנה הועתקה - פותח את הקבוצה, החזק בתיבת ההודעה והדבק");
                 } catch (e) {
                   showToast("פותח את הקבוצה - העתק את ההזמנה מהתצוגה המקדימה");
                 }
@@ -5338,7 +5354,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               className="w-full py-3 mt-2 rounded-2xl wh-display font-bold"
               style={{ background: "#128C7E", color: "#fff" }}
             >
-              👥 שלח לקבוצת וואטסאפ
+              👥 פתח את הקבוצה הקבועה (הדבקה ידנית)
             </button>
           )}
         </div>
