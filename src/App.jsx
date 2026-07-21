@@ -9898,14 +9898,16 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
               )}
               <button onClick={() => removeRow(row.rowId)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕ הסר שורה</button>
             </div>
-            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם המנה (כותרת)</label>
-            <input
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם המנה (מהמלאי)</label>
+            <select
               value={row.name}
               onChange={(e) => updateRow(row.rowId, { name: e.target.value })}
-              placeholder="לדוגמה: שניצל, פסטה, סלט..."
               className="p-2 rounded-xl border w-full mb-3 font-bold"
               style={{ borderColor: C.kraftDark, fontSize: "1rem" }}
-            />
+            >
+              <option value="">בחר מנה מהמלאי</option>
+              {products.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}
+            </select>
             <RowIngredientPicker
               products={products}
               ingredients={row.ingredients}
@@ -9941,7 +9943,13 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
       {editingId && (
         <ShelfTag accent={C.sage} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>עריכת מנה</div>
-          <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} placeholder="שם המנה" />
+          <select value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className="p-2 rounded-2xl border w-full font-bold" style={{ borderColor: C.kraftDark }}>
+            <option value="">בחר מנה מהמלאי</option>
+            {editForm.name && !products.some((p) => p.name === editForm.name) && (
+              <option value={editForm.name}>{editForm.name} (שם קיים)</option>
+            )}
+            {products.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}
+          </select>
           <select value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
             <option value="בשרי">בשרי</option>
             <option value="חלבי">חלבי</option>
@@ -9957,13 +9965,6 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
               const key = ing.ingId || ing.productId;
               return (
                 <div key={key} className="p-2 rounded-xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
-                  <input
-                    value={ing.label || ""}
-                    onChange={(e) => updateEditIngredient(key, { label: e.target.value })}
-                    placeholder="שם התוספת (למשל: עיקרי, תוספת, רוטב)"
-                    className="p-2 rounded-xl border w-full mb-2 text-sm"
-                    style={{ borderColor: C.kraftDark }}
-                  />
                   <div className="flex gap-2">
                     <select value={ing.productId} onChange={(e) => updateEditIngredient(key, { productId: e.target.value })} className="flex-1 p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark }}>
                       {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
@@ -10029,13 +10030,6 @@ function RowIngredientPicker({ products, ingredients, onAdd, onUpdate, onRemove 
           const key = ing.ingId || ing.productId;
           return (
             <div key={key} className="p-2 rounded-xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
-              <input
-                value={ing.label || ""}
-                onChange={(e) => onUpdate(key, { label: e.target.value })}
-                placeholder="שם התוספת (למשל: עיקרי, תוספת, רוטב)"
-                className="p-2 rounded-xl border w-full mb-2 text-sm"
-                style={{ borderColor: C.kraftDark }}
-              />
               <div className="flex gap-2">
                 <select
                   value={ing.productId}
