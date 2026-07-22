@@ -1,4 +1,4 @@
-const CACHE = "nn-cache-v3";
+const CACHE = "nn-cache-v4";
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => {
   event.waitUntil(caches.keys().then((keys) =>
@@ -12,7 +12,7 @@ self.addEventListener("push", (event) => {
   const options = {
     body: data.body || "",
     icon: "/icon-192-v2.png",
-    badge: "/icon-192-v2.png",
+    badge: "/badge-96.png",
     dir: "rtl", lang: "he",
     tag: data.tag || undefined,
     renotify: !!data.tag,
