@@ -9898,20 +9898,41 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
               )}
               <button onClick={() => removeRow(row.rowId)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕ הסר שורה</button>
             </div>
-            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם המנה (מהמלאי)</label>
-            <div className="mb-3">
-              <ProductAutocomplete
-                products={products}
-                value={row.name}
-                valueMode="name"
-                bold
-                placeholder="הקלד אות לחיפוש מנה..."
-                onChange={(name) => updateRow(row.rowId, { name })}
-              />
-            </div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>המנה (מהמלאי) — הבחירה היא גם השם וגם המוצר</label>
+            {(() => {
+              const mainIng = findMainIngredient(row.ingredients, row.name, products);
+              const mainKey = mainIng ? (mainIng.ingId || mainIng.productId) : null;
+              return (
+                <div className="flex gap-2 mb-3">
+                  <div className="flex-1">
+                    <ProductAutocomplete
+                      products={products}
+                      value={row.name}
+                      valueMode="name"
+                      bold
+                      placeholder="הקלד אות לחיפוש מנה..."
+                      onPick={(p) =>
+                        updateRow(row.rowId, {
+                          name: p.name,
+                          ingredients: applyMainProduct(row.ingredients, row.name, products, p),
+                        })
+                      }
+                    />
+                  </div>
+                  <input
+                    type="number"
+                    value={mainIng ? mainIng.qty : 1}
+                    onChange={(e) => mainKey && updateIngredientInRow(row.rowId, mainKey, { qty: Number(e.target.value) })}
+                    disabled={!mainIng}
+                    className="w-14 p-2 rounded-xl border text-center text-sm"
+                    style={{ borderColor: C.kraftDark, background: mainIng ? "#fff" : C.paper }}
+                  />
+                </div>
+              );
+            })()}
             <RowIngredientPicker
               products={products}
-              ingredients={row.ingredients}
+              ingredients={(row.ingredients || []).filter((i) => i !== findMainIngredient(row.ingredients, row.name, products))}
               onAdd={() => addIngredientToRow(row.rowId)}
               onUpdate={(key, fields) => updateIngredientInRow(row.rowId, key, fields)}
               onRemove={(key) => removeIngredientFromRow(row.rowId, key)}
@@ -9944,14 +9965,39 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
       {editingId && (
         <ShelfTag accent={C.sage} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>עריכת מנה</div>
-          <ProductAutocomplete
-            products={products}
-            value={editForm.name}
-            valueMode="name"
-            bold
-            placeholder="הקלד אות לחיפוש מנה..."
-            onChange={(name) => setEditForm({ ...editForm, name })}
-          />
+          <label className="text-xs font-bold block" style={{ color: C.steel }}>המנה (מהמלאי) — הבחירה היא גם השם וגם המוצר</label>
+          {(() => {
+            const mainIng = findMainIngredient(editForm.ingredients, editForm.name, products);
+            const mainKey = mainIng ? (mainIng.ingId || mainIng.productId) : null;
+            return (
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <ProductAutocomplete
+                    products={products}
+                    value={editForm.name}
+                    valueMode="name"
+                    bold
+                    placeholder="הקלד אות לחיפוש מנה..."
+                    onPick={(p) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        name: p.name,
+                        ingredients: applyMainProduct(f.ingredients, f.name, products, p),
+                      }))
+                    }
+                  />
+                </div>
+                <input
+                  type="number"
+                  value={mainIng ? mainIng.qty : 1}
+                  onChange={(e) => mainKey && updateEditIngredient(mainKey, { qty: Number(e.target.value) })}
+                  disabled={!mainIng}
+                  className="w-14 p-2 rounded-xl border text-center text-sm"
+                  style={{ borderColor: C.kraftDark, background: mainIng ? "#fff" : C.paper }}
+                />
+              </div>
+            );
+          })()}
           <select value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
             <option value="בשרי">בשרי</option>
             <option value="חלבי">חלבי</option>
@@ -9961,9 +10007,11 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
             <option value="">בחר סוג מנה</option>
             {dishTypes.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
-          <label className="text-xs font-bold block" style={{ color: C.steel }}>מוצר ותוספות</label>
+          <label className="text-xs font-bold block" style={{ color: C.steel }}>תוספות למנה</label>
           <div className="flex flex-col gap-2">
-            {editForm.ingredients.map((ing) => {
+            {editForm.ingredients
+              .filter((i) => i !== findMainIngredient(editForm.ingredients, editForm.name, products))
+              .map((ing) => {
               const key = ing.ingId || ing.productId;
               return (
                 <div key={key} className="p-2 rounded-xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
@@ -9983,7 +10031,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
             })}
           </div>
           <button onClick={addEditIngredient} className="w-full py-2 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
-            + הוסף מוצר / תוספת
+            + הוסף תוספת
           </button>
           <div className="flex gap-2">
             <button onClick={saveEdit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>שמור שינויים</button>
@@ -10024,8 +10072,30 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
   );
 }
 
+/* The "main" ingredient is the one whose product IS the dish name.
+   Falls back to matching by name so meals saved before this change still work. */
+function findMainIngredient(ingredients, dishName, products) {
+  const list = ingredients || [];
+  return (
+    list.find((i) => i.main) ||
+    (dishName ? list.find((i) => (products || []).find((p) => p.id === i.productId)?.name === dishName) : null) ||
+    null
+  );
+}
+
+/* Picking a product sets BOTH the dish name and the dish's main product. */
+function applyMainProduct(ingredients, dishName, products, product) {
+  const list = ingredients || [];
+  const current = findMainIngredient(list, dishName, products);
+  if (current) {
+    const key = current.ingId || current.productId;
+    return list.map((i) => ((i.ingId || i.productId) === key ? { ...i, main: true, productId: product.id } : i));
+  }
+  return [{ ingId: genId(), main: true, label: "", productId: product.id, qty: 1 }, ...list];
+}
+
 /* Type-ahead product picker: type a letter and matching products appear below. */
-function ProductAutocomplete({ products, value, onChange, valueMode = "id", placeholder = "הקלד לחיפוש מוצר...", bold = false }) {
+function ProductAutocomplete({ products, value, onChange, onPick, valueMode = "id", placeholder = "הקלד לחיפוש מוצר...", bold = false }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
 
@@ -10041,7 +10111,8 @@ function ProductAutocomplete({ products, value, onChange, valueMode = "id", plac
     .slice(0, 30);
 
   function pick(p) {
-    onChange(valueMode === "id" ? p.id : p.name);
+    if (onPick) onPick(p);
+    else onChange(valueMode === "id" ? p.id : p.name);
     setQ("");
     setOpen(false);
   }
@@ -10089,10 +10160,10 @@ function ProductAutocomplete({ products, value, onChange, valueMode = "id", plac
 function RowIngredientPicker({ products, ingredients, onAdd, onUpdate, onRemove }) {
   return (
     <div>
-      <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מוצר ותוספות</label>
+      <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תוספות למנה</label>
       <div className="flex flex-col gap-2 mb-2">
         {ingredients.length === 0 && (
-          <p className="text-xs" style={{ color: C.steel }}>אין עדיין מוצרים. הוסף מוצר/תוספת ראשון/ה למטה.</p>
+          <p className="text-xs" style={{ color: C.steel }}>אין תוספות. אפשר להוסיף בכפתור למטה.</p>
         )}
         {ingredients.map((ing) => {
           const key = ing.ingId || ing.productId;
@@ -10120,7 +10191,7 @@ function RowIngredientPicker({ products, ingredients, onAdd, onUpdate, onRemove 
         })}
       </div>
       <button onClick={onAdd} className="w-full py-2 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
-        + הוסף מוצר / תוספת
+        + הוסף תוספת
       </button>
     </div>
   );
