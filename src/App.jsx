@@ -5420,6 +5420,62 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     }
   }
 
+  /* WhatsApp can't render the print table, so the menu goes out as plain text
+     with *bold* day headers. Days with nothing scheduled are skipped. */
+  function weeklyMenuText() {
+    const title = parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי";
+    const lines = [`*${title}*`, weekLabel(targetWeekStart), ""];
+    let hasAny = false;
+
+    WEEK_DAYS.forEach(([dayKey, dayLabel], idx) => {
+      const d = parseIsoLocal(targetWeekStart);
+      d.setDate(d.getDate() + idx);
+      const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+
+      const dayLines = [];
+      MEAL_SLOTS.forEach(([slotKey, slotLabel]) => {
+        const slotLines = (dishTypes || [])
+          .map((dt) => {
+            const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+            const m = menuItems.find((mi) => mi.id === id);
+            return m ? `   ${dt.name}: ${m.name}` : null;
+          })
+          .filter(Boolean);
+        if (slotLines.length) {
+          dayLines.push(`ארוחת ${slotLabel}:`);
+          dayLines.push(...slotLines);
+        }
+      });
+
+      if (dayLines.length) {
+        hasAny = true;
+        lines.push(`*${dayLabel} · ${dateStr}*`);
+        lines.push(...dayLines);
+        lines.push("");
+      }
+    });
+
+    return hasAny ? lines.join("\n").trim() : "";
+  }
+
+  function sendWeeklyMenuWhatsApp() {
+    const text = weeklyMenuText();
+    if (!text) return showToast("לא שובצו מנות לשבוע הזה");
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+  }
+
+  async function sendWeeklyMenuToGroup() {
+    const text = weeklyMenuText();
+    if (!text) return showToast("לא שובצו מנות לשבוע הזה");
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("התפריט הועתק - פותח את הקבוצה, החזק בתיבת ההודעה והדבק");
+    } catch (e) {
+      showToast("פותח את הקבוצה - העתק את התפריט ידנית");
+    }
+    window.open(settings.whatsappGroupLink.trim(), "_blank");
+  }
+
   /* Print layout mirrors the Excel sheet this replaced:
      rows = dish types (מנה עיקרית / תוספת / ירקנית), columns = days.
      One table per meal slot. */
@@ -5939,6 +5995,24 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               >
                 🖨️ הדפס תפריט שבועי
               </button>
+
+              <button
+                onClick={sendWeeklyMenuWhatsApp}
+                className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
+                style={{ background: "#25D366", color: "#fff" }}
+              >
+                💬 שלח תפריט בוואטסאפ
+              </button>
+
+              {(settings?.whatsappGroupLink || "").trim() && (
+                <button
+                  onClick={sendWeeklyMenuToGroup}
+                  className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
+                  style={{ background: "#128C7E", color: "#fff" }}
+                >
+                  👥 שלח לקבוצה הקבועה (הדבקה ידנית)
+                </button>
+              )}
             </div>
 
             <div className="flex gap-2 mb-3">
