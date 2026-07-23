@@ -5476,6 +5476,66 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     window.open(settings.whatsappGroupLink.trim(), "_blank");
   }
 
+  function buildWeeklyMenuImage() {
+    return renderWeeklyMenuPng({
+      title: parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי",
+      subtitle: weekLabel(targetWeekStart),
+      days: WEEK_DAYS,
+      types: dishTypes || [],
+      slots: MEAL_SLOTS,
+      weeklyMenu,
+      menuItems,
+      weekStart: targetWeekStart,
+    });
+  }
+
+  /* Shares the menu as a picture. navigator.share must run inside the user
+     gesture, so the image is built synchronously before any await. */
+  async function sendWeeklyMenuImage() {
+    let dataUrl = "";
+    try {
+      dataUrl = buildWeeklyMenuImage();
+    } catch (e) {
+      console.error("could not draw the menu image", e);
+      return showToast("שגיאה ביצירת התמונה - נסה 'שלח תפריט בוואטסאפ' כטקסט");
+    }
+    if (!dataUrl) return showToast("לא שובצו מנות לשבוע הזה");
+
+    const caption = `${parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי"} · ${weekLabel(targetWeekStart)}`;
+    let file = null;
+    try {
+      file = dataUrlToFile(dataUrl, "weekly-menu.png");
+    } catch (e) {
+      console.error("could not build file from the drawn image", e);
+    }
+
+    // canShare often reports false inside an installed PWA even when sharing works,
+    // so try richest-first and only use it to skip payloads it explicitly rejects.
+    if (file && navigator.share) {
+      const attempts = [
+        { files: [file], text: caption, title: caption },
+        { files: [file], text: caption },
+        { files: [file] },
+      ];
+      for (const payload of attempts) {
+        if (navigator.canShare && !navigator.canShare(payload)) continue;
+        try {
+          await navigator.share(payload);
+          return;
+        } catch (e) {
+          if (e && e.name === "AbortError") return; // user closed the share sheet
+          console.error("share attempt failed", payload, e);
+        }
+      }
+    }
+
+    // No share support: download the picture and open WhatsApp for manual attaching.
+    if (!navigator.share) showToast("הדפדפן לא תומך בשיתוף - התמונה תרד לצירוף ידני");
+    downloadDataUrl(dataUrl, "weekly-menu.png");
+    window.open(`https://wa.me/?text=${encodeURIComponent(caption)}`, "_blank");
+    showToast("התמונה ירדה - צרף אותה בוואטסאפ ידנית");
+  }
+
   /* Print layout mirrors the Excel sheet this replaced:
      rows = dish types (מנה עיקרית / תוספת / ירקנית), columns = days.
      One table per meal slot. */
@@ -5997,11 +6057,19 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               </button>
 
               <button
-                onClick={sendWeeklyMenuWhatsApp}
+                onClick={sendWeeklyMenuImage}
                 className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
                 style={{ background: "#25D366", color: "#fff" }}
               >
-                💬 שלח תפריט בוואטסאפ
+                🖼️ שלח תפריט כתמונה
+              </button>
+
+              <button
+                onClick={sendWeeklyMenuWhatsApp}
+                className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
+                style={{ background: "#fff", color: "#128C7E", border: "1px solid #128C7E" }}
+              >
+                💬 שלח כטקסט במקום
               </button>
 
               {(settings?.whatsappGroupLink || "").trim() && (
@@ -6885,6 +6953,169 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
  * This matters: navigator.share() only works inside a user gesture, and awaiting
  * fetch(dataUrl) first would break the gesture chain and make the share fail.
  */
+/* Renders the weekly menu as a PNG mirroring the print layout (rows = dish types,
+   columns = days, right-to-left). Drawn straight onto a canvas so the app needs
+   no extra npm dependency - the whole feature stays inside this file. */
+function renderWeeklyMenuPng({ title, subtitle, days, types, slots, weeklyMenu, menuItems, weekStart }) {
+  const S = 2;                 // supersample so text stays sharp on phone screens
+  const PAD = 30;
+  const LABEL_W = 140;
+  const COL_W = 155;
+  const HEAD_H = 58;
+  const ROW_PAD = 18;
+  const LINE_H = 20;
+  const TITLE_BLOCK = 84;
+  const SLOT_H = 44;
+  const TABLE_GAP = 28;
+
+  const FONT_TITLE = "bold 26px Arial, sans-serif";
+  const FONT_SUB = "15px Arial, sans-serif";
+  const FONT_SLOT = "bold 19px Arial, sans-serif";
+  const FONT_DAY = "bold 17px Arial, sans-serif";
+  const FONT_DATE = "12px Arial, sans-serif";
+  const FONT_ROWHEAD = "bold 15px Arial, sans-serif";
+  const FONT_CELL = "15px Arial, sans-serif";
+
+  const BLUE = "#2E86C4";
+  const ROWHEAD_BG = "#D6E7F5";
+  const STRIPE = "#F5F9FD";
+  const BORDER = "#444444";
+
+  const width = PAD * 2 + LABEL_W + COL_W * days.length;
+  const meas = document.createElement("canvas").getContext("2d");
+
+  function wrapText(text, maxW, font) {
+    meas.font = font;
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    if (!words.length) return [];
+    const lines = [];
+    let cur = words[0];
+    for (let i = 1; i < words.length; i++) {
+      const test = `${cur} ${words[i]}`;
+      if (meas.measureText(test).width <= maxW) cur = test;
+      else { lines.push(cur); cur = words[i]; }
+    }
+    lines.push(cur);
+    return lines;
+  }
+
+  // ---- Plan the layout first so the canvas can be sized exactly. ----
+  const plan = [];
+  slots.forEach(([slotKey, slotLabel]) => {
+    const used = days.some(([dayKey]) => types.some((dt) => weeklyMenu[dayKey]?.[slotKey]?.[dt.id]));
+    if (!used) return; // skip a meal nobody planned, same as the printout
+
+    const rows = types.map((dt) => {
+      const cells = days.map(([dayKey]) => {
+        const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+        const m = menuItems.find((mi) => mi.id === id);
+        return m ? wrapText(m.name, COL_W - 14, FONT_CELL) : [];
+      });
+      const headLines = wrapText(dt.name, LABEL_W - 16, FONT_ROWHEAD);
+      const maxLines = Math.max(1, headLines.length, ...cells.map((c) => c.length || 1));
+      return { headLines, cells, height: maxLines * LINE_H + ROW_PAD };
+    });
+
+    plan.push({ slotLabel, rows });
+  });
+
+  if (!plan.length) return "";
+
+  let height = PAD + TITLE_BLOCK;
+  plan.forEach((t) => {
+    height += SLOT_H + HEAD_H + t.rows.reduce((s, r) => s + r.height, 0) + TABLE_GAP;
+  });
+  height += PAD - TABLE_GAP;
+
+  // ---- Draw ----
+  const canvas = document.createElement("canvas");
+  canvas.width = width * S;
+  canvas.height = height * S;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(S, S);
+  try { ctx.direction = "rtl"; } catch (e) { /* older browsers ignore this */ }
+
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+
+  ctx.fillStyle = "#111111";
+  ctx.font = FONT_TITLE;
+  ctx.fillText(title, width / 2, PAD + 18);
+  ctx.fillStyle = "#666666";
+  ctx.font = FONT_SUB;
+  ctx.fillText(subtitle, width / 2, PAD + 48);
+
+  // Rightmost column is the dish-type label; days run right-to-left after it.
+  const labelX = width - PAD - LABEL_W;
+  const colX = (i) => width - PAD - LABEL_W - (i + 1) * COL_W;
+
+  function cellBox(x, y, w, h, bg) {
+    if (bg) { ctx.fillStyle = bg; ctx.fillRect(x, y, w, h); }
+    ctx.strokeStyle = BORDER;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+  }
+
+  function drawLines(lines, cx, cy, font, color) {
+    ctx.font = font;
+    ctx.fillStyle = color;
+    const total = lines.length;
+    lines.forEach((ln, i) => {
+      ctx.fillText(ln, cx, cy - ((total - 1) * LINE_H) / 2 + i * LINE_H);
+    });
+  }
+
+  let y = PAD + TITLE_BLOCK;
+
+  plan.forEach((table) => {
+    ctx.textAlign = "right";
+    ctx.font = FONT_SLOT;
+    ctx.fillStyle = "#111111";
+    ctx.fillText(`ארוחת ${table.slotLabel}`, width - PAD, y + SLOT_H / 2);
+    ctx.textAlign = "center";
+    y += SLOT_H;
+
+    // header: empty corner over the label column, then a day per column
+    cellBox(labelX, y, LABEL_W, HEAD_H, BLUE);
+    days.forEach(([, label], i) => {
+      const d = parseIsoLocal(weekStart);
+      d.setDate(d.getDate() + i);
+      const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+      const x = colX(i);
+      cellBox(x, y, COL_W, HEAD_H, BLUE);
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = FONT_DAY;
+      ctx.fillText(label, x + COL_W / 2, y + HEAD_H / 2 - 8);
+      ctx.font = FONT_DATE;
+      ctx.fillText(dateStr, x + COL_W / 2, y + HEAD_H / 2 + 12);
+    });
+    y += HEAD_H;
+
+    table.rows.forEach((row, rIdx) => {
+      const h = row.height;
+      cellBox(labelX, y, LABEL_W, h, ROWHEAD_BG);
+      ctx.textAlign = "right";
+      drawLines(row.headLines, width - PAD - 10, y + h / 2, FONT_ROWHEAD, "#111111");
+      ctx.textAlign = "center";
+
+      const stripe = rIdx % 2 === 1 ? STRIPE : "#FFFFFF";
+      row.cells.forEach((lines, i) => {
+        const x = colX(i);
+        cellBox(x, y, COL_W, h, stripe);
+        if (lines.length) drawLines(lines, x + COL_W / 2, y + h / 2, FONT_CELL, "#111111");
+      });
+      y += h;
+    });
+
+    y += TABLE_GAP;
+  });
+
+  return canvas.toDataURL("image/png");
+}
+
 function dataUrlToFile(dataUrl, filename) {
   const [header, base64] = String(dataUrl).split(",");
   const mime = (header.match(/:(.*?);/) || [])[1] || "image/jpeg";
