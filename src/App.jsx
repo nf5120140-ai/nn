@@ -7238,7 +7238,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
         <UsersAdmin users={users} updateUserProfile={updateUserProfile} deleteUserProfile={deleteUserProfile} showToast={showToast} currentUser={currentUser} settings={settings} persistSettings={persistSettings} taskCategories={taskCategories} />
       )}
       {section === "menu" && (
-        <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} dishTypes={dishTypes} />
+        <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} persistProducts={persistProducts} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} dishTypes={dishTypes} />
       )}
       {section === "dishtypes" && (
         <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} />
@@ -9752,7 +9752,36 @@ function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
   );
 }
 
-function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMenu, persistWeeklyMenu, dishTypes }) {
+function MenuAdmin({ menuItems, persistMenuItems, products, persistProducts, showToast, weeklyMenu, persistWeeklyMenu, dishTypes }) {
+  /* Adds a missing product straight to inventory without leaving the meal being built. */
+  async function quickAddProduct(rawName) {
+    const name = (rawName || "").trim();
+    if (!name) return null;
+    const existing = (products || []).find((p) => p.name === name);
+    if (existing) return existing;
+    if (!persistProducts) {
+      showToast("לא ניתן להוסיף מוצר מכאן");
+      return null;
+    }
+    const newProduct = {
+      id: genId(),
+      name,
+      barcode: "",
+      quantity: 0,
+      threshold: 1,
+      price: 0,
+      unit: "יח׳",
+      unitsPerCarton: 0,
+      category: "",
+      supplierId: "",
+      unitVisible: true,
+      imageData: null,
+    };
+    await persistProducts([...(products || []), newProduct]);
+    showToast(`"${name}" נוסף למלאי — אפשר להשלים פרטים במסך מוצרים`);
+    return newProduct;
+  }
+
   const emptyEdit = { name: "", category: "בשרי", dishType: "", ingredients: [] };
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(emptyEdit);
@@ -9911,6 +9940,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
                       valueMode="name"
                       bold
                       placeholder="הקלד אות לחיפוש מנה..."
+                      onCreateProduct={quickAddProduct}
                       onPick={(p) =>
                         updateRow(row.rowId, {
                           name: p.name,
@@ -9934,6 +9964,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
               products={products}
               ingredients={(row.ingredients || []).filter((i) => i !== findMainIngredient(row.ingredients, row.name, products))}
               onAdd={() => addIngredientToRow(row.rowId)}
+              onCreateProduct={quickAddProduct}
               onUpdate={(key, fields) => updateIngredientInRow(row.rowId, key, fields)}
               onRemove={(key) => removeIngredientFromRow(row.rowId, key)}
             />
@@ -9978,6 +10009,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
                     valueMode="name"
                     bold
                     placeholder="הקלד אות לחיפוש מנה..."
+                    onCreateProduct={quickAddProduct}
                     onPick={(p) =>
                       setEditForm((f) => ({
                         ...f,
@@ -10020,6 +10052,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
                       <ProductAutocomplete
                         products={products}
                         value={ing.productId}
+                        onCreateProduct={quickAddProduct}
                         onChange={(pid) => updateEditIngredient(key, { productId: pid })}
                       />
                     </div>
@@ -10095,7 +10128,7 @@ function applyMainProduct(ingredients, dishName, products, product) {
 }
 
 /* Type-ahead product picker: type a letter and matching products appear below. */
-function ProductAutocomplete({ products, value, onChange, onPick, valueMode = "id", placeholder = "הקלד לחיפוש מוצר...", bold = false }) {
+function ProductAutocomplete({ products, value, onChange, onPick, onCreateProduct, valueMode = "id", placeholder = "הקלד לחיפוש מוצר...", bold = false }) {
   const [q, setQ] = useState("");
   const [open, setOpen] = useState(false);
 
@@ -10115,6 +10148,15 @@ function ProductAutocomplete({ products, value, onChange, onPick, valueMode = "i
     else onChange(valueMode === "id" ? p.id : p.name);
     setQ("");
     setOpen(false);
+  }
+
+  const typed = q.trim();
+  const hasExact = (products || []).some((p) => p.name === typed);
+
+  async function createAndPick() {
+    if (!typed || !onCreateProduct) return;
+    const created = await onCreateProduct(typed);
+    if (created) pick(created);
   }
 
   return (
@@ -10137,7 +10179,7 @@ function ProductAutocomplete({ products, value, onChange, onPick, valueMode = "i
             boxShadow: "0 6px 18px rgba(20,33,61,0.15)",
           }}
         >
-          {matches.length === 0 && (
+          {matches.length === 0 && !(typed && onCreateProduct) && (
             <div className="text-xs p-3 text-center" style={{ color: C.steel }}>לא נמצא מוצר תואם</div>
           )}
           {matches.map((p) => (
@@ -10151,13 +10193,22 @@ function ProductAutocomplete({ products, value, onChange, onPick, valueMode = "i
               {p.unit && <span style={{ color: C.steel }}> · {p.unit}</span>}
             </button>
           ))}
+          {typed && !hasExact && onCreateProduct && (
+            <button
+              onMouseDown={(e) => { e.preventDefault(); createAndPick(); }}
+              className="w-full text-right p-3 text-sm font-bold"
+              style={{ background: C.paper, color: C.sage, borderTop: `1px solid ${C.kraftDark}` }}
+            >
+              ➕ הוסף "{typed}" למלאי ובחר
+            </button>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function RowIngredientPicker({ products, ingredients, onAdd, onUpdate, onRemove }) {
+function RowIngredientPicker({ products, ingredients, onAdd, onUpdate, onRemove, onCreateProduct }) {
   return (
     <div>
       <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תוספות למנה</label>
@@ -10174,6 +10225,7 @@ function RowIngredientPicker({ products, ingredients, onAdd, onUpdate, onRemove 
                   <ProductAutocomplete
                     products={products}
                     value={ing.productId}
+                    onCreateProduct={onCreateProduct}
                     onChange={(pid) => onUpdate(key, { productId: pid })}
                   />
                 </div>
