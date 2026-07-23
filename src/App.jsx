@@ -76,11 +76,9 @@ const WEEK_DAYS = [
   ["friday", "יום שישי"],
   ["saturday", "שבת"],
 ];
-function weekdayDateLabel(idx) {
-  const now = new Date();
-  const diff = idx - now.getDay();
-  const d = new Date(now);
-  d.setDate(now.getDate() + diff);
+function weekdayDateLabel(idx, weekStart) {
+  const d = weekStart ? parseIsoLocal(weekStart) : parseIsoLocal(weekStartIso());
+  d.setDate(d.getDate() + idx);
   return d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
 }
 const MEAL_SLOTS = [
@@ -1617,7 +1615,7 @@ function SplashScreen() {
 
 /* Grid editor shaped like the Excel sheet it replaces: one row per dish type,
    one column per day. Tap a cell to pick the dish. */
-function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey, slotLabel }) {
+function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey, slotLabel, weekStart }) {
   const [cell, setCell] = useState(null); // { dayKey, dayLabel, dishTypeId, dishTypeName }
   const types = dishTypes || [];
 
@@ -1672,7 +1670,7 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey
                   }}
                 >
                   {label}
-                  <div style={{ fontSize: 10, fontWeight: 400, opacity: 0.9 }}>{weekdayDateLabel(idx)}</div>
+                  <div style={{ fontSize: 10, fontWeight: 400, opacity: 0.9 }}>{weekdayDateLabel(idx, weekStart)}</div>
                 </th>
               ))}
             </tr>
@@ -1796,11 +1794,25 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey
 /* ---------- Unit requests (e.g. the daycare ordering out of our stock) ---------- */
 
 /** ISO date (yyyy-mm-dd) of the Sunday that starts the current week. */
+/** YYYY-MM-DD from a Date using the LOCAL calendar day.
+    toISOString() would convert local midnight to UTC and slide the date back a day in Israel. */
+function isoLocalDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+/** Parse a YYYY-MM-DD string as a LOCAL date (not UTC midnight). */
+function parseIsoLocal(iso) {
+  const parts = String(iso || "").split("-").map(Number);
+  if (parts.length < 3 || parts.some((n) => Number.isNaN(n))) return new Date(iso);
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
 function weekStartIso(d = new Date()) {
   const x = new Date(d);
   x.setDate(x.getDate() - x.getDay());
   x.setHours(0, 0, 0, 0);
-  return x.toISOString().slice(0, 10);
+  return isoLocalDate(x);
 }
 /** "16/7 14:30" - compact date+time for created stamps across the app. */
 function fmtStamp(ts) {
@@ -1814,7 +1826,7 @@ function fmtStamp(ts) {
 }
 
 function weekLabel(iso) {
-  const start = new Date(iso);
+  const start = parseIsoLocal(iso);
   const end = new Date(start);
   end.setDate(end.getDate() + 6);
   const f = (d) => d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
@@ -4714,16 +4726,16 @@ function useParshiot() {
 
 /** The Saturday that closes the week starting on the given Sunday. */
 function shabbatOfWeek(weekStartIsoStr) {
-  const d = new Date(weekStartIsoStr);
+  const d = parseIsoLocal(weekStartIsoStr);
   d.setDate(d.getDate() + 6);
-  return d.toISOString().slice(0, 10);
+  return isoLocalDate(d);
 }
 
 /** ISO Sunday of next week. */
 function nextWeekStartIso() {
-  const d = new Date(weekStartIso());
+  const d = parseIsoLocal(weekStartIso());
   d.setDate(d.getDate() + 7);
-  return d.toISOString().slice(0, 10);
+  return isoLocalDate(d);
 }
 
 function HebrewCalendarWidget() {
@@ -4836,14 +4848,12 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const { holidays } = useHebrewHolidays();
 
   function dateForWeekdayIndex(idx) {
-    const now = new Date();
-    const diff = idx - now.getDay();
-    const d = new Date(now);
-    d.setDate(now.getDate() + diff);
+    const d = parseIsoLocal(targetWeekStart);
+    d.setDate(d.getDate() + idx);
     return d;
   }
   function holidayForDate(d) {
-    const iso = d.toISOString().slice(0, 10);
+    const iso = isoLocalDate(d);
     return holidays.find((h) => h.date.slice(0, 10) === iso);
   }
 
@@ -5420,7 +5430,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     function tableFor(slotKey, slotLabel) {
       const header = days
         .map(([, label], idx) => {
-          const d = new Date(targetWeekStart);
+          const d = parseIsoLocal(targetWeekStart);
           d.setDate(d.getDate() + idx);
           const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
           return `<th>${label}<div class="date">${dateStr}</div></th>`;
@@ -5962,6 +5972,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                     dishTypes={dishTypes}
                     slotKey={slotKey}
                     slotLabel={slotLabel}
+                    weekStart={targetWeekStart}
                   />
                 ))}
               </>
