@@ -9784,7 +9784,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
     setRows((r) =>
       r.map((row) =>
         row.rowId === rowId
-          ? { ...row, ingredients: [...row.ingredients, { ingId: genId(), label: "", productId: products[0]?.id || "", qty: 1 }] }
+          ? { ...row, ingredients: [...row.ingredients, { ingId: genId(), label: "", productId: "", qty: 1 }] }
           : row
       )
     );
@@ -9838,7 +9838,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
     setEditingId(m.id);
   }
   function addEditIngredient() {
-    setEditForm((f) => ({ ...f, ingredients: [...f.ingredients, { ingId: genId(), label: "", productId: products[0]?.id || "", qty: 1 }] }));
+    setEditForm((f) => ({ ...f, ingredients: [...f.ingredients, { ingId: genId(), label: "", productId: "", qty: 1 }] }));
   }
   function updateEditIngredient(key, fields) {
     setEditForm((f) => ({ ...f, ingredients: f.ingredients.map((i) => ((i.ingId || i.productId) === key ? { ...i, ...fields } : i)) }));
@@ -9899,15 +9899,16 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
               <button onClick={() => removeRow(row.rowId)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕ הסר שורה</button>
             </div>
             <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם המנה (מהמלאי)</label>
-            <select
-              value={row.name}
-              onChange={(e) => updateRow(row.rowId, { name: e.target.value })}
-              className="p-2 rounded-xl border w-full mb-3 font-bold"
-              style={{ borderColor: C.kraftDark, fontSize: "1rem" }}
-            >
-              <option value="">בחר מנה מהמלאי</option>
-              {products.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}
-            </select>
+            <div className="mb-3">
+              <ProductAutocomplete
+                products={products}
+                value={row.name}
+                valueMode="name"
+                bold
+                placeholder="הקלד אות לחיפוש מנה..."
+                onChange={(name) => updateRow(row.rowId, { name })}
+              />
+            </div>
             <RowIngredientPicker
               products={products}
               ingredients={row.ingredients}
@@ -9943,13 +9944,14 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
       {editingId && (
         <ShelfTag accent={C.sage} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>עריכת מנה</div>
-          <select value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className="p-2 rounded-2xl border w-full font-bold" style={{ borderColor: C.kraftDark }}>
-            <option value="">בחר מנה מהמלאי</option>
-            {editForm.name && !products.some((p) => p.name === editForm.name) && (
-              <option value={editForm.name}>{editForm.name} (שם קיים)</option>
-            )}
-            {products.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}
-          </select>
+          <ProductAutocomplete
+            products={products}
+            value={editForm.name}
+            valueMode="name"
+            bold
+            placeholder="הקלד אות לחיפוש מנה..."
+            onChange={(name) => setEditForm({ ...editForm, name })}
+          />
           <select value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
             <option value="בשרי">בשרי</option>
             <option value="חלבי">חלבי</option>
@@ -9966,9 +9968,13 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
               return (
                 <div key={key} className="p-2 rounded-xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
                   <div className="flex gap-2">
-                    <select value={ing.productId} onChange={(e) => updateEditIngredient(key, { productId: e.target.value })} className="flex-1 p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark }}>
-                      {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
+                    <div className="flex-1">
+                      <ProductAutocomplete
+                        products={products}
+                        value={ing.productId}
+                        onChange={(pid) => updateEditIngredient(key, { productId: pid })}
+                      />
+                    </div>
                     <input type="number" value={ing.qty} onChange={(e) => updateEditIngredient(key, { qty: Number(e.target.value) })} className="w-14 p-2 rounded-xl border text-center text-sm" style={{ borderColor: C.kraftDark }} />
                     <button onClick={() => removeEditIngredient(key)} className="px-3 rounded-xl font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
                   </div>
@@ -10018,6 +10024,68 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
   );
 }
 
+/* Type-ahead product picker: type a letter and matching products appear below. */
+function ProductAutocomplete({ products, value, onChange, valueMode = "id", placeholder = "הקלד לחיפוש מוצר...", bold = false }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const selected =
+    valueMode === "id"
+      ? (products || []).find((p) => p.id === value)
+      : (products || []).find((p) => p.name === value);
+
+  const display = open ? q : (selected ? selected.name : (valueMode === "name" && value ? value : ""));
+
+  const matches = (products || [])
+    .filter((p) => !q.trim() || p.name.includes(q.trim()))
+    .slice(0, 30);
+
+  function pick(p) {
+    onChange(valueMode === "id" ? p.id : p.name);
+    setQ("");
+    setOpen(false);
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={display}
+        onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+        onFocus={() => { setQ(""); setOpen(true); }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder}
+        className={`p-2 rounded-xl border w-full text-sm ${bold ? "font-bold" : ""}`}
+        style={{ borderColor: C.kraftDark, background: "#fff", fontSize: bold ? "1rem" : undefined }}
+      />
+      {open && (
+        <div
+          style={{
+            position: "absolute", top: "100%", right: 0, left: 0, zIndex: 40,
+            background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 12,
+            marginTop: 4, maxHeight: 200, overflowY: "auto",
+            boxShadow: "0 6px 18px rgba(20,33,61,0.15)",
+          }}
+        >
+          {matches.length === 0 && (
+            <div className="text-xs p-3 text-center" style={{ color: C.steel }}>לא נמצא מוצר תואם</div>
+          )}
+          {matches.map((p) => (
+            <button
+              key={p.id}
+              onMouseDown={(e) => { e.preventDefault(); pick(p); }}
+              className="w-full text-right p-2.5 text-sm"
+              style={{ background: "#fff", color: C.ink, borderBottom: `1px solid ${C.paper}` }}
+            >
+              {p.name}
+              {p.unit && <span style={{ color: C.steel }}> · {p.unit}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function RowIngredientPicker({ products, ingredients, onAdd, onUpdate, onRemove }) {
   return (
     <div>
@@ -10031,14 +10099,13 @@ function RowIngredientPicker({ products, ingredients, onAdd, onUpdate, onRemove 
           return (
             <div key={key} className="p-2 rounded-xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
               <div className="flex gap-2">
-                <select
-                  value={ing.productId}
-                  onChange={(e) => onUpdate(key, { productId: e.target.value })}
-                  className="flex-1 p-2 rounded-xl border text-sm"
-                  style={{ borderColor: C.kraftDark }}
-                >
-                  {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                </select>
+                <div className="flex-1">
+                  <ProductAutocomplete
+                    products={products}
+                    value={ing.productId}
+                    onChange={(pid) => onUpdate(key, { productId: pid })}
+                  />
+                </div>
                 <input
                   type="number"
                   value={ing.qty}
