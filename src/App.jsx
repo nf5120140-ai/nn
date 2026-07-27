@@ -76,11 +76,9 @@ const WEEK_DAYS = [
   ["friday", "יום שישי"],
   ["saturday", "שבת"],
 ];
-function weekdayDateLabel(idx) {
-  const now = new Date();
-  const diff = idx - now.getDay();
-  const d = new Date(now);
-  d.setDate(now.getDate() + diff);
+function weekdayDateLabel(idx, weekStart) {
+  const d = weekStart ? parseIsoLocal(weekStart) : parseIsoLocal(weekStartIso());
+  d.setDate(d.getDate() + idx);
   return d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
 }
 const MEAL_SLOTS = [
@@ -1617,7 +1615,7 @@ function SplashScreen() {
 
 /* Grid editor shaped like the Excel sheet it replaces: one row per dish type,
    one column per day. Tap a cell to pick the dish. */
-function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey, slotLabel }) {
+function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey, slotLabel, weekStart }) {
   const [cell, setCell] = useState(null); // { dayKey, dayLabel, dishTypeId, dishTypeName }
   const types = dishTypes || [];
 
@@ -1672,7 +1670,7 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey
                   }}
                 >
                   {label}
-                  <div style={{ fontSize: 10, fontWeight: 400, opacity: 0.9 }}>{weekdayDateLabel(idx)}</div>
+                  <div style={{ fontSize: 10, fontWeight: 400, opacity: 0.9 }}>{weekdayDateLabel(idx, weekStart)}</div>
                 </th>
               ))}
             </tr>
@@ -1796,11 +1794,25 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey
 /* ---------- Unit requests (e.g. the daycare ordering out of our stock) ---------- */
 
 /** ISO date (yyyy-mm-dd) of the Sunday that starts the current week. */
+/** YYYY-MM-DD from a Date using the LOCAL calendar day.
+    toISOString() would convert local midnight to UTC and slide the date back a day in Israel. */
+function isoLocalDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+/** Parse a YYYY-MM-DD string as a LOCAL date (not UTC midnight). */
+function parseIsoLocal(iso) {
+  const parts = String(iso || "").split("-").map(Number);
+  if (parts.length < 3 || parts.some((n) => Number.isNaN(n))) return new Date(iso);
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
 function weekStartIso(d = new Date()) {
   const x = new Date(d);
   x.setDate(x.getDate() - x.getDay());
   x.setHours(0, 0, 0, 0);
-  return x.toISOString().slice(0, 10);
+  return isoLocalDate(x);
 }
 /** "16/7 14:30" - compact date+time for created stamps across the app. */
 function fmtStamp(ts) {
@@ -1814,7 +1826,7 @@ function fmtStamp(ts) {
 }
 
 function weekLabel(iso) {
-  const start = new Date(iso);
+  const start = parseIsoLocal(iso);
   const end = new Date(start);
   end.setDate(end.getDate() + 6);
   const f = (d) => d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
@@ -4714,16 +4726,16 @@ function useParshiot() {
 
 /** The Saturday that closes the week starting on the given Sunday. */
 function shabbatOfWeek(weekStartIsoStr) {
-  const d = new Date(weekStartIsoStr);
+  const d = parseIsoLocal(weekStartIsoStr);
   d.setDate(d.getDate() + 6);
-  return d.toISOString().slice(0, 10);
+  return isoLocalDate(d);
 }
 
 /** ISO Sunday of next week. */
 function nextWeekStartIso() {
-  const d = new Date(weekStartIso());
+  const d = parseIsoLocal(weekStartIso());
   d.setDate(d.getDate() + 7);
-  return d.toISOString().slice(0, 10);
+  return isoLocalDate(d);
 }
 
 function HebrewCalendarWidget() {
@@ -4836,14 +4848,12 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const { holidays } = useHebrewHolidays();
 
   function dateForWeekdayIndex(idx) {
-    const now = new Date();
-    const diff = idx - now.getDay();
-    const d = new Date(now);
-    d.setDate(now.getDate() + diff);
+    const d = parseIsoLocal(targetWeekStart);
+    d.setDate(d.getDate() + idx);
     return d;
   }
   function holidayForDate(d) {
-    const iso = d.toISOString().slice(0, 10);
+    const iso = isoLocalDate(d);
     return holidays.find((h) => h.date.slice(0, 10) === iso);
   }
 
@@ -5410,6 +5420,122 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     }
   }
 
+  /* WhatsApp can't render the print table, so the menu goes out as plain text
+     with *bold* day headers. Days with nothing scheduled are skipped. */
+  function weeklyMenuText() {
+    const title = parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי";
+    const lines = [`*${title}*`, weekLabel(targetWeekStart), ""];
+    let hasAny = false;
+
+    WEEK_DAYS.forEach(([dayKey, dayLabel], idx) => {
+      const d = parseIsoLocal(targetWeekStart);
+      d.setDate(d.getDate() + idx);
+      const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+
+      const dayLines = [];
+      MEAL_SLOTS.forEach(([slotKey, slotLabel]) => {
+        const slotLines = (dishTypes || [])
+          .map((dt) => {
+            const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+            const m = menuItems.find((mi) => mi.id === id);
+            return m ? `   ${dt.name}: ${m.name}` : null;
+          })
+          .filter(Boolean);
+        if (slotLines.length) {
+          dayLines.push(`ארוחת ${slotLabel}:`);
+          dayLines.push(...slotLines);
+        }
+      });
+
+      if (dayLines.length) {
+        hasAny = true;
+        lines.push(`*${dayLabel} · ${dateStr}*`);
+        lines.push(...dayLines);
+        lines.push("");
+      }
+    });
+
+    return hasAny ? lines.join("\n").trim() : "";
+  }
+
+  function sendWeeklyMenuWhatsApp() {
+    const text = weeklyMenuText();
+    if (!text) return showToast("לא שובצו מנות לשבוע הזה");
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+  }
+
+  async function sendWeeklyMenuToGroup() {
+    const text = weeklyMenuText();
+    if (!text) return showToast("לא שובצו מנות לשבוע הזה");
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("התפריט הועתק - פותח את הקבוצה, החזק בתיבת ההודעה והדבק");
+    } catch (e) {
+      showToast("פותח את הקבוצה - העתק את התפריט ידנית");
+    }
+    window.open(settings.whatsappGroupLink.trim(), "_blank");
+  }
+
+  function buildWeeklyMenuImage() {
+    return renderWeeklyMenuPng({
+      title: parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי",
+      subtitle: weekLabel(targetWeekStart),
+      days: WEEK_DAYS,
+      types: dishTypes || [],
+      slots: MEAL_SLOTS,
+      weeklyMenu,
+      menuItems,
+      weekStart: targetWeekStart,
+    });
+  }
+
+  /* Shares the menu as a picture. navigator.share must run inside the user
+     gesture, so the image is built synchronously before any await. */
+  async function sendWeeklyMenuImage() {
+    let dataUrl = "";
+    try {
+      dataUrl = buildWeeklyMenuImage();
+    } catch (e) {
+      console.error("could not draw the menu image", e);
+      return showToast("שגיאה ביצירת התמונה - נסה 'שלח תפריט בוואטסאפ' כטקסט");
+    }
+    if (!dataUrl) return showToast("לא שובצו מנות לשבוע הזה");
+
+    const caption = `${parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי"} · ${weekLabel(targetWeekStart)}`;
+    let file = null;
+    try {
+      file = dataUrlToFile(dataUrl, "weekly-menu.png");
+    } catch (e) {
+      console.error("could not build file from the drawn image", e);
+    }
+
+    // canShare often reports false inside an installed PWA even when sharing works,
+    // so try richest-first and only use it to skip payloads it explicitly rejects.
+    if (file && navigator.share) {
+      const attempts = [
+        { files: [file], text: caption, title: caption },
+        { files: [file], text: caption },
+        { files: [file] },
+      ];
+      for (const payload of attempts) {
+        if (navigator.canShare && !navigator.canShare(payload)) continue;
+        try {
+          await navigator.share(payload);
+          return;
+        } catch (e) {
+          if (e && e.name === "AbortError") return; // user closed the share sheet
+          console.error("share attempt failed", payload, e);
+        }
+      }
+    }
+
+    // No share support: download the picture and open WhatsApp for manual attaching.
+    if (!navigator.share) showToast("הדפדפן לא תומך בשיתוף - התמונה תרד לצירוף ידני");
+    downloadDataUrl(dataUrl, "weekly-menu.png");
+    window.open(`https://wa.me/?text=${encodeURIComponent(caption)}`, "_blank");
+    showToast("התמונה ירדה - צרף אותה בוואטסאפ ידנית");
+  }
+
   /* Print layout mirrors the Excel sheet this replaced:
      rows = dish types (מנה עיקרית / תוספת / ירקנית), columns = days.
      One table per meal slot. */
@@ -5420,7 +5546,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     function tableFor(slotKey, slotLabel) {
       const header = days
         .map(([, label], idx) => {
-          const d = new Date(targetWeekStart);
+          const d = parseIsoLocal(targetWeekStart);
           d.setDate(d.getDate() + idx);
           const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
           return `<th>${label}<div class="date">${dateStr}</div></th>`;
@@ -5929,6 +6055,32 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               >
                 🖨️ הדפס תפריט שבועי
               </button>
+
+              <button
+                onClick={sendWeeklyMenuImage}
+                className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
+                style={{ background: "#25D366", color: "#fff" }}
+              >
+                🖼️ שלח תפריט כתמונה
+              </button>
+
+              <button
+                onClick={sendWeeklyMenuWhatsApp}
+                className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
+                style={{ background: "#fff", color: "#128C7E", border: "1px solid #128C7E" }}
+              >
+                💬 שלח כטקסט במקום
+              </button>
+
+              {(settings?.whatsappGroupLink || "").trim() && (
+                <button
+                  onClick={sendWeeklyMenuToGroup}
+                  className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
+                  style={{ background: "#128C7E", color: "#fff" }}
+                >
+                  👥 שלח לקבוצה הקבועה (הדבקה ידנית)
+                </button>
+              )}
             </div>
 
             <div className="flex gap-2 mb-3">
@@ -5962,6 +6114,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                     dishTypes={dishTypes}
                     slotKey={slotKey}
                     slotLabel={slotLabel}
+                    weekStart={targetWeekStart}
                   />
                 ))}
               </>
@@ -6805,6 +6958,169 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
  * This matters: navigator.share() only works inside a user gesture, and awaiting
  * fetch(dataUrl) first would break the gesture chain and make the share fail.
  */
+/* Renders the weekly menu as a PNG mirroring the print layout (rows = dish types,
+   columns = days, right-to-left). Drawn straight onto a canvas so the app needs
+   no extra npm dependency - the whole feature stays inside this file. */
+function renderWeeklyMenuPng({ title, subtitle, days, types, slots, weeklyMenu, menuItems, weekStart }) {
+  const S = 2;                 // supersample so text stays sharp on phone screens
+  const PAD = 30;
+  const LABEL_W = 140;
+  const COL_W = 155;
+  const HEAD_H = 58;
+  const ROW_PAD = 18;
+  const LINE_H = 20;
+  const TITLE_BLOCK = 84;
+  const SLOT_H = 44;
+  const TABLE_GAP = 28;
+
+  const FONT_TITLE = "bold 26px Arial, sans-serif";
+  const FONT_SUB = "15px Arial, sans-serif";
+  const FONT_SLOT = "bold 19px Arial, sans-serif";
+  const FONT_DAY = "bold 17px Arial, sans-serif";
+  const FONT_DATE = "12px Arial, sans-serif";
+  const FONT_ROWHEAD = "bold 15px Arial, sans-serif";
+  const FONT_CELL = "15px Arial, sans-serif";
+
+  const BLUE = "#2E86C4";
+  const ROWHEAD_BG = "#D6E7F5";
+  const STRIPE = "#F5F9FD";
+  const BORDER = "#444444";
+
+  const width = PAD * 2 + LABEL_W + COL_W * days.length;
+  const meas = document.createElement("canvas").getContext("2d");
+
+  function wrapText(text, maxW, font) {
+    meas.font = font;
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    if (!words.length) return [];
+    const lines = [];
+    let cur = words[0];
+    for (let i = 1; i < words.length; i++) {
+      const test = `${cur} ${words[i]}`;
+      if (meas.measureText(test).width <= maxW) cur = test;
+      else { lines.push(cur); cur = words[i]; }
+    }
+    lines.push(cur);
+    return lines;
+  }
+
+  // ---- Plan the layout first so the canvas can be sized exactly. ----
+  const plan = [];
+  slots.forEach(([slotKey, slotLabel]) => {
+    const used = days.some(([dayKey]) => types.some((dt) => weeklyMenu[dayKey]?.[slotKey]?.[dt.id]));
+    if (!used) return; // skip a meal nobody planned, same as the printout
+
+    const rows = types.map((dt) => {
+      const cells = days.map(([dayKey]) => {
+        const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+        const m = menuItems.find((mi) => mi.id === id);
+        return m ? wrapText(m.name, COL_W - 14, FONT_CELL) : [];
+      });
+      const headLines = wrapText(dt.name, LABEL_W - 16, FONT_ROWHEAD);
+      const maxLines = Math.max(1, headLines.length, ...cells.map((c) => c.length || 1));
+      return { headLines, cells, height: maxLines * LINE_H + ROW_PAD };
+    });
+
+    plan.push({ slotLabel, rows });
+  });
+
+  if (!plan.length) return "";
+
+  let height = PAD + TITLE_BLOCK;
+  plan.forEach((t) => {
+    height += SLOT_H + HEAD_H + t.rows.reduce((s, r) => s + r.height, 0) + TABLE_GAP;
+  });
+  height += PAD - TABLE_GAP;
+
+  // ---- Draw ----
+  const canvas = document.createElement("canvas");
+  canvas.width = width * S;
+  canvas.height = height * S;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(S, S);
+  try { ctx.direction = "rtl"; } catch (e) { /* older browsers ignore this */ }
+
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+
+  ctx.fillStyle = "#111111";
+  ctx.font = FONT_TITLE;
+  ctx.fillText(title, width / 2, PAD + 18);
+  ctx.fillStyle = "#666666";
+  ctx.font = FONT_SUB;
+  ctx.fillText(subtitle, width / 2, PAD + 48);
+
+  // Rightmost column is the dish-type label; days run right-to-left after it.
+  const labelX = width - PAD - LABEL_W;
+  const colX = (i) => width - PAD - LABEL_W - (i + 1) * COL_W;
+
+  function cellBox(x, y, w, h, bg) {
+    if (bg) { ctx.fillStyle = bg; ctx.fillRect(x, y, w, h); }
+    ctx.strokeStyle = BORDER;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+  }
+
+  function drawLines(lines, cx, cy, font, color) {
+    ctx.font = font;
+    ctx.fillStyle = color;
+    const total = lines.length;
+    lines.forEach((ln, i) => {
+      ctx.fillText(ln, cx, cy - ((total - 1) * LINE_H) / 2 + i * LINE_H);
+    });
+  }
+
+  let y = PAD + TITLE_BLOCK;
+
+  plan.forEach((table) => {
+    ctx.textAlign = "right";
+    ctx.font = FONT_SLOT;
+    ctx.fillStyle = "#111111";
+    ctx.fillText(`ארוחת ${table.slotLabel}`, width - PAD, y + SLOT_H / 2);
+    ctx.textAlign = "center";
+    y += SLOT_H;
+
+    // header: empty corner over the label column, then a day per column
+    cellBox(labelX, y, LABEL_W, HEAD_H, BLUE);
+    days.forEach(([, label], i) => {
+      const d = parseIsoLocal(weekStart);
+      d.setDate(d.getDate() + i);
+      const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+      const x = colX(i);
+      cellBox(x, y, COL_W, HEAD_H, BLUE);
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = FONT_DAY;
+      ctx.fillText(label, x + COL_W / 2, y + HEAD_H / 2 - 8);
+      ctx.font = FONT_DATE;
+      ctx.fillText(dateStr, x + COL_W / 2, y + HEAD_H / 2 + 12);
+    });
+    y += HEAD_H;
+
+    table.rows.forEach((row, rIdx) => {
+      const h = row.height;
+      cellBox(labelX, y, LABEL_W, h, ROWHEAD_BG);
+      ctx.textAlign = "right";
+      drawLines(row.headLines, width - PAD - 10, y + h / 2, FONT_ROWHEAD, "#111111");
+      ctx.textAlign = "center";
+
+      const stripe = rIdx % 2 === 1 ? STRIPE : "#FFFFFF";
+      row.cells.forEach((lines, i) => {
+        const x = colX(i);
+        cellBox(x, y, COL_W, h, stripe);
+        if (lines.length) drawLines(lines, x + COL_W / 2, y + h / 2, FONT_CELL, "#111111");
+      });
+      y += h;
+    });
+
+    y += TABLE_GAP;
+  });
+
+  return canvas.toDataURL("image/png");
+}
+
 function dataUrlToFile(dataUrl, filename) {
   const [header, base64] = String(dataUrl).split(",");
   const mime = (header.match(/:(.*?);/) || [])[1] || "image/jpeg";
@@ -7243,7 +7559,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
         <UsersAdmin users={users} updateUserProfile={updateUserProfile} deleteUserProfile={deleteUserProfile} showToast={showToast} currentUser={currentUser} settings={settings} persistSettings={persistSettings} taskCategories={taskCategories} />
       )}
       {section === "menu" && (
-        <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} dishTypes={dishTypes} />
+        <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} persistProducts={persistProducts} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} dishTypes={dishTypes} />
       )}
       {section === "dishtypes" && (
         <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} />
@@ -9757,7 +10073,36 @@ function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
   );
 }
 
-function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMenu, persistWeeklyMenu, dishTypes }) {
+function MenuAdmin({ menuItems, persistMenuItems, products, persistProducts, showToast, weeklyMenu, persistWeeklyMenu, dishTypes }) {
+  /* Adds a missing product straight to inventory without leaving the meal being built. */
+  async function quickAddProduct(rawName) {
+    const name = (rawName || "").trim();
+    if (!name) return null;
+    const existing = (products || []).find((p) => p.name === name);
+    if (existing) return existing;
+    if (!persistProducts) {
+      showToast("לא ניתן להוסיף מוצר מכאן");
+      return null;
+    }
+    const newProduct = {
+      id: genId(),
+      name,
+      barcode: "",
+      quantity: 0,
+      threshold: 1,
+      price: 0,
+      unit: "יח׳",
+      unitsPerCarton: 0,
+      category: "",
+      supplierId: "",
+      unitVisible: true,
+      imageData: null,
+    };
+    await persistProducts([...(products || []), newProduct]);
+    showToast(`"${name}" נוסף למלאי — אפשר להשלים פרטים במסך מוצרים`);
+    return newProduct;
+  }
+
   const emptyEdit = { name: "", category: "בשרי", dishType: "", ingredients: [] };
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState(emptyEdit);
@@ -9785,22 +10130,27 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
   function updateRow(rowId, fields) {
     setRows((r) => r.map((row) => (row.rowId === rowId ? { ...row, ...fields } : row)));
   }
-  function addIngredientToRow(rowId, productId, qty) {
-    if (!productId) return;
+  function addIngredientToRow(rowId) {
     setRows((r) =>
-      r.map((row) => {
-        if (row.rowId !== rowId) return row;
-        if (row.ingredients.some((i) => i.productId === productId)) {
-          showToast("המוצר כבר ברשימה");
-          return row;
-        }
-        return { ...row, ingredients: [...row.ingredients, { productId, qty: Number(qty) }] };
-      })
+      r.map((row) =>
+        row.rowId === rowId
+          ? { ...row, ingredients: [...row.ingredients, { ingId: genId(), label: "", productId: "", qty: 1 }] }
+          : row
+      )
     );
   }
-  function removeIngredientFromRow(rowId, productId) {
+  function updateIngredientInRow(rowId, key, fields) {
     setRows((r) =>
-      r.map((row) => (row.rowId === rowId ? { ...row, ingredients: row.ingredients.filter((i) => i.productId !== productId) } : row))
+      r.map((row) =>
+        row.rowId === rowId
+          ? { ...row, ingredients: row.ingredients.map((i) => ((i.ingId || i.productId) === key ? { ...i, ...fields } : i)) }
+          : row
+      )
+    );
+  }
+  function removeIngredientFromRow(rowId, key) {
+    setRows((r) =>
+      r.map((row) => (row.rowId === rowId ? { ...row, ingredients: row.ingredients.filter((i) => (i.ingId || i.productId) !== key) } : row))
     );
   }
 
@@ -9815,7 +10165,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
       name: r.name.trim(),
       category: mealCategory,
       dishType: r.dishType,
-      ingredients: r.ingredients,
+      ingredients: r.ingredients.filter((i) => i.productId),
     }));
     await persistMenuItems([...menuItems, ...created]);
 
@@ -9838,12 +10188,13 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
     setEditingId(m.id);
   }
   function addEditIngredient() {
-    if (!editIngProductId) return;
-    if (editForm.ingredients.some((i) => i.productId === editIngProductId)) return showToast("המוצר כבר ברשימה");
-    setEditForm({ ...editForm, ingredients: [...editForm.ingredients, { productId: editIngProductId, qty: Number(editIngQty) }] });
+    setEditForm((f) => ({ ...f, ingredients: [...f.ingredients, { ingId: genId(), label: "", productId: "", qty: 1 }] }));
   }
-  function removeEditIngredient(productId) {
-    setEditForm({ ...editForm, ingredients: editForm.ingredients.filter((i) => i.productId !== productId) });
+  function updateEditIngredient(key, fields) {
+    setEditForm((f) => ({ ...f, ingredients: f.ingredients.map((i) => ((i.ingId || i.productId) === key ? { ...i, ...fields } : i)) }));
+  }
+  function removeEditIngredient(key) {
+    setEditForm((f) => ({ ...f, ingredients: f.ingredients.filter((i) => (i.ingId || i.productId) !== key) }));
   }
   async function saveEdit() {
     if (!editForm.name.trim()) return showToast("יש להזין שם מנה");
@@ -9897,18 +10248,46 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
               )}
               <button onClick={() => removeRow(row.rowId)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕ הסר שורה</button>
             </div>
-            <input
-              value={row.name}
-              onChange={(e) => updateRow(row.rowId, { name: e.target.value })}
-              placeholder="שם המנה"
-              className="p-2 rounded-xl border w-full mb-2"
-              style={{ borderColor: C.kraftDark }}
-            />
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>המנה (מהמלאי) — הבחירה היא גם השם וגם המוצר</label>
+            {(() => {
+              const mainIng = findMainIngredient(row.ingredients, row.name, products);
+              const mainKey = mainIng ? (mainIng.ingId || mainIng.productId) : null;
+              return (
+                <div className="flex gap-2 mb-3">
+                  <div className="flex-1">
+                    <ProductAutocomplete
+                      products={products}
+                      value={row.name}
+                      valueMode="name"
+                      bold
+                      placeholder="הקלד אות לחיפוש מנה..."
+                      onCreateProduct={quickAddProduct}
+                      onPick={(p) =>
+                        updateRow(row.rowId, {
+                          name: p.name,
+                          ingredients: applyMainProduct(row.ingredients, row.name, products, p),
+                        })
+                      }
+                    />
+                  </div>
+                  <input
+                    type="number"
+                    value={mainIng ? mainIng.qty : 1}
+                    onChange={(e) => mainKey && updateIngredientInRow(row.rowId, mainKey, { qty: Number(e.target.value) })}
+                    disabled={!mainIng}
+                    className="w-14 p-2 rounded-xl border text-center text-sm"
+                    style={{ borderColor: C.kraftDark, background: mainIng ? "#fff" : C.paper }}
+                  />
+                </div>
+              );
+            })()}
             <RowIngredientPicker
               products={products}
-              ingredients={row.ingredients}
-              onAdd={(pid, qty) => addIngredientToRow(row.rowId, pid, qty)}
-              onRemove={(pid) => removeIngredientFromRow(row.rowId, pid)}
+              ingredients={(row.ingredients || []).filter((i) => i !== findMainIngredient(row.ingredients, row.name, products))}
+              onAdd={() => addIngredientToRow(row.rowId)}
+              onCreateProduct={quickAddProduct}
+              onUpdate={(key, fields) => updateIngredientInRow(row.rowId, key, fields)}
+              onRemove={(key) => removeIngredientFromRow(row.rowId, key)}
             />
           </div>
         ))}
@@ -9938,7 +10317,40 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
       {editingId && (
         <ShelfTag accent={C.sage} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
           <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>עריכת מנה</div>
-          <input value={editForm.name} onChange={(e) => setEditForm({ ...editForm, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} placeholder="שם המנה" />
+          <label className="text-xs font-bold block" style={{ color: C.steel }}>המנה (מהמלאי) — הבחירה היא גם השם וגם המוצר</label>
+          {(() => {
+            const mainIng = findMainIngredient(editForm.ingredients, editForm.name, products);
+            const mainKey = mainIng ? (mainIng.ingId || mainIng.productId) : null;
+            return (
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <ProductAutocomplete
+                    products={products}
+                    value={editForm.name}
+                    valueMode="name"
+                    bold
+                    placeholder="הקלד אות לחיפוש מנה..."
+                    onCreateProduct={quickAddProduct}
+                    onPick={(p) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        name: p.name,
+                        ingredients: applyMainProduct(f.ingredients, f.name, products, p),
+                      }))
+                    }
+                  />
+                </div>
+                <input
+                  type="number"
+                  value={mainIng ? mainIng.qty : 1}
+                  onChange={(e) => mainKey && updateEditIngredient(mainKey, { qty: Number(e.target.value) })}
+                  disabled={!mainIng}
+                  className="w-14 p-2 rounded-xl border text-center text-sm"
+                  style={{ borderColor: C.kraftDark, background: mainIng ? "#fff" : C.paper }}
+                />
+              </div>
+            );
+          })()}
           <select value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
             <option value="בשרי">בשרי</option>
             <option value="חלבי">חלבי</option>
@@ -9948,24 +10360,33 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
             <option value="">בחר סוג מנה</option>
             {dishTypes.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
           </select>
-          <div className="flex gap-2">
-            <select value={editIngProductId} onChange={(e) => setEditIngProductId(e.target.value)} className="flex-1 p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
-              {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-            <input type="number" value={editIngQty} onChange={(e) => setEditIngQty(e.target.value)} className="w-16 p-2 rounded-2xl border text-center" style={{ borderColor: C.kraftDark }} />
-            <button onClick={addEditIngredient} className="px-3 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>+</button>
-          </div>
-          <div className="flex flex-col gap-1">
-            {editForm.ingredients.map((ing) => {
-              const p = products.find((pp) => pp.id === ing.productId);
+          <label className="text-xs font-bold block" style={{ color: C.steel }}>תוספות למנה</label>
+          <div className="flex flex-col gap-2">
+            {editForm.ingredients
+              .filter((i) => i !== findMainIngredient(editForm.ingredients, editForm.name, products))
+              .map((ing) => {
+              const key = ing.ingId || ing.productId;
               return (
-                <div key={ing.productId} className="flex justify-between items-center text-sm p-1.5 rounded-xl" style={{ background: C.paper }}>
-                  <span>{p ? p.name : "מוצר לא ידוע"} — {ing.qty} {p?.unit}</span>
-                  <button onClick={() => removeEditIngredient(ing.productId)} className="text-xs px-2 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                <div key={key} className="p-2 rounded-xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      <ProductAutocomplete
+                        products={products}
+                        value={ing.productId}
+                        onCreateProduct={quickAddProduct}
+                        onChange={(pid) => updateEditIngredient(key, { productId: pid })}
+                      />
+                    </div>
+                    <input type="number" value={ing.qty} onChange={(e) => updateEditIngredient(key, { qty: Number(e.target.value) })} className="w-14 p-2 rounded-xl border text-center text-sm" style={{ borderColor: C.kraftDark }} />
+                    <button onClick={() => removeEditIngredient(key)} className="px-3 rounded-xl font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                  </div>
                 </div>
               );
             })}
           </div>
+          <button onClick={addEditIngredient} className="w-full py-2 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+            + הוסף תוספת
+          </button>
           <div className="flex gap-2">
             <button onClick={saveEdit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>שמור שינויים</button>
             <button onClick={() => setEditingId(null)} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
@@ -9988,7 +10409,8 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
                 <div className="text-xs mt-1" style={{ color: C.steel }}>
                   {m.ingredients.map((ing) => {
                     const p = products.find((pp) => pp.id === ing.productId);
-                    return p ? `${p.name} (${ing.qty})` : "";
+                    if (!p) return "";
+                    return ing.label ? `${ing.label}: ${p.name} (${ing.qty})` : `${p.name} (${ing.qty})`;
                   }).filter(Boolean).join(" · ")}
                 </div>
               </div>
@@ -10004,30 +10426,146 @@ function MenuAdmin({ menuItems, persistMenuItems, products, showToast, weeklyMen
   );
 }
 
-function RowIngredientPicker({ products, ingredients, onAdd, onRemove }) {
-  const [productId, setProductId] = useState(products[0]?.id || "");
-  const [qty, setQty] = useState(1);
+/* The "main" ingredient is the one whose product IS the dish name.
+   Falls back to matching by name so meals saved before this change still work. */
+function findMainIngredient(ingredients, dishName, products) {
+  const list = ingredients || [];
+  return (
+    list.find((i) => i.main) ||
+    (dishName ? list.find((i) => (products || []).find((p) => p.id === i.productId)?.name === dishName) : null) ||
+    null
+  );
+}
+
+/* Picking a product sets BOTH the dish name and the dish's main product. */
+function applyMainProduct(ingredients, dishName, products, product) {
+  const list = ingredients || [];
+  const current = findMainIngredient(list, dishName, products);
+  if (current) {
+    const key = current.ingId || current.productId;
+    return list.map((i) => ((i.ingId || i.productId) === key ? { ...i, main: true, productId: product.id } : i));
+  }
+  return [{ ingId: genId(), main: true, label: "", productId: product.id, qty: 1 }, ...list];
+}
+
+/* Type-ahead product picker: type a letter and matching products appear below. */
+function ProductAutocomplete({ products, value, onChange, onPick, onCreateProduct, valueMode = "id", placeholder = "הקלד לחיפוש מוצר...", bold = false }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const selected =
+    valueMode === "id"
+      ? (products || []).find((p) => p.id === value)
+      : (products || []).find((p) => p.name === value);
+
+  const display = open ? q : (selected ? selected.name : (valueMode === "name" && value ? value : ""));
+
+  const matches = (products || [])
+    .filter((p) => !q.trim() || p.name.includes(q.trim()))
+    .slice(0, 30);
+
+  function pick(p) {
+    if (onPick) onPick(p);
+    else onChange(valueMode === "id" ? p.id : p.name);
+    setQ("");
+    setOpen(false);
+  }
+
+  const typed = q.trim();
+  const hasExact = (products || []).some((p) => p.name === typed);
+
+  async function createAndPick() {
+    if (!typed || !onCreateProduct) return;
+    const created = await onCreateProduct(typed);
+    if (created) pick(created);
+  }
 
   return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={display}
+        onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+        onFocus={() => { setQ(""); setOpen(true); }}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        placeholder={placeholder}
+        className={`p-2 rounded-xl border w-full text-sm ${bold ? "font-bold" : ""}`}
+        style={{ borderColor: C.kraftDark, background: "#fff", fontSize: bold ? "1rem" : undefined }}
+      />
+      {open && (
+        <div
+          style={{
+            position: "absolute", top: "100%", right: 0, left: 0, zIndex: 40,
+            background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 12,
+            marginTop: 4, maxHeight: 200, overflowY: "auto",
+            boxShadow: "0 6px 18px rgba(20,33,61,0.15)",
+          }}
+        >
+          {matches.length === 0 && !(typed && onCreateProduct) && (
+            <div className="text-xs p-3 text-center" style={{ color: C.steel }}>לא נמצא מוצר תואם</div>
+          )}
+          {matches.map((p) => (
+            <button
+              key={p.id}
+              onMouseDown={(e) => { e.preventDefault(); pick(p); }}
+              className="w-full text-right p-2.5 text-sm"
+              style={{ background: "#fff", color: C.ink, borderBottom: `1px solid ${C.paper}` }}
+            >
+              {p.name}
+              {p.unit && <span style={{ color: C.steel }}> · {p.unit}</span>}
+            </button>
+          ))}
+          {typed && !hasExact && onCreateProduct && (
+            <button
+              onMouseDown={(e) => { e.preventDefault(); createAndPick(); }}
+              className="w-full text-right p-3 text-sm font-bold"
+              style={{ background: C.paper, color: C.sage, borderTop: `1px solid ${C.kraftDark}` }}
+            >
+              ➕ הוסף "{typed}" למלאי ובחר
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RowIngredientPicker({ products, ingredients, onAdd, onUpdate, onRemove, onCreateProduct }) {
+  return (
     <div>
-      <div className="flex gap-2 mb-2">
-        <select value={productId} onChange={(e) => setProductId(e.target.value)} className="flex-1 p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark }}>
-          {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select>
-        <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} className="w-14 p-2 rounded-xl border text-center text-sm" style={{ borderColor: C.kraftDark }} />
-        <button onClick={() => onAdd(productId, qty)} className="px-3 rounded-xl font-bold" style={{ background: C.sage, color: "#fff" }}>+</button>
-      </div>
-      <div className="flex flex-col gap-1">
+      <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תוספות למנה</label>
+      <div className="flex flex-col gap-2 mb-2">
+        {ingredients.length === 0 && (
+          <p className="text-xs" style={{ color: C.steel }}>אין תוספות. אפשר להוסיף בכפתור למטה.</p>
+        )}
         {ingredients.map((ing) => {
-          const p = products.find((pp) => pp.id === ing.productId);
+          const key = ing.ingId || ing.productId;
           return (
-            <div key={ing.productId} className="flex justify-between items-center text-xs p-1.5 rounded-xl" style={{ background: "#fff" }}>
-              <span>{p ? p.name : "מוצר לא ידוע"} — {ing.qty} {p?.unit}</span>
-              <button onClick={() => onRemove(ing.productId)} className="text-xs px-2 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+            <div key={key} className="p-2 rounded-xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <ProductAutocomplete
+                    products={products}
+                    value={ing.productId}
+                    onCreateProduct={onCreateProduct}
+                    onChange={(pid) => onUpdate(key, { productId: pid })}
+                  />
+                </div>
+                <input
+                  type="number"
+                  value={ing.qty}
+                  onChange={(e) => onUpdate(key, { qty: Number(e.target.value) })}
+                  className="w-14 p-2 rounded-xl border text-center text-sm"
+                  style={{ borderColor: C.kraftDark }}
+                />
+                <button onClick={() => onRemove(key)} className="px-3 rounded-xl font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+              </div>
             </div>
           );
         })}
       </div>
+      <button onClick={onAdd} className="w-full py-2 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+        + הוסף תוספת
+      </button>
     </div>
   );
 }
