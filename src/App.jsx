@@ -4790,9 +4790,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [manualEmail, setManualEmail] = useState(settings.supplierEmail || "");
   const [channel, setChannel] = useState("whatsapp"); // "whatsapp" | "sms" | "email"
   const [orderMode, setOrderMode] = useState("stock"); // "stock" | "menu" | "week"
-  const [qtys, setQtys] = useState(() =>
-    Object.fromEntries(lowStock.map((p) => [p.id, Math.max(1, Number(p.threshold) * 2 - Number(p.quantity))]))
-  );
+  const [qtys, setQtys] = useState({}); // start empty - no quantity is pre-filled; the user types what they want
   const [selectedMenuIds, setSelectedMenuIds] = useState([]);
   const [portions, setPortions] = useState(1);
   const [weekPortions, setWeekPortions] = useState(1);
@@ -4812,32 +4810,67 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [parshaOverride, setParshaOverride] = useState("");
 
   const [drafts, setDrafts] = useState([]);
+  const [editingDraftId, setEditingDraftId] = useState(null); // which saved draft the review sheet is editing (null = brand-new order)
   useEffect(() => {
     loadKey(KEYS.orderDrafts, []).then((d) => setDrafts(Array.isArray(d) ? d : [])).catch(() => {});
   }, []);
   async function persistDrafts(next) { setDrafts(next); await saveKey(KEYS.orderDrafts, next); }
   function saveDraftFromPending() {
     if (!pendingOrder) return;
-    const draft = {
-      id: genId(),
-      createdAt: Date.now(),
-      by: currentUser?.name || "",
-      supplierId: pendingOrder.supplierId,
-      title: pendingOrder.title || "הזמנה",
-      items: pendingOrder.items.map(({ product, qty }) => ({ productId: product.id, name: product.name, unit: product.unit, price: Number(product.price || 0), qty })),
-    };
-    persistDrafts([draft, ...drafts]);
+    const items = pendingOrder.items
+      .filter(({ qty }) => Number(qty) > 0)
+      .map(({ product, qty }) => ({ productId: product.id, name: product.name, unit: product.unit, price: Number(product.price || 0), qty }));
+    if (items.length === 0) { showToast("אין מוצרים לשמירה - הכמות של כולם אפס"); return; }
+    if (editingDraftId) {
+      // Editing an existing draft: update it in place instead of creating a duplicate.
+      persistDrafts(
+        drafts.map((d) =>
+          d.id === editingDraftId
+            ? { ...d, supplierId: pendingOrder.supplierId, title: pendingOrder.title || "הזמנה", items, updatedAt: Date.now() }
+            : d
+        )
+      );
+      showToast("הטיוטה עודכנה");
+    } else {
+      const draft = {
+        id: genId(),
+        createdAt: Date.now(),
+        by: currentUser?.name || "",
+        supplierId: pendingOrder.supplierId,
+        title: pendingOrder.title || "הזמנה",
+        items,
+      };
+      persistDrafts([draft, ...drafts]);
+      showToast("ההזמנה נשמרה כטיוטה");
+    }
     setPendingOrder(null);
-    showToast("ההזמנה נשמרה כטיוטה");
+    setEditingDraftId(null);
   }
   function loadDraft(draft) {
     const items = draft.items.map((it) => ({
       product: products.find((p) => p.id === it.productId) || { id: it.productId, name: it.name, unit: it.unit, price: it.price },
       qty: it.qty,
     }));
+    setEditingDraftId(draft.id);
     setPendingOrder({ items, supplierId: draft.supplierId, title: draft.title || "הזמנה", isRequest: !mayApprove, sourceLabel: draft.title || "הזמנה" });
   }
   function deleteDraft(id) { persistDrafts(drafts.filter((d) => d.id !== id)); }
+  // Close the review sheet without saving, and forget which draft we were editing.
+  function closePendingSheet() { setPendingOrder(null); setEditingDraftId(null); }
+  // Edit a line inside the review sheet (used for both new orders and loaded drafts).
+  function updatePendingQty(productId, nextQty) {
+    setPendingOrder((po) => {
+      if (!po) return po;
+      const q = Math.max(0, Math.round(Number(nextQty) || 0));
+      return { ...po, items: po.items.map((it) => (it.product.id === productId ? { ...it, qty: q } : it)) };
+    });
+  }
+  function removePendingItem(productId) {
+    setPendingOrder((po) => {
+      if (!po) return po;
+      return { ...po, items: po.items.filter((it) => it.product.id !== productId) };
+    });
+  }
   const parshiot = useParshiot();
 
   // The menu you plan is normally for the coming week, so that's the default.
@@ -4858,7 +4891,13 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   }
 
   useEffect(() => {
-    setQtys(Object.fromEntries(lowStock.map((p) => [p.id, qtys[p.id] ?? Math.max(1, Number(p.threshold) * 2 - Number(p.quantity))])));
+    // Keep only quantities the user actually typed for items still low on stock.
+    // Don't auto-fill any suggested amount - boxes stay empty until the user enters a number.
+    setQtys((prev) => {
+      const next = {};
+      lowStock.forEach((p) => { if (prev[p.id] != null) next[p.id] = prev[p.id]; });
+      return next;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lowStock.length]);
 
@@ -5199,12 +5238,14 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       dest = channel === "email" ? resolvedEmail() : resolvedPhone();
     }
 
-    const total = items.reduce((sum, { product, qty }) => sum + Number(product.price || 0) * Number(qty), 0);
-    const messageText = items.map(({ product, qty }) => `- ${qty} ${product.unit} ${product.name}`).join("\n");
+    const liveItems = items.filter(({ qty }) => Number(qty) > 0);
+    const total = liveItems.reduce((sum, { product, qty }) => sum + Number(product.price || 0) * Number(qty), 0);
+    const messageText = liveItems.map(({ product, qty }) => `- ${qty} ${product.unit} ${product.name}`).join("\n");
+    const isEmpty = liveItems.length === 0;
     const missingDest = !isRequest && !dest;
 
     return (
-      <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setPendingOrder(null)}>
+      <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={closePendingSheet}>
         <div
           className="w-full wh-body"
           style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "88vh", overflowY: "auto", padding: 16 }}
@@ -5214,11 +5255,11 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           <div className="flex justify-between items-start mb-3">
             <div>
               <div className="wh-display font-black text-lg" style={{ color: C.ink }}>
-                {isRequest ? "סיכום בקשת הזמנה" : "סיכום הזמנה"}
+                {editingDraftId ? "עריכת טיוטה" : isRequest ? "סיכום בקשת הזמנה" : "סיכום הזמנה"}
               </div>
               <div className="text-xs" style={{ color: C.steel }}>{title}</div>
             </div>
-            <button onClick={() => setPendingOrder(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
+            <button onClick={closePendingSheet} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
               ביטול
             </button>
           </div>
@@ -5263,38 +5304,73 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
             </ShelfTag>
           )}
 
-          {/* Line by line */}
+          {/* Line by line - editable: change quantity or remove a product before sending/saving */}
           <div className="rounded-2xl overflow-hidden mb-3" style={{ border: `1px solid ${C.kraftDark}` }}>
-            <div className="flex text-xs font-bold px-3 py-2" style={{ background: C.ink, color: "#fff" }}>
+            <div className="flex items-center text-xs font-bold px-3 py-2" style={{ background: C.ink, color: "#fff" }}>
               <span className="flex-1">מוצר</span>
-              <span style={{ width: 70, textAlign: "center" }}>כמות</span>
-              <span style={{ width: 70, textAlign: "left" }}>מחיר</span>
+              <span style={{ width: 118, textAlign: "center" }}>כמות</span>
+              <span style={{ width: 56, textAlign: "left" }}>מחיר</span>
+              <span style={{ width: 28 }} />
             </div>
             {items.map(({ product, qty }, i) => (
               <div
                 key={product.id}
-                className="flex items-center px-3 py-2 text-sm"
-                style={{ background: i % 2 ? "#F7FAFD" : "#fff", borderTop: `1px solid ${C.kraftDark}` }}
+                className="flex items-center px-2 py-2 text-sm"
+                style={{ background: i % 2 ? "#F7FAFD" : "#fff", borderTop: `1px solid ${C.kraftDark}`, opacity: Number(qty) > 0 ? 1 : 0.45 }}
               >
-                <span className="flex-1 font-bold" style={{ color: C.ink }}>{product.name}</span>
-                <span style={{ width: 70, textAlign: "center", color: C.ink }}>
-                  {qty} {product.unit}
-                </span>
-                <span style={{ width: 70, textAlign: "left", color: C.steel }}>
+                <span className="flex-1 font-bold px-1" style={{ color: C.ink }}>{product.name}</span>
+                <div className="flex items-center gap-1" style={{ width: 118, justifyContent: "center" }}>
+                  <button
+                    onClick={() => updatePendingQty(product.id, Number(qty) - 1)}
+                    className="rounded-full font-bold flex items-center justify-center"
+                    style={{ width: 26, height: 26, background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                  >
+                    −
+                  </button>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    value={Number(qty) === 0 ? "" : qty}
+                    onChange={(e) => updatePendingQty(product.id, e.target.value)}
+                    className="rounded-xl text-center font-bold"
+                    style={{ width: 40, height: 28, border: `1px solid ${C.kraftDark}`, color: C.ink, background: "#fff" }}
+                  />
+                  <button
+                    onClick={() => updatePendingQty(product.id, Number(qty) + 1)}
+                    className="rounded-full font-bold flex items-center justify-center"
+                    style={{ width: 26, height: 26, background: C.ink, color: "#fff", flexShrink: 0 }}
+                  >
+                    +
+                  </button>
+                </div>
+                <span style={{ width: 56, textAlign: "left", color: C.steel, fontSize: 12 }}>
                   ₪{(Number(product.price || 0) * Number(qty)).toFixed(0)}
                 </span>
+                <button
+                  onClick={() => removePendingItem(product.id)}
+                  title="הסר מההזמנה"
+                  className="rounded-full flex items-center justify-center"
+                  style={{ width: 24, height: 24, background: "#fff", color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                >
+                  ✕
+                </button>
               </div>
             ))}
+            {isEmpty && (
+              <div className="px-3 py-3 text-xs text-center" style={{ color: C.stamp, borderTop: `1px solid ${C.kraftDark}` }}>
+                ההזמנה ריקה - הוסף מוצר או העלה כמות
+              </div>
+            )}
             <div className="flex px-3 py-2 text-sm font-bold" style={{ background: "#EFEAFF", borderTop: `2px solid ${C.ink}` }}>
-              <span className="flex-1" style={{ color: C.ink }}>סה"כ {items.length} מוצרים</span>
+              <span className="flex-1" style={{ color: C.ink }}>סה"כ {liveItems.length} מוצרים</span>
               <span style={{ color: C.ink }}>₪{total.toFixed(0)}</span>
             </div>
           </div>
 
-          {!isRequest && (
-            <details className="mb-3">
+          {!isEmpty && (
+            <details className="mb-3" open>
               <summary className="text-xs font-bold cursor-pointer" style={{ color: C.accent }}>
-                תצוגה מקדימה של ההודעה שתישלח
+                👁️ תצוגה מקדימה — {isRequest ? "כך תיראה ההזמנה" : "ההודעה שתישלח"}
               </summary>
               <pre
                 className="text-xs mt-2 p-3 rounded-2xl"
@@ -5308,16 +5384,18 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           <button
             onClick={() => {
               const p = pendingOrder;
+              const sendItems = p.items.filter(({ qty }) => Number(qty) > 0);
               setPendingOrder(null);
-              if (p.isRequest) submitOrderRequest(p.items, p.supplierId, p.sourceLabel);
-              else doSendGroupOrder(p.items, p.title, p.supplierId);
+              setEditingDraftId(null);
+              if (p.isRequest) submitOrderRequest(sendItems, p.supplierId, p.sourceLabel);
+              else doSendGroupOrder(sendItems, p.title, p.supplierId);
             }}
-            disabled={missingDest}
+            disabled={missingDest || isEmpty}
             className="w-full py-3 rounded-2xl wh-display font-bold"
             style={{
-              background: missingDest ? C.kraftDark : isRequest ? C.accent : channelMeta(channel).color,
+              background: missingDest || isEmpty ? C.kraftDark : isRequest ? C.accent : channelMeta(channel).color,
               color: "#fff",
-              opacity: missingDest ? 0.6 : 1,
+              opacity: missingDest || isEmpty ? 0.6 : 1,
             }}
           >
             {isRequest
@@ -5340,7 +5418,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 // wa.me/?text opens WhatsApp with the order already typed; the user
                 // taps the target chat/group (invite links can't carry text at all).
                 window.open(`https://wa.me/?text=${encodeURIComponent(messageText)}`, "_blank");
-                setPendingOrder(null);
+                closePendingSheet();
               }}
               className="w-full py-3 mt-2 rounded-2xl wh-display font-bold"
               style={{ background: "#25D366", color: "#fff" }}
@@ -5359,7 +5437,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                   showToast("פותח את הקבוצה - העתק את ההזמנה מהתצוגה המקדימה");
                 }
                 window.open(settings.whatsappGroupLink.trim(), "_blank");
-                setPendingOrder(null);
+                closePendingSheet();
               }}
               className="w-full py-3 mt-2 rounded-2xl wh-display font-bold"
               style={{ background: "#128C7E", color: "#fff" }}
@@ -5626,10 +5704,10 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
             {drafts.map((d) => (
               <div key={d.id} className="flex items-center gap-2 p-2 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
                 <div className="flex-1">
-                  <div className="text-sm font-bold" style={{ color: C.ink }}>{d.items.length} מוצרים · {new Date(d.createdAt).toLocaleDateString("he-IL")}</div>
-                  <div className="text-xs" style={{ color: C.steel }}>{d.by}</div>
+                  <div className="text-sm font-bold" style={{ color: C.ink }}>{d.items.length} מוצרים · {new Date(d.updatedAt || d.createdAt).toLocaleDateString("he-IL")}</div>
+                  <div className="text-xs" style={{ color: C.steel }}>{d.by}{d.updatedAt ? " · עודכן" : ""}</div>
                 </div>
-                <button onClick={() => loadDraft(d)} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>טען</button>
+                <button onClick={() => loadDraft(d)} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>ערוך</button>
                 <button onClick={() => deleteDraft(d.id)} className="px-3 py-1 rounded-2xl text-sm" style={{ background: C.kraft, color: C.ink }}>מחק</button>
               </div>
             ))}
@@ -5802,7 +5880,6 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 <div className="flex flex-col gap-3 mb-4">
                   {filteredLowStock.map((p) => {
                     const isLow = Number(p.quantity) <= Number(p.threshold);
-                    const defaultQty = isLow ? Math.max(1, Number(p.threshold) * 2 - Number(p.quantity)) : 0;
                     const checked = selectedForOrder.includes(p.id);
                     return (
                       <ShelfTag key={p.id} accent={isLow ? C.stamp : C.sage}>
@@ -5824,7 +5901,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                           </div>
                           <input
                             type="number"
-                            value={(qtys[p.id] ?? defaultQty) === 0 ? "" : (qtys[p.id] ?? defaultQty)}
+                            inputMode="numeric"
+                            placeholder="כמות"
+                            value={qtys[p.id] == null || Number(qtys[p.id]) === 0 ? "" : qtys[p.id]}
                             onChange={(e) => setQtys((q) => ({ ...q, [p.id]: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)) }))}
                             className="w-16 text-center p-2 rounded-2xl border"
                             style={{ borderColor: C.kraftDark }}
