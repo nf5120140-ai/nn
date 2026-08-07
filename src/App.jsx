@@ -6442,10 +6442,22 @@ function fmtRelative(ts) {
   if (days === 1) return "מחר";
   return `בעוד ${days} ימים`;
 }
+// Combine a date string ("2026-08-10") + time string ("14:30") into a local timestamp.
+// Returns null if no date was chosen. Defaults to 09:00 when time is missing.
+function combineDateTime(dateStr, timeStr) {
+  if (!dateStr) return null;
+  const parts = (timeStr || "09:00").split(":");
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  const d = new Date(dateStr);
+  d.setHours(Number.isFinite(h) ? h : 9, Number.isFinite(m) ? m : 0, 0, 0);
+  return d.getTime();
+}
 
 function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
   const [comment, setComment] = useState("");
   const [customDate, setCustomDate] = useState("");
+  const [customTime, setCustomTime] = useState("09:00");
 
   const comments = task.comments || [];
   const assignee = users.find((u) => u.id === task.assignedToId);
@@ -6528,7 +6540,7 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
           ) : (
             <>
               <p className="text-xs mb-2" style={{ color: C.steel }}>
-                תקבל התראה בתאריך שתבחר, כדי לבדוק מה קרה עם המשימה.
+                תקבל התראה בתאריך ובשעה שתבחר, כדי לבדוק מה קרה עם המשימה.
               </p>
               <div className="flex flex-wrap gap-1.5 mb-2">
                 {FOLLOWUP_PRESETS.map(([label, days]) => (
@@ -6542,7 +6554,7 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
                   </button>
                 ))}
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-2 mb-2">
                 <input
                   type="date"
                   value={customDate}
@@ -6550,19 +6562,25 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
                   className="flex-1 p-2 rounded-2xl border text-sm"
                   style={{ borderColor: C.kraftDark }}
                 />
-                <button
-                  onClick={() => {
-                    if (!customDate) return;
-                    const d = new Date(customDate);
-                    d.setHours(9, 0, 0, 0);
-                    setFollowUp(d.getTime());
-                  }}
-                  className="px-4 rounded-2xl font-bold text-sm"
-                  style={{ background: C.mustard, color: C.ink }}
-                >
-                  קבע
-                </button>
+                <input
+                  type="time"
+                  value={customTime}
+                  onChange={(e) => setCustomTime(e.target.value)}
+                  className="p-2 rounded-2xl border text-sm"
+                  style={{ borderColor: C.kraftDark, width: 110 }}
+                />
               </div>
+              <button
+                onClick={() => {
+                  const ts = combineDateTime(customDate, customTime);
+                  if (!ts) return;
+                  setFollowUp(ts);
+                }}
+                className="w-full py-2 rounded-2xl font-bold text-sm"
+                style={{ background: C.mustard, color: C.ink }}
+              >
+                קבע תזכורת
+              </button>
             </>
           )}
         </ShelfTag>
@@ -6957,7 +6975,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
                         color: t.followUpAt < Date.now() ? "#fff" : C.ink,
                       }}
                     >
-                      ⏰ בדיקת המשך {fmtRelative(t.followUpAt)}
+                      ⏰ {t.followUpAt < Date.now() ? "היה אמור: " : "נקבע ל-"}{fmtDateTime(t.followUpAt)} ({fmtRelative(t.followUpAt)})
                     </div>
                   )}
 
@@ -7478,6 +7496,8 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
   const [locationId, setLocationId] = useState("");
   const [imageData, setImageData] = useState(null);
   const [imageBusy, setImageBusy] = useState(false);
+  const [remindDate, setRemindDate] = useState("");
+  const [remindTime, setRemindTime] = useState("09:00");
 
   async function handleImage(e) {
     const file = e.target.files?.[0];
@@ -7538,13 +7558,40 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
         )}
       </div>
 
+      <div style={{ borderTop: `1px solid ${C.kraftDark}`, paddingTop: 10 }}>
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+          ⏰ תזכורת / משימה עתידית (אופציונלי)
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="date"
+            value={remindDate}
+            onChange={(e) => setRemindDate(e.target.value)}
+            className="flex-1 p-2 rounded-2xl border text-sm"
+            style={{ borderColor: C.kraftDark }}
+          />
+          <input
+            type="time"
+            value={remindTime}
+            onChange={(e) => setRemindTime(e.target.value)}
+            className="p-2 rounded-2xl border text-sm"
+            style={{ borderColor: C.kraftDark, width: 110 }}
+          />
+        </div>
+        {remindDate && (
+          <p className="text-xs mt-1" style={{ color: C.steel }}>
+            תישלח התראה בתאריך ובשעה שנבחרו — כך אפשר לקבוע משימה עתידית כבר עכשיו.
+          </p>
+        )}
+      </div>
+
       <div className="flex gap-2">
         <button
           onClick={() => {
             if (!title.trim()) return;
             const loc = (locations || []).find((l) => l.id === locationId);
             const locationLabel = loc ? `${loc.group || "אחר"} · ${loc.name}` : "";
-            onSubmit({ title, description, assignedToId, priority, categoryId, location: locationLabel, locationId, imageData });
+            onSubmit({ title, description, assignedToId, priority, categoryId, location: locationLabel, locationId, imageData, followUpAt: combineDateTime(remindDate, remindTime) });
           }}
           className="flex-1 py-2 rounded-2xl font-bold"
           style={{ background: C.ink, color: C.paper }}
