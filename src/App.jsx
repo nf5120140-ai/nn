@@ -2975,6 +2975,7 @@ function App() {
   const [snoozeTime, setSnoozeTime] = useState("");
   const [adminSection, setAdminSection] = useState(null); // set when a notification points at an admin screen
   const [focusTaskId, setFocusTaskId] = useState(null);   // task to auto-open after tapping a notification
+  const [newTaskSignal, setNewTaskSignal] = useState(0);  // bump to open the "new task" form (header button / home-screen shortcut)
 
   // When a push notification is tapped, the app opens with the target in the URL.
   // Read it once on startup, navigate to the right screen, then clean the URL.
@@ -2984,10 +2985,17 @@ function App() {
       const t = params.get("tab");
       const s = params.get("section");
       const tk = params.get("taskId");
-      if (t || s || tk) {
+      const action = params.get("action");
+      if (t || s || tk || action) {
         if (s) setAdminSection(s);
         if (tk) setFocusTaskId(tk);
-        if (t) setTab(t);
+        if (action === "new-task") {
+          // Opened from the home-screen "add task" shortcut - jump to tasks and open the form.
+          setTab("tasks");
+          setNewTaskSignal((n) => n + 1);
+        } else if (t) {
+          setTab(t);
+        }
         window.history.replaceState({}, "", window.location.pathname);
       }
     } catch (e) { /* ignore */ }
@@ -3707,6 +3715,15 @@ function App() {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => { setTab("tasks"); setNewTaskSignal((n) => n + 1); }}
+            className="text-lg px-2 py-1 rounded-full"
+            style={{ background: "rgba(255,255,255,0.25)", color: "#fff" }}
+            aria-label="הוסף משימה"
+            title="משימה חדשה"
+          >
+            ➕
+          </button>
+          <button
             onClick={() => setShowNotifications((v) => !v)}
             className="relative text-lg px-2 py-1 rounded-full"
             style={{ background: "rgba(255,255,255,0.25)" }}
@@ -3883,6 +3900,7 @@ function App() {
             taskCategories={taskCategories}
             focusTaskId={focusTaskId}
             onFocusConsumed={() => setFocusTaskId(null)}
+            newTaskSignal={newTaskSignal}
           />
         )}
         {tab === "unitrequest" && canRequestFromStock(currentUser) && (
@@ -6643,8 +6661,12 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
   );
 }
 
-function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUser, locations, taskCategories, focusTaskId, onFocusConsumed }) {
+function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUser, locations, taskCategories, focusTaskId, onFocusConsumed, newTaskSignal }) {
   const [showNew, setShowNew] = useState(false);
+  useEffect(() => {
+    // Opened via the header "add task" button or the home-screen shortcut.
+    if (newTaskSignal) setShowNew(true);
+  }, [newTaskSignal]);
   const [filter, setFilter] = useState("open");
   const [employeeFilter, setEmployeeFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
