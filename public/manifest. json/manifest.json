@@ -12,5 +12,16 @@
   "icons": [
     { "src": "/icon-192-v2.png", "sizes": "192x192", "type": "image/png" },
     { "src": "/icon-512-v2.png", "sizes": "512x512", "type": "image/png" }
+  ],
+  "shortcuts": [
+    {
+      "name": "משימה חדשה",
+      "short_name": "משימה",
+      "description": "פתיחת טופס יצירת משימה",
+      "url": "/?action=new-task",
+      "icons": [
+        { "src": "/icon-192-v2.png", "sizes": "192x192", "type": "image/png" }
+      ]
+    }
   ]
 }
