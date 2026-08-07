@@ -3292,7 +3292,10 @@ function App() {
   }, [loaded, currentUser?.id]);
 
   /* Fire an OS notification for any notification that newly appears for me.
-     The first pass only seeds the baseline, so existing/old items stay quiet. */
+     The first pass only seeds the baseline, so existing/old items stay quiet.
+     If Web Push is active on this device, the service worker already shows these
+     as OS notifications - so we only fire a LOCAL one as a fallback when push is
+     off here, otherwise every alert would show up twice. */
   useEffect(() => {
     if (!loaded || !currentUser) return;
     const mine = notifications.filter((n) => n.userId === currentUser.id);
@@ -3302,20 +3305,28 @@ function App() {
       return;
     }
 
-    mine.forEach((n) => {
-      if (seenNotifIdsRef.current.has(n.id)) return;
-      seenNotifIdsRef.current.add(n.id);
-      if (n.read) return;
-      const link = n.link || {};
-      const org = getActiveOrg();
-      const extra = link.taskId
-        ? {
-            url: "/?tab=tasks&taskId=" + encodeURIComponent(link.taskId) + (org ? "&org=" + encodeURIComponent(org) : ""),
-            actions: [{ action: "done", title: "✓ בוצע" }],
-          }
-        : undefined;
-      showOsNotification("משימה חדשה 📋", n.message, n.id, extra);
-    });
+    const fresh = mine.filter((n) => !seenNotifIdsRef.current.has(n.id));
+    fresh.forEach((n) => seenNotifIdsRef.current.add(n.id));
+    if (fresh.length === 0) return;
+
+    (async () => {
+      let pushOn = false;
+      try { pushOn = window.auth?.isPushRegistered ? await window.auth.isPushRegistered() : false; } catch (e) {}
+      if (pushOn) return; // the service worker's push notification already covers these
+
+      fresh.forEach((n) => {
+        if (n.read) return;
+        const link = n.link || {};
+        const org = getActiveOrg();
+        const extra = link.taskId
+          ? {
+              url: "/?tab=tasks&taskId=" + encodeURIComponent(link.taskId) + (org ? "&org=" + encodeURIComponent(org) : ""),
+              actions: [{ action: "done", title: "✓ בוצע" }],
+            }
+          : undefined;
+        showOsNotification("משימה חדשה 📋", n.message, n.id, extra);
+      });
+    })();
   }, [notifications, loaded, currentUser?.id]);
 
   /* Offer to turn on notifications once, after the biometric prompt is out of the way. */
