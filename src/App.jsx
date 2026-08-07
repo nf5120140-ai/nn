@@ -837,7 +837,7 @@ function markPromptedNotifications() {
  * On Android Chrome `new Notification()` throws ("Illegal constructor"), so we must
  * go through the service worker registration when one is available.
  */
-async function showOsNotification(title, body, tag) {
+async function showOsNotification(title, body, tag, extra) {
   if (!notificationsSupported() || Notification.permission !== "granted") return;
   const options = {
     body,
@@ -847,7 +847,10 @@ async function showOsNotification(title, body, tag) {
     dir: "rtl",
     lang: "he",
     vibrate: [200, 100, 200],
+    data: { url: (extra && extra.url) || "/" },
   };
+  // Optional action buttons (e.g. a "✓ בוצע" button that also mirrors to a Wear OS watch).
+  if (extra && Array.isArray(extra.actions) && extra.actions.length) options.actions = extra.actions;
   try {
     const reg = navigator.serviceWorker ? await navigator.serviceWorker.getRegistration() : null;
     if (reg && typeof reg.showNotification === "function") {
@@ -886,7 +889,7 @@ function NotificationsToggle({ showToast }) {
     setPerm(result);
     if (result === "granted") {
       showToast("התראות הופעלו במכשיר הזה");
-      showOsNotification("ההתראות פעילות ✓", "תקבל התראה גם כשהאפליקציה סגורה.", "test");
+      showOsNotification("ההתראות פעילות ✓", "לבדיקת השעון: לחץ על ✓ בוצע מהשעון", "test", { actions: [{ action: "done-test", title: "✓ בוצע (בדיקה)" }] });
     } else if (result === "denied") {
       showToast("ההתראות חסומות - יש לאפשר אותן בהגדרות הדפדפן/האפליקציה");
     }
@@ -3295,7 +3298,15 @@ function App() {
       if (seenNotifIdsRef.current.has(n.id)) return;
       seenNotifIdsRef.current.add(n.id);
       if (n.read) return;
-      showOsNotification("משימה חדשה 📋", n.message, n.id);
+      const link = n.link || {};
+      const org = getActiveOrg();
+      const extra = link.taskId
+        ? {
+            url: "/?tab=tasks&taskId=" + encodeURIComponent(link.taskId) + (org ? "&org=" + encodeURIComponent(org) : ""),
+            actions: [{ action: "done", title: "✓ בוצע" }],
+          }
+        : undefined;
+      showOsNotification("משימה חדשה 📋", n.message, n.id, extra);
     });
   }, [notifications, loaded, currentUser?.id]);
 
@@ -3521,7 +3532,11 @@ function App() {
         const p = new URLSearchParams();
         if (link.tab) p.set("tab", link.tab);
         if (link.section) p.set("section", link.section);
-        if (link.taskId) p.set("taskId", link.taskId);
+        if (link.taskId) {
+          p.set("taskId", link.taskId);
+          const org = getActiveOrg();
+          if (org) p.set("org", org);
+        }
         const qs = p.toString();
         if (qs) url = "/?" + qs;
       }
@@ -3791,7 +3806,7 @@ function App() {
                       setNotifBanner(false);
                       if (result === "granted") {
                         showToast("התראות הופעלו");
-                        showOsNotification("ההתראות פעילות ✓", "תקבל התראה גם כשהאפליקציה סגורה.", "test");
+                        showOsNotification("ההתראות פעילות ✓", "לבדיקת השעון: לחץ על ✓ בוצע מהשעון", "test", { actions: [{ action: "done-test", title: "✓ בוצע (בדיקה)" }] });
                       } else {
                         showToast("ההתראות לא הופעלו");
                       }
