@@ -1618,19 +1618,35 @@ function SplashScreen() {
 
 /* Grid editor shaped like the Excel sheet it replaces: one row per dish type,
    one column per day. Tap a cell to pick the dish. */
-function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey, slotLabel, weekStart }) {
-  const [cell, setCell] = useState(null); // { dayKey, dayLabel, dishTypeId, dishTypeName }
-  const types = dishTypes || [];
+// Dish-type rows can optionally belong to a specific meal (slot). Rows with no slot
+// are legacy/shared and appear in every meal, so old menus keep working unchanged.
+function dishTypesForSlot(dishTypes, slotKey) {
+  return (dishTypes || []).filter((dt) => !dt.slot || dt.slot === slotKey);
+}
 
-  if (types.length === 0) {
-    return (
-      <ShelfTag accent={C.steel}>
-        <p className="text-sm text-center" style={{ color: C.steel }}>
-          אין סוגי מנות מוגדרים. הוסף בניהול ← סוגי מנות (למשל: מנה עיקרית, תוספת, ירקנית).
-        </p>
-      </ShelfTag>
-    );
+function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persistDishTypes, slotKey, slotLabel, weekStart }) {
+  const [cell, setCell] = useState(null); // { dayKey, dayLabel, dishTypeId, dishTypeName }
+  const [newRowName, setNewRowName] = useState("");
+  const [addingRow, setAddingRow] = useState(false);
+  const types = dishTypesForSlot(dishTypes, slotKey);
+
+  async function addRow() {
+    const n = newRowName.trim();
+    if (!n || !persistDishTypes) return;
+    await persistDishTypes([...(dishTypes || []), { id: genId(), name: n, slot: slotKey }]);
+    setNewRowName("");
+    setAddingRow(false);
   }
+  async function removeRow(dt) {
+    if (!persistDishTypes) return;
+    const shared = !dt.slot;
+    const msg = shared
+      ? `השורה "${dt.name}" משותפת לצהריים ולערב. להסיר אותה מכל התפריט?`
+      : `להסיר את השורה "${dt.name}" מארוחת ${slotLabel}?`;
+    if (typeof window !== "undefined" && !window.confirm(msg)) return;
+    await persistDishTypes((dishTypes || []).filter((d) => d.id !== dt.id));
+  }
+
 
   const nameOf = (dayKey, dtId) => {
     const id = weeklyMenu[dayKey]?.[slotKey]?.[dtId];
@@ -1695,7 +1711,18 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey
                     minWidth: 84,
                   }}
                 >
-                  {dt.name}
+                  <div className="flex items-center justify-between gap-1">
+                    <span>{dt.name}</span>
+                    {persistDishTypes && (
+                      <button
+                        onClick={() => removeRow(dt)}
+                        title="הסר שורה"
+                        style={{ color: C.stamp, fontWeight: 700, fontSize: 13, lineHeight: 1, padding: "0 2px" }}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
                 </th>
                 {WEEK_DAYS.map(([dayKey, dayLabel]) => {
                   const val = nameOf(dayKey, dt.id);
@@ -1723,6 +1750,43 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, slotKey
           </tbody>
         </table>
       </div>
+
+      {persistDishTypes && (
+        <div className="mt-2">
+          {types.length === 0 && (
+            <p className="text-xs mb-2" style={{ color: C.steel }}>
+              אין עדיין שורות לארוחת {slotLabel}. הוסף שורה כדי להתחיל.
+            </p>
+          )}
+          {addingRow ? (
+            <div className="flex gap-2">
+              <input
+                autoFocus
+                value={newRowName}
+                onChange={(e) => setNewRowName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") addRow(); }}
+                placeholder={`שם שורה (למשל: מרק, קינוח)`}
+                className="flex-1 p-2 rounded-2xl border text-sm"
+                style={{ borderColor: C.kraftDark }}
+              />
+              <button onClick={addRow} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+                הוסף
+              </button>
+              <button onClick={() => { setAddingRow(false); setNewRowName(""); }} className="px-3 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+                ביטול
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setAddingRow(true)}
+              className="text-sm font-bold px-3 py-2 rounded-2xl"
+              style={{ background: C.kraft, color: C.ink, border: `1px dashed ${C.kraftDark}` }}
+            >
+              ➕ הוסף שורה לארוחת {slotLabel}
+            </button>
+          )}
+        </div>
+      )}
 
       {cell && (
         <div
@@ -3892,6 +3956,7 @@ function App() {
             persistWeeklyMenu={persistWeeklyMenu}
             showToast={showToast}
             dishTypes={dishTypes}
+            persistDishTypes={persistDishTypes}
             currentUser={currentUser}
             orderRequests={orderRequests}
             persistOrderRequests={persistOrderRequests}
@@ -4825,7 +4890,7 @@ function HebrewCalendarWidget() {
   );
 }
 
-function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers }) {
+function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers }) {
   const mayApprove = canSendOrders(currentUser);
   const myPending = (orderRequests || []).filter((r) => r.createdById === currentUser?.id && r.status === "pending");
   const suppliers = settings.suppliers || [];
@@ -4961,6 +5026,20 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       [day]: { ...daySlots, [slot]: { ...slotTypes, [dishType]: menuItemId || null } },
     };
     await persistWeeklyMenu(next);
+
+    // Auto-check: is this exact dish already planned in another meal on the same day?
+    // (e.g. the same side dish in both lunch and dinner). Warns without blocking.
+    if (menuItemId) {
+      const otherSlot = MEAL_SLOTS.find(([sk]) => {
+        if (sk === slot) return false;
+        const sel = next[day]?.[sk] || {};
+        return Object.values(sel).includes(menuItemId);
+      });
+      if (otherSlot) {
+        const nm = menuItems.find((m) => m.id === menuItemId)?.name || "המנה";
+        showToast(`⚠️ "${nm}" כבר מתוכננת היום ב${otherSlot[1]}`);
+      }
+    }
   }
 
   // Compute what's needed for the selected menu items (x portions) minus current stock
@@ -4989,7 +5068,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     const chosenDishNames = [];
     WEEK_DAYS.forEach(([dayKey]) => {
       MEAL_SLOTS.forEach(([slotKey]) => {
-        (dishTypes || []).forEach((dt) => {
+        dishTypesForSlot(dishTypes, slotKey).forEach((dt) => {
           const menuItemId = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
           if (!menuItemId) return;
           const m = menuItems.find((mi) => mi.id === menuItemId);
@@ -5556,7 +5635,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
       const dayLines = [];
       MEAL_SLOTS.forEach(([slotKey, slotLabel]) => {
-        const slotLines = (dishTypes || [])
+        const slotLines = dishTypesForSlot(dishTypes, slotKey)
           .map((dt) => {
             const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
             const m = menuItems.find((mi) => mi.id === id);
@@ -5663,9 +5742,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
      One table per meal slot. */
   function printWeeklyMenu() {
     const days = WEEK_DAYS;
-    const types = dishTypes || [];
 
     function tableFor(slotKey, slotLabel) {
+      const types = dishTypesForSlot(dishTypes, slotKey);
       const header = days
         .map(([, label], idx) => {
           const d = parseIsoLocal(targetWeekStart);
@@ -6235,6 +6314,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                     setWeekSlot={setWeekSlot}
                     menuItems={menuItems}
                     dishTypes={dishTypes}
+                    persistDishTypes={persistDishTypes}
                     slotKey={slotKey}
                     slotLabel={slotLabel}
                     weekStart={targetWeekStart}
@@ -6262,7 +6342,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                   <div className="flex flex-col gap-2">
                     {MEAL_SLOTS.map(([slotKey, slotLabel]) => {
                       const slotSelections = weeklyMenu[dayKey]?.[slotKey] || {};
-                      const chosenNames = (dishTypes || []).map((dt) => {
+                      const chosenNames = dishTypesForSlot(dishTypes, slotKey).map((dt) => {
                         const id = slotSelections[dt.id];
                         return id ? menuItems.find((m) => m.id === id)?.name : null;
                       }).filter(Boolean);
@@ -6302,12 +6382,12 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                       סיימתי
                     </button>
                   </div>
-                  {(dishTypes || []).length === 0 && (
+                  {dishTypesForSlot(dishTypes, openPicker.slotKey).length === 0 && (
                     <p className="text-sm text-center py-4" style={{ color: C.steel }}>
-                      אין עדיין קטגוריות מוגדרות - הוסף במסך ניהול ← סוגי מנות.
+                      אין עדיין שורות לארוחה הזו - הוסף שורות בתצוגת הטבלה (רשת).
                     </p>
                   )}
-                  {(dishTypes || []).map((dt) => {
+                  {dishTypesForSlot(dishTypes, openPicker.slotKey).map((dt) => {
                     const options = menuItems.filter((m) => m.dishType === dt.id);
                     const currentId = weeklyMenu[openPicker.dayKey]?.[openPicker.slotKey]?.[dt.id] || "";
                     return (
@@ -7152,10 +7232,11 @@ function renderWeeklyMenuPng({ title, subtitle, days, types, slots, weeklyMenu, 
   // ---- Plan the layout first so the canvas can be sized exactly. ----
   const plan = [];
   slots.forEach(([slotKey, slotLabel]) => {
-    const used = days.some(([dayKey]) => types.some((dt) => weeklyMenu[dayKey]?.[slotKey]?.[dt.id]));
+    const slotTypes = types.filter((dt) => !dt.slot || dt.slot === slotKey);
+    const used = days.some(([dayKey]) => slotTypes.some((dt) => weeklyMenu[dayKey]?.[slotKey]?.[dt.id]));
     if (!used) return; // skip a meal nobody planned, same as the printout
 
-    const rows = types.map((dt) => {
+    const rows = slotTypes.map((dt) => {
       const cells = days.map(([dayKey]) => {
         const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
         const m = menuItems.find((mi) => mi.id === id);
@@ -10228,7 +10309,12 @@ function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
                 autoFocus
               />
             ) : (
-              <div className="font-bold text-sm" style={{ color: C.ink }}>{d.name}</div>
+              <div className="flex items-center gap-2">
+                <div className="font-bold text-sm" style={{ color: C.ink }}>{d.name}</div>
+                <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: d.slot ? "#D6E7F5" : C.kraft, color: C.ink }}>
+                  {d.slot ? (MEAL_SLOTS.find(([k]) => k === d.slot)?.[1] || d.slot) : "כל הארוחות"}
+                </span>
+              </div>
             )}
             <div className="flex gap-1 items-center">
               <button onClick={() => move(d.id, -1)} disabled={idx === 0} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft, opacity: idx === 0 ? 0.4 : 1 }}>▲</button>
