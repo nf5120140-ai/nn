@@ -2590,7 +2590,7 @@ function KioskCameraScanner({ products, persistProducts, logStockChange, current
   );
 }
 
-function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUser }) {
+function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUser, openSignal, onUnread }) {
   const [messages, setMessages] = useState([]);
   const [reads, setReads] = useState({});
   const [open, setOpen] = useState(false);
@@ -2638,6 +2638,17 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
     if (open && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
   }, [open, messages, activeThread]);
 
+  // Report unread count up so the header can show the badge on its chat button.
+  useEffect(() => {
+    if (onUnread) onUnread(unread);
+  }, [unread, onUnread]);
+
+  // Open the chat when the header's chat button is tapped.
+  useEffect(() => {
+    if (openSignal) openChat();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSignal]);
+
   async function send() {
     const t = text.trim();
     if (!t) return;
@@ -2684,25 +2695,6 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
 
   return (
     <>
-      <button
-        onClick={openChat}
-        title="צ'אט עם ההנהלה"
-        style={{
-          position: "fixed", bottom: 88, right: 16, zIndex: 40,
-          width: 56, height: 56, borderRadius: "50%", border: "none",
-          background: C.ink, color: "#fff", fontSize: 24,
-          boxShadow: "0 4px 14px rgba(0,0,0,0.28)", cursor: "pointer",
-          display: "flex", alignItems: "center", justifyContent: "center",
-        }}
-      >
-        💬
-        {unread > 0 && (
-          <span style={{ position: "absolute", top: -2, right: -2, background: "#dc2626", color: "#fff", borderRadius: 12, minWidth: 22, height: 22, fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 5px" }}>
-            {unread}
-          </span>
-        )}
-      </button>
-
       {open && (
         <div dir="rtl" style={{ position: "fixed", inset: 0, zIndex: 70, background: C.paper, display: "flex", flexDirection: "column", fontFamily: "'Heebo', sans-serif" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 14, background: C.ink, color: "#fff" }}>
@@ -3040,6 +3032,8 @@ function App() {
   const [adminSection, setAdminSection] = useState(null); // set when a notification points at an admin screen
   const [focusTaskId, setFocusTaskId] = useState(null);   // task to auto-open after tapping a notification
   const [newTaskSignal, setNewTaskSignal] = useState(0);  // bump to open the "new task" form (header button / home-screen shortcut)
+  const [chatOpenSignal, setChatOpenSignal] = useState(0); // bump to open the internal chat from the header
+  const [chatUnread, setChatUnread] = useState(0);         // unread chat count, shown on the header chat button
 
   // When a push notification is tapped, the app opens with the target in the URL.
   // Read it once on startup, navigate to the right screen, then clean the URL.
@@ -3790,6 +3784,20 @@ function App() {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => setChatOpenSignal((n) => n + 1)}
+            className="relative text-lg px-2 py-1 rounded-full"
+            style={{ background: "rgba(255,255,255,0.25)" }}
+            aria-label="צ'אט עם ההנהלה"
+            title="צ'אט"
+          >
+            💬
+            {chatUnread > 0 && (
+              <span style={{ position: "absolute", top: -4, right: -4, background: "#dc2626", color: "#fff", borderRadius: 12, minWidth: 18, height: 18, fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>
+                {chatUnread}
+              </span>
+            )}
+          </button>
+          <button
             onClick={() => { setTab("tasks"); setNewTaskSignal((n) => n + 1); }}
             className="text-lg px-2 py-1 rounded-full"
             style={{ background: "rgba(255,255,255,0.25)", color: "#fff" }}
@@ -4163,7 +4171,7 @@ function App() {
         </div>
       )}
 
-      <InternalChat currentUser={currentUser} users={users} isManager={isManager(currentUser)} notifyManagers={notifyManagers} notifyUser={notifyUser} />
+      <InternalChat currentUser={currentUser} users={users} isManager={isManager(currentUser)} notifyManagers={notifyManagers} notifyUser={notifyUser} openSignal={chatOpenSignal} onUnread={setChatUnread} />
       </div>
     </div>
   );
