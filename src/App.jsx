@@ -4912,6 +4912,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [pendingOrder, setPendingOrder] = useState(null); // review sheet before anything is sent
   const [orderSearch, setOrderSearch] = useState("");
   const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
+  const [supplierOverrides, setSupplierOverrides] = useState({}); // productId -> supplierId chosen at order time (overrides the product's default)
   const [selectedForOrder, setSelectedForOrder] = useState([]);
   const [openPicker, setOpenPicker] = useState(null);
   const [weekView, setWeekView] = useState("grid"); // "grid" (like the Excel sheet) | "days"
@@ -5118,7 +5119,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   function groupRowsBySupplier(rows) {
     const groups = {};
     rows.forEach((r) => {
-      const key = r.product.supplierId || "__unassigned__";
+      // A supplier chosen at order time wins over the product's default supplier.
+      const key = supplierOverrides[r.product.id] || r.product.supplierId || "__unassigned__";
       (groups[key] = groups[key] || []).push(r);
     });
     return groups;
@@ -6142,8 +6144,19 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                               <div style={{ color: C.ink }} className="font-bold">{n.product.name}</div>
                               <div style={{ color: C.steel }} className="text-xs">
                                 צריך {n.totalNeeded} · יש {n.product.quantity}
-                                {supplierName && ` · ספק: ${supplierName}`}
                               </div>
+                              <select
+                                value={supplierOverrides[n.product.id] || n.product.supplierId || "__unassigned__"}
+                                onChange={(e) => setSupplierOverrides((o) => ({ ...o, [n.product.id]: e.target.value }))}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-xs mt-1 p-1 rounded-lg border"
+                                style={{ borderColor: C.kraftDark, background: "#fff", color: C.ink, maxWidth: 170 }}
+                              >
+                                <option value="__unassigned__">ספק כללי</option>
+                                {suppliers.map((s) => (
+                                  <option key={s.id} value={s.id}>{s.name}</option>
+                                ))}
+                              </select>
                             </div>
                           </div>
                           <input
@@ -6470,8 +6483,19 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                               <div style={{ color: C.ink }} className="font-bold">{n.product.name}</div>
                               <div style={{ color: C.steel }} className="text-xs">
                                 צריך {n.totalNeeded} · יש {n.product.quantity}
-                                {supplierName && ` · ספק: ${supplierName}`}
                               </div>
+                              <select
+                                value={supplierOverrides[n.product.id] || n.product.supplierId || "__unassigned__"}
+                                onChange={(e) => setSupplierOverrides((o) => ({ ...o, [n.product.id]: e.target.value }))}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-xs mt-1 p-1 rounded-lg border"
+                                style={{ borderColor: C.kraftDark, background: "#fff", color: C.ink, maxWidth: 170 }}
+                              >
+                                <option value="__unassigned__">ספק כללי</option>
+                                {suppliers.map((s) => (
+                                  <option key={s.id} value={s.id}>{s.name}</option>
+                                ))}
+                              </select>
                             </div>
                           </div>
                           <input
