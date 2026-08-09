@@ -5239,8 +5239,19 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                     <div className="font-bold" style={{ color: C.ink }}>{product.name}</div>
                     <div className="text-xs" style={{ color: C.steel }}>
                       יש במלאי {product.quantity} {product.unit}
-                      {product.supplierId && ` · ספק: ${suppliers.find((s) => s.id === product.supplierId)?.name || "—"}`}
                     </div>
+                    <select
+                      value={supplierOverrides[product.id] || product.supplierId || "__unassigned__"}
+                      onChange={(e) => setSupplierOverrides((o) => ({ ...o, [product.id]: e.target.value }))}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-xs mt-1 p-1 rounded-lg border"
+                      style={{ borderColor: C.kraftDark, background: "#fff", color: C.ink, maxWidth: 170 }}
+                    >
+                      <option value="__unassigned__">ספק כללי</option>
+                      {suppliers.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
                   </div>
                   <div className="flex items-center gap-2">
                     <input
