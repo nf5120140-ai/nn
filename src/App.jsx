@@ -4921,6 +4921,43 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [orderSearch, setOrderSearch] = useState("");
   const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
   const [supplierOverrides, setSupplierOverrides] = useState({}); // productId -> supplierId chosen at order time (overrides the product's default)
+  const [adHocItems, setAdHocItems] = useState([]); // free-text products not in the catalog: { id, name, qty, supplierId }
+  const [adHocName, setAdHocName] = useState("");
+
+  // Keep the in-progress order (quantities, picks, extras, ad-hoc items) so it survives
+  // switching tabs or reloading. Stored per-organization on this device.
+  const orderDraftKey = `kitchen-order-draft::${getActiveOrg() || "_"}`;
+  const orderHydratedRef = useRef(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(orderDraftKey);
+      if (raw) {
+        const d = JSON.parse(raw);
+        if (d.qtys) setQtys(d.qtys);
+        if (d.orderExtras) setOrderExtras(d.orderExtras);
+        if (d.supplierOverrides) setSupplierOverrides(d.supplierOverrides);
+        if (Array.isArray(d.pickedIds)) setPickedIds(d.pickedIds);
+        if (Array.isArray(d.selectedForOrder)) setSelectedForOrder(d.selectedForOrder);
+        if (Array.isArray(d.adHocItems)) setAdHocItems(d.adHocItems);
+        if (d.menuQtys) setMenuQtys(d.menuQtys);
+        if (d.weekQtys) setWeekQtys(d.weekQtys);
+      }
+    } catch (e) {}
+    orderHydratedRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!orderHydratedRef.current) return;
+    try {
+      localStorage.setItem(orderDraftKey, JSON.stringify({ qtys, orderExtras, supplierOverrides, pickedIds, selectedForOrder, adHocItems, menuQtys, weekQtys }));
+    } catch (e) {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qtys, orderExtras, supplierOverrides, pickedIds, selectedForOrder, adHocItems, menuQtys, weekQtys]);
+  function clearOrderDraft() {
+    setQtys({}); setOrderExtras({}); setSupplierOverrides({}); setPickedIds([]); setSelectedForOrder([]); setAdHocItems([]); setMenuQtys({}); setWeekQtys({});
+    try { localStorage.removeItem(orderDraftKey); } catch (e) {}
+    showToast("טיוטת ההזמנה נוקתה");
+  }
   const [selectedForOrder, setSelectedForOrder] = useState([]);
   const [openPicker, setOpenPicker] = useState(null);
   const [weekView, setWeekView] = useState("grid"); // "grid" (like the Excel sheet) | "days"
@@ -4987,6 +5024,20 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     setPendingOrder((po) => {
       if (!po) return po;
       return { ...po, items: po.items.filter((it) => it.product.id !== productId) };
+    });
+  }
+  // Reorder a line in the review sheet before sending, so the message to the supplier
+  // comes out in the order the user wants.
+  function movePendingItem(index, dir) {
+    setPendingOrder((po) => {
+      if (!po) return po;
+      const items = [...po.items];
+      const j = index + dir;
+      if (j < 0 || j >= items.length) return po;
+      const tmp = items[index];
+      items[index] = items[j];
+      items[j] = tmp;
+      return { ...po, items };
     });
   }
   const parshiot = useParshiot();
@@ -5119,6 +5170,23 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       if (rows.some((r) => r.product.id === pid)) return; // already covered by the menu
       const product = products.find((p) => p.id === pid);
       if (product && Number(qty) > 0) rows.push({ product, qty: Number(qty) });
+    });
+
+    // Free-text products that aren't in the catalog at all.
+    adHocItems.forEach((it) => {
+      if (Number(it.qty) > 0) {
+        rows.push({
+          product: {
+            id: it.id,
+            name: it.name,
+            unit: "",
+            price: 0,
+            quantity: 0,
+            supplierId: it.supplierId && it.supplierId !== "__unassigned__" ? it.supplierId : null,
+          },
+          qty: Number(it.qty),
+        });
+      }
     });
 
     return rows.filter((r) => Number(r.qty) > 0);
@@ -5291,12 +5359,91 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           </div>
         )}
 
+        {/* Ad-hoc products - free text, not in the catalog */}
+        {adHocItems.length > 0 && (
+          <div className="flex flex-col gap-2 mb-2">
+            {adHocItems.map((it) => (
+              <ShelfTag key={it.id} accent={C.sage}>
+                <div className="flex justify-between items-center text-sm">
+                  <div>
+                    <div className="font-bold" style={{ color: C.ink }}>{it.name}</div>
+                    <div className="text-xs" style={{ color: C.steel }}>מוצר חדש (לא במלאי)</div>
+                    <select
+                      value={it.supplierId || "__unassigned__"}
+                      onChange={(e) => setAdHocItems((cur) => cur.map((x) => (x.id === it.id ? { ...x, supplierId: e.target.value } : x)))}
+                      className="text-xs mt-1 p-1 rounded-lg border"
+                      style={{ borderColor: C.kraftDark, background: "#fff", color: C.ink, maxWidth: 170 }}
+                    >
+                      <option value="__unassigned__">ספק כללי</option>
+                      {suppliers.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={Number(it.qty) === 0 ? "" : it.qty}
+                      onChange={(e) => setAdHocItems((cur) => cur.map((x) => (x.id === it.id ? { ...x, qty: Math.max(0, Number(e.target.value) || 0) } : x)))}
+                      className="w-16 text-center p-2 rounded-2xl border"
+                      style={{ borderColor: C.kraftDark }}
+                    />
+                    <button
+                      onClick={() => setAdHocItems((cur) => cur.filter((x) => x.id !== it.id))}
+                      className="px-2 py-1 rounded-xl text-xs font-bold"
+                      style={{ background: C.stamp, color: "#fff" }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              </ShelfTag>
+            ))}
+          </div>
+        )}
+
+        {/* Add a brand-new product by name */}
+        <div className="flex gap-2 mb-2">
+          <input
+            value={adHocName}
+            onChange={(e) => setAdHocName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && adHocName.trim()) {
+                setAdHocItems((cur) => [...cur, { id: genId(), name: adHocName.trim(), qty: 1, supplierId: "__unassigned__" }]);
+                setAdHocName("");
+              }
+            }}
+            placeholder="שם מוצר חדש שלא קיים במלאי"
+            className="flex-1 p-2 rounded-2xl border text-sm"
+            style={{ borderColor: C.kraftDark }}
+          />
+          <button
+            onClick={() => {
+              if (!adHocName.trim()) return;
+              setAdHocItems((cur) => [...cur, { id: genId(), name: adHocName.trim(), qty: 1, supplierId: "__unassigned__" }]);
+              setAdHocName("");
+            }}
+            className="px-4 rounded-2xl font-bold text-sm"
+            style={{ background: C.sage, color: "#fff" }}
+          >
+            הוסף
+          </button>
+        </div>
+
         <button
           onClick={() => setExtrasOpen(true)}
           className="w-full py-2 rounded-2xl font-bold text-sm"
           style={{ background: "#fff", color: C.mustard, border: `1.5px dashed ${C.mustard}` }}
         >
-          ➕ הוסף מוצר שלא בתפריט
+          ➕ הוסף מוצר קיים שלא בתפריט
+        </button>
+
+        <button
+          onClick={clearOrderDraft}
+          className="w-full py-1 mt-2 text-xs font-bold"
+          style={{ background: "transparent", color: C.steel }}
+        >
+          🗑️ נקה את כל ההזמנה
         </button>
 
         {extrasOpen && (
@@ -5462,6 +5609,24 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 className="flex items-center px-2 py-2 text-sm"
                 style={{ background: i % 2 ? "#F7FAFD" : "#fff", borderTop: `1px solid ${C.kraftDark}`, opacity: Number(qty) > 0 ? 1 : 0.45 }}
               >
+                <div className="flex flex-col" style={{ marginLeft: 2 }}>
+                  <button
+                    onClick={() => movePendingItem(i, -1)}
+                    disabled={i === 0}
+                    title="העלה"
+                    style={{ fontSize: 11, lineHeight: 1, color: i === 0 ? C.kraftDark : C.ink, opacity: i === 0 ? 0.4 : 1, padding: "1px 3px" }}
+                  >
+                    ▲
+                  </button>
+                  <button
+                    onClick={() => movePendingItem(i, 1)}
+                    disabled={i === items.length - 1}
+                    title="הורד"
+                    style={{ fontSize: 11, lineHeight: 1, color: i === items.length - 1 ? C.kraftDark : C.ink, opacity: i === items.length - 1 ? 0.4 : 1, padding: "1px 3px" }}
+                  >
+                    ▼
+                  </button>
+                </div>
                 <span className="flex-1 font-bold px-1" style={{ color: C.ink }}>{product.name}</span>
                 <div className="flex items-center gap-1" style={{ width: 118, justifyContent: "center" }}>
                   <button
