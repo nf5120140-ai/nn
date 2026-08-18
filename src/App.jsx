@@ -3702,6 +3702,10 @@ function App() {
     await persistOrderHistory(next);
     showToast("✓ נשמר בהיסטוריית הזמנות");
   }
+  async function deleteOrderHistoryEntry(id) {
+    await persistOrderHistory(orderHistory.filter((o) => o.id !== id));
+    showToast("ההזמנה נמחקה מההיסטוריה");
+  }
   async function logStockChange(productId, delta, userName) {
     if (!delta) return;
     const next = [...stockLog, { id: genId(), productId, delta, userName, timestamp: Date.now() }];
@@ -4114,6 +4118,7 @@ function App() {
             notifyManagers={notifyManagers}
             recordOrder={recordOrder}
             orderHistory={orderHistory}
+            deleteOrderHistoryEntry={deleteOrderHistoryEntry}
           />
         )}
         {tab === "tasks" && (
@@ -5042,7 +5047,7 @@ function HebrewCalendarWidget() {
   );
 }
 
-function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory }) {
+function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry }) {
   const mayApprove = canSendOrders(currentUser);
   const myPending = (orderRequests || []).filter((r) => r.createdById === currentUser?.id && r.status === "pending");
   const suppliers = settings.suppliers || [];
@@ -6222,8 +6227,21 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                       {o.by ? ` · ${o.by}` : ""}
                     </div>
                   </div>
-                  <div className="text-sm font-bold text-left" style={{ color: C.ink, whiteSpace: "nowrap" }}>
-                    {(o.items?.length || 0)} פריטים{o.total ? ` · ₪${Math.round(o.total)}` : ""}
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm font-bold text-left" style={{ color: C.ink, whiteSpace: "nowrap" }}>
+                      {(o.items?.length || 0)} פריטים{o.total ? ` · ₪${Math.round(o.total)}` : ""}
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (typeof window !== "undefined" && !window.confirm("למחוק את ההזמנה מההיסטוריה?")) return;
+                        deleteOrderHistoryEntry && deleteOrderHistoryEntry(o.id);
+                      }}
+                      title="מחק מההיסטוריה"
+                      className="rounded-full flex items-center justify-center"
+                      style={{ width: 26, height: 26, background: "#fff", color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                    >
+                      🗑️
+                    </button>
                   </div>
                 </div>
                 {Array.isArray(o.items) && o.items.length > 0 && (
