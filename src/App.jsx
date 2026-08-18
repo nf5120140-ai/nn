@@ -11365,7 +11365,7 @@ function InvoiceScanner({ products, persistProducts, showToast, onClose }) {
               style={{ background: C.ink, color: C.paper }}
             >
               {busy ? "קורא את החשבונית…" : "📷 צלם / העלה חשבונית"}
-              <input type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: "none" }} disabled={busy} />
+              <input type="file" accept="image/*" onChange={handleFile} style={{ display: "none" }} disabled={busy} />
             </label>
             {busy && <p className="text-xs text-center mt-3" style={{ color: C.steel }}>מזהה מוצרים ומחירים… זה עשוי לקחת כמה שניות.</p>}
             {error && <p className="text-sm mt-3 p-2 rounded-xl" style={{ background: "#fde8e8", color: C.stamp }}>{error}</p>}
