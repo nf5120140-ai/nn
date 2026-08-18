@@ -4112,6 +4112,7 @@ function App() {
             persistOrderRequests={persistOrderRequests}
             notifyManagers={notifyManagers}
             recordOrder={recordOrder}
+            orderHistory={orderHistory}
           />
         )}
         {tab === "tasks" && (
@@ -5040,7 +5041,7 @@ function HebrewCalendarWidget() {
   );
 }
 
-function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers }) {
+function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory }) {
   const mayApprove = canSendOrders(currentUser);
   const myPending = (orderRequests || []).filter((r) => r.createdById === currentUser?.id && r.status === "pending");
   const suppliers = settings.suppliers || [];
@@ -6188,9 +6189,56 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
         >
           לפי תפריט שבועי
         </button>
+        <button
+          onClick={() => setOrderMode("history")}
+          className="px-3 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
+          style={{ background: orderMode === "history" ? C.ink : C.kraft, color: orderMode === "history" ? C.paper : C.ink }}
+        >
+          📜 היסטוריה
+        </button>
       </div>
 
-      {!mayApprove && (
+      {orderMode === "history" && (
+        <div className="flex flex-col gap-3">
+          {(!orderHistory || orderHistory.length === 0) ? (
+            <ShelfTag accent={C.steel}>
+              <p className="text-sm text-center" style={{ color: C.steel }}>עדיין אין הזמנות בהיסטוריה.</p>
+            </ShelfTag>
+          ) : (
+            orderHistory.map((o) => (
+              <ShelfTag key={o.id} accent={C.sage}>
+                <div className="flex justify-between items-start gap-2">
+                  <div>
+                    <div className="font-bold text-sm" style={{ color: C.ink }}>{o.supplierName || "ספק"}</div>
+                    <div className="text-xs" style={{ color: C.steel }}>
+                      {new Date(o.createdAt).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      {o.by ? ` · ${o.by}` : ""}
+                    </div>
+                  </div>
+                  <div className="text-sm font-bold text-left" style={{ color: C.ink, whiteSpace: "nowrap" }}>
+                    {(o.items?.length || 0)} פריטים{o.total ? ` · ₪${Math.round(o.total)}` : ""}
+                  </div>
+                </div>
+                {Array.isArray(o.items) && o.items.length > 0 && (
+                  <details className="mt-2">
+                    <summary className="text-xs font-bold cursor-pointer" style={{ color: C.accent }}>הצג פריטים</summary>
+                    <div className="mt-1">
+                      {o.items.map((it, idx) => (
+                        <div key={idx} className="flex justify-between text-xs py-1" style={{ color: C.ink, borderTop: idx ? `1px solid ${C.kraft}` : "none" }}>
+                          <span>{it.name}</span>
+                          <span style={{ color: C.steel }}>{it.qty} {it.unit || ""}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </ShelfTag>
+            ))
+          )}
+        </div>
+      )}
+
+      {!mayApprove && orderMode !== "history" && (
         <ShelfTag accent={C.accent} style={{ marginBottom: 16 }}>
           <div className="text-sm font-bold mb-1" style={{ color: C.ink }}>📤 מצב בקשות הזמנה</div>
           <p className="text-xs" style={{ color: C.steel }}>
