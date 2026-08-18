@@ -11264,10 +11264,169 @@ const DEFAULT_PRODUCT_CATEGORIES = [
   "אחר",
 ];
 
+// Best-effort match of an invoice line name to an existing product id.
+function bestProductMatch(itemName, products) {
+  const n = (itemName || "").trim();
+  if (!n) return "";
+  let m = products.find((p) => (p.name || "").trim() === n);
+  if (m) return m.id;
+  m = products.find((p) => n.includes((p.name || "").trim()) || (p.name || "").trim().includes(n));
+  if (m) return m.id;
+  const nt = n.split(/\s+/).filter(Boolean);
+  let best = "", bestScore = 0;
+  products.forEach((p) => {
+    const pt = (p.name || "").split(/\s+/).filter(Boolean);
+    const score = pt.filter((w) => nt.includes(w)).length;
+    if (score > bestScore) { bestScore = score; best = p.id; }
+  });
+  return bestScore > 0 ? best : "";
+}
+
+function InvoiceScanner({ products, persistProducts, showToast, onClose }) {
+  const SUPABASE_URL = "https://axkgksyoaysvhthbxoee.supabase.co";
+  const SUPABASE_ANON_KEY =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4a2drc3lvYXlzdmh0aGJ4b2VlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0MTMwOTUsImV4cCI6MjA5ODk4OTA5NX0.zHJHvNwmiaFRRijy1HT53thIg72ELa8w0vZmKA9MWgA";
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [rows, setRows] = useState(null); // [{ name, price, unit, productId }]
+  const [preview, setPreview] = useState(null);
+
+  async function handleFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setError("");
+    setBusy(true);
+    setRows(null);
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = () => rej(new Error("read failed"));
+        r.readAsDataURL(file);
+      });
+      setPreview(dataUrl);
+      const base64 = String(dataUrl).split(",")[1];
+      const mediaType = file.type || "image/jpeg";
+
+      let token = SUPABASE_ANON_KEY;
+      try { const sess = await window.auth?.getSession?.(); if (sess?.access_token) token = sess.access_token; } catch (e) {}
+
+      const resp = await fetch(`${SUPABASE_URL}/functions/v1/parse-invoice`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY },
+        body: JSON.stringify({ imageBase64: base64, mediaType }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || "שגיאה בקריאת החשבונית");
+      const items = data.items || [];
+      if (items.length === 0) { setError("לא זוהו מוצרים בתמונה. נסה תמונה ברורה יותר."); setBusy(false); return; }
+      setRows(items.map((it) => ({ name: it.name, price: it.price || 0, unit: it.unit || "", productId: bestProductMatch(it.name, products) })));
+    } catch (err) {
+      setError(String(err.message || err));
+    }
+    setBusy(false);
+  }
+
+  function updateRow(i, patch) {
+    setRows((cur) => cur.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  }
+
+  async function applyPrices() {
+    const updates = (rows || []).filter((r) => r.productId && Number(r.price) > 0);
+    if (updates.length === 0) { showToast("אין שורות עם מוצר ומחיר לעדכון"); return; }
+    if (typeof window !== "undefined" && !window.confirm(`לעדכן מחיר ל-${updates.length} מוצרים?`)) return;
+    const byId = {};
+    updates.forEach((r) => { byId[r.productId] = Number(r.price); });
+    const next = products.map((p) => (byId[p.id] != null ? { ...p, price: byId[p.id] } : p));
+    await persistProducts(next);
+    showToast(`עודכנו מחירים ל-${updates.length} מוצרים`);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={onClose}>
+      <div
+        dir="rtl"
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: C.paper, width: "100%", maxWidth: 520, maxHeight: "90vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}
+      >
+        <div className="flex justify-between items-center mb-3">
+          <div className="wh-display font-black text-lg" style={{ color: C.ink }}>📸 סריקת חשבונית</div>
+          <button onClick={onClose} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+        </div>
+
+        {!rows && (
+          <div>
+            <p className="text-sm mb-3" style={{ color: C.steel }}>
+              צלם או העלה תמונה של חשבונית/תעודת משלוח, והמערכת תזהה את המוצרים והמחירים ותתאים אותם למלאי.
+            </p>
+            <label
+              className="block w-full text-center py-3 rounded-2xl font-bold cursor-pointer"
+              style={{ background: C.ink, color: C.paper }}
+            >
+              {busy ? "קורא את החשבונית…" : "📷 צלם / העלה חשבונית"}
+              <input type="file" accept="image/*" capture="environment" onChange={handleFile} style={{ display: "none" }} disabled={busy} />
+            </label>
+            {busy && <p className="text-xs text-center mt-3" style={{ color: C.steel }}>מזהה מוצרים ומחירים… זה עשוי לקחת כמה שניות.</p>}
+            {error && <p className="text-sm mt-3 p-2 rounded-xl" style={{ background: "#fde8e8", color: C.stamp }}>{error}</p>}
+          </div>
+        )}
+
+        {rows && (
+          <div>
+            <p className="text-xs mb-2" style={{ color: C.steel }}>
+              בדוק את הזיהוי, התאם כל שורה למוצר במלאי (או "דלג"), ותקן מחיר אם צריך. רק שורות עם מוצר ומחיר יעודכנו.
+            </p>
+            <div className="flex flex-col gap-2 mb-3">
+              {rows.map((r, i) => (
+                <div key={i} className="p-2 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+                  <div className="text-sm font-bold mb-1" style={{ color: C.ink }}>{r.name}{r.unit ? ` · ${r.unit}` : ""}</div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={r.productId}
+                      onChange={(e) => updateRow(i, { productId: e.target.value })}
+                      className="flex-1 p-2 rounded-xl border text-sm"
+                      style={{ borderColor: C.kraftDark, background: r.productId ? "#fff" : "#FFF6E9" }}
+                    >
+                      <option value="">— דלג (לא לעדכן) —</option>
+                      {products.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                    <div className="flex items-center gap-1">
+                      <span style={{ color: C.steel }}>₪</span>
+                      <input
+                        type="number"
+                        value={r.price === 0 ? "" : r.price}
+                        onChange={(e) => updateRow(i, { price: Math.max(0, Number(e.target.value) || 0) })}
+                        className="w-20 text-center p-2 rounded-xl border"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={applyPrices} className="flex-1 py-3 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
+                ✓ עדכן מחירים במלאי
+              </button>
+              <button onClick={() => { setRows(null); setPreview(null); setError(""); }} className="px-4 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
+                חשבונית אחרת
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ProductsAdmin({ products, persistProducts, showToast, settings, persistSettings }) {
   const suppliers = settings?.suppliers || [];
   const categories = settings?.productCategories || DEFAULT_PRODUCT_CATEGORIES;
   const [showCatManager, setShowCatManager] = useState(false);
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
   const [newCat, setNewCat] = useState("");
   const [renamingCat, setRenamingCat] = useState(null);
   const [renameValue, setRenameValue] = useState("");
@@ -11588,7 +11747,17 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
 
   return (
     <div>
+      {invoiceOpen && (
+        <InvoiceScanner products={products} persistProducts={persistProducts} showToast={showToast} onClose={() => setInvoiceOpen(false)} />
+      )}
       <div className="mb-4">
+        <button
+          onClick={() => setInvoiceOpen(true)}
+          className="w-full py-3 rounded-2xl font-bold mb-2"
+          style={{ background: C.sage, color: "#fff" }}
+        >
+          📸 סרוק חשבונית ועדכן מחירים
+        </button>
         <input
           ref={fileInputRef}
           type="file"
