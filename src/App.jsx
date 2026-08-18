@@ -1744,9 +1744,10 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
                         textAlign: "center",
                         fontSize: 13,
                         cursor: "pointer",
-                        background: val ? "#fff" : rowBg,
+                        background: rowBg,
                         color: val ? C.ink : C.steel,
-                        fontWeight: val ? 600 : 400,
+                        fontWeight: val ? 700 : 400,
+                        opacity: val ? 1 : 0.7,
                         minWidth: 96,
                       }}
                     >
