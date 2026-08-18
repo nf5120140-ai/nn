@@ -3700,6 +3700,7 @@ function App() {
     // Keep the last 300 orders - plenty of history without bloating storage.
     const next = [{ id: genId(), createdAt: Date.now(), ...entry }, ...orderHistory].slice(0, 300);
     await persistOrderHistory(next);
+    showToast("✓ נשמר בהיסטוריית הזמנות");
   }
   async function logStockChange(productId, delta, userName) {
     if (!delta) return;
