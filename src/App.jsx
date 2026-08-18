@@ -1629,6 +1629,11 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
   const [newRowName, setNewRowName] = useState("");
   const [addingRow, setAddingRow] = useState(false);
   const types = dishTypesForSlot(dishTypes, slotKey);
+  // Colorful rows: lunch in a cool-blue family, dinner in a warm family,
+  // each alternating a strong and a weak shade per row.
+  const pal = slotKey === "dinner"
+    ? { strong: "#F6D2A6", weak: "#FCEBD4", head: "#DE9542" }   // ערב - warm
+    : { strong: "#BBD9F2", weak: "#E6F1FB", head: "#3E8FCB" };  // צהריים - cool blue
 
   async function addRow() {
     const n = newRowName.trim();
@@ -1665,7 +1670,7 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
             <tr>
               <th
                 style={{
-                  background: C.accent,
+                  background: pal.head,
                   color: "#fff",
                   padding: "8px 6px",
                   border: `1px solid ${C.kraftDark}`,
@@ -1680,7 +1685,7 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
                 <th
                   key={label}
                   style={{
-                    background: C.accent,
+                    background: pal.head,
                     color: "#fff",
                     padding: "8px 10px",
                     border: `1px solid ${C.kraftDark}`,
@@ -1695,16 +1700,19 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
             </tr>
           </thead>
           <tbody>
-            {types.map((dt) => (
+            {types.map((dt, ri) => {
+              const rowBg = ri % 2 === 0 ? pal.strong : pal.weak;
+              return (
               <tr key={dt.id}>
                 <th
                   style={{
-                    background: "#D6E7F5",
+                    background: rowBg,
                     color: C.ink,
                     padding: "8px 6px",
                     border: `1px solid ${C.kraftDark}`,
                     textAlign: "right",
                     fontSize: 12,
+                    fontWeight: 700,
                     position: "sticky",
                     right: 0,
                     zIndex: 1,
@@ -1736,8 +1744,9 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
                         textAlign: "center",
                         fontSize: 13,
                         cursor: "pointer",
-                        background: val ? "#fff" : "#FAFBFD",
-                        color: val ? C.ink : C.kraftDark,
+                        background: val ? "#fff" : rowBg,
+                        color: val ? C.ink : C.steel,
+                        fontWeight: val ? 600 : 400,
                         minWidth: 96,
                       }}
                     >
@@ -1746,7 +1755,8 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
                   );
                 })}
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -2978,11 +2988,142 @@ function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyMan
   );
 }
 
+function AccessibilityWidget() {
+  const KEY = "kitchen-a11y";
+  const DEFAULTS = { fontScale: 1, contrast: false, grayscale: false, invert: false, readable: false, spacing: false, nomotion: false, focus: false };
+  const [open, setOpen] = useState(false);
+  const [s, setS] = useState(() => {
+    try { return { ...DEFAULTS, ...(JSON.parse(localStorage.getItem(KEY) || "{}")) }; }
+    catch (e) { return { ...DEFAULTS }; }
+  });
+
+  // One-time class-based rules (no filters/transforms here, so they never affect layout positioning).
+  useEffect(() => {
+    if (document.getElementById("acc-style")) return;
+    const st = document.createElement("style");
+    st.id = "acc-style";
+    st.textContent =
+      'html.acc-readable, html.acc-readable * { font-family: Arial, "Segoe UI", "Heebo", sans-serif !important; }' +
+      "html.acc-spacing * { line-height: 1.9 !important; letter-spacing: .3px !important; }" +
+      "html.acc-nomotion * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }" +
+      "html.acc-focus a:focus, html.acc-focus button:focus, html.acc-focus input:focus, html.acc-focus select:focus, html.acc-focus textarea:focus { outline: 3px solid #1a56db !important; outline-offset: 2px !important; }";
+    document.head.appendChild(st);
+  }, []);
+
+  // Apply the current settings to the document (and persist them).
+  useEffect(() => {
+    try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {}
+    const html = document.documentElement;
+    try { html.style.zoom = s.fontScale && s.fontScale !== 1 ? String(s.fontScale) : ""; } catch (e) {}
+    const f = [];
+    if (s.contrast) f.push("contrast(1.35)");
+    if (s.grayscale) f.push("grayscale(1)");
+    if (s.invert) f.push("invert(1) hue-rotate(180deg)");
+    html.style.filter = f.join(" ");
+    html.classList.toggle("acc-readable", !!s.readable);
+    html.classList.toggle("acc-spacing", !!s.spacing);
+    html.classList.toggle("acc-nomotion", !!s.nomotion);
+    html.classList.toggle("acc-focus", !!s.focus);
+  }, [s]);
+
+  const setKey = (k, v) => setS((cur) => ({ ...cur, [k]: v }));
+  const toggle = (k) => setS((cur) => ({ ...cur, [k]: !cur[k] }));
+  const reset = () => setS({ ...DEFAULTS });
+
+  const Row = ({ label, k }) => (
+    <button
+      onClick={() => toggle(k)}
+      style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%",
+        padding: "11px 12px", borderRadius: 12, marginBottom: 8, cursor: "pointer",
+        border: `1.5px solid ${s[k] ? C.accent : C.kraftDark}`, background: s[k] ? "#E8F1FB" : "#fff",
+        color: C.ink, fontWeight: 700, fontSize: 14,
+      }}
+    >
+      <span>{label}</span>
+      <span style={{ color: C.accent, fontWeight: 800 }}>{s[k] ? "✓" : ""}</span>
+    </button>
+  );
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        aria-label="הגדרות נגישות"
+        title="נגישות"
+        style={{
+          position: "fixed", bottom: 88, left: 16, zIndex: 3000,
+          width: 52, height: 52, borderRadius: "50%", border: "2px solid #fff",
+          background: C.accent, color: "#fff", fontSize: 26, cursor: "pointer",
+          boxShadow: "0 4px 14px rgba(0,0,0,0.3)", display: "flex", alignItems: "center", justifyContent: "center",
+        }}
+      >
+        ♿
+      </button>
+
+      {open && (
+        <div
+          onClick={() => setOpen(false)}
+          style={{ position: "fixed", inset: 0, zIndex: 3001, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+        >
+          <div
+            dir="rtl"
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: "#fff", width: "100%", maxWidth: 480, maxHeight: "85vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, fontFamily: "'Heebo', sans-serif" }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ fontWeight: 800, fontSize: 18, color: C.ink }}>♿ הגדרות נגישות</div>
+              <button onClick={() => setOpen(false)} style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 999, padding: "5px 14px", fontWeight: 700, cursor: "pointer" }}>סגור</button>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.steel, marginBottom: 6 }}>גודל טקסט</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button
+                  onClick={() => setKey("fontScale", Math.max(0.8, Math.round(((s.fontScale || 1) - 0.1) * 10) / 10))}
+                  style={{ flex: 1, padding: 10, borderRadius: 12, border: `1px solid ${C.kraftDark}`, background: "#fff", fontWeight: 800, fontSize: 18, cursor: "pointer" }}
+                >א−</button>
+                <div style={{ minWidth: 54, textAlign: "center", fontWeight: 800, color: C.ink }}>{Math.round((s.fontScale || 1) * 100)}%</div>
+                <button
+                  onClick={() => setKey("fontScale", Math.min(1.6, Math.round(((s.fontScale || 1) + 0.1) * 10) / 10))}
+                  style={{ flex: 1, padding: 10, borderRadius: 12, border: `1px solid ${C.kraftDark}`, background: "#fff", fontWeight: 800, fontSize: 18, cursor: "pointer" }}
+                >א+</button>
+              </div>
+            </div>
+
+            <Row label="ניגודיות גבוהה" k="contrast" />
+            <Row label="גווני אפור" k="grayscale" />
+            <Row label="היפוך צבעים" k="invert" />
+            <Row label="פונט קריא" k="readable" />
+            <Row label="ריווח שורות מוגדל" k="spacing" />
+            <Row label="עצירת אנימציות" k="nomotion" />
+            <Row label="הדגשת מיקוד מקלדת" k="focus" />
+
+            <button
+              onClick={reset}
+              style={{ width: "100%", padding: 12, borderRadius: 12, border: "none", background: C.stamp, color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", marginTop: 6 }}
+            >
+              איפוס הגדרות נגישות
+            </button>
+
+            <p style={{ fontSize: 11, color: C.steel, marginTop: 12, lineHeight: 1.6 }}>
+              המערכת שואפת לעמוד בתקנות שוויון זכויות לאנשים עם מוגבלות (התאמות נגישות לשירות) ובתקן הישראלי ת"י 5568 ברמה AA. נתקלת בבעיית נגישות? נשמח לדעת כדי לתקן.
+            </p>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function AppWithBoundary() {
   return (
-    <ErrorBoundary>
-      <App />
-    </ErrorBoundary>
+    <>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+      <AccessibilityWidget />
+    </>
   );
 }
 
