@@ -4923,9 +4923,15 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [supplierOverrides, setSupplierOverrides] = useState({}); // productId -> supplierId chosen at order time (overrides the product's default)
   const [adHocItems, setAdHocItems] = useState([]); // free-text products not in the catalog: { id, name, qty, supplierId }
   const [adHocName, setAdHocName] = useState("");
+  const [selectedForOrder, setSelectedForOrder] = useState([]);
+  const [openPicker, setOpenPicker] = useState(null);
+  const [weekView, setWeekView] = useState("grid"); // "grid" (like the Excel sheet) | "days"
+  const [menuWeek, setMenuWeek] = useState("next"); // which week the printed menu is for
+  const [parshaOverride, setParshaOverride] = useState("");
 
   // Keep the in-progress order (quantities, picks, extras, ad-hoc items) so it survives
   // switching tabs or reloading. Stored per-organization on this device.
+  // Placed AFTER all the order state declarations so its dependencies are initialized.
   const orderDraftKey = `kitchen-order-draft::${getActiveOrg() || "_"}`;
   const orderHydratedRef = useRef(false);
   useEffect(() => {
@@ -4958,11 +4964,6 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     try { localStorage.removeItem(orderDraftKey); } catch (e) {}
     showToast("טיוטת ההזמנה נוקתה");
   }
-  const [selectedForOrder, setSelectedForOrder] = useState([]);
-  const [openPicker, setOpenPicker] = useState(null);
-  const [weekView, setWeekView] = useState("grid"); // "grid" (like the Excel sheet) | "days"
-  const [menuWeek, setMenuWeek] = useState("next"); // which week the printed menu is for
-  const [parshaOverride, setParshaOverride] = useState("");
 
   const [drafts, setDrafts] = useState([]);
   const [editingDraftId, setEditingDraftId] = useState(null); // which saved draft the review sheet is editing (null = brand-new order)
