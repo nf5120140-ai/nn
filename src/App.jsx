@@ -5868,6 +5868,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
             <button
               onClick={async () => {
                 try { await navigator.clipboard.writeText(messageText); } catch (e) {}
+                logOrderToHistory(liveItems, title, supplierId, "whatsapp");
                 // wa.me/?text opens WhatsApp with the order already typed; the user
                 // taps the target chat/group (invite links can't carry text at all).
                 window.open(`https://wa.me/?text=${encodeURIComponent(messageText)}`, "_blank");
@@ -5889,6 +5890,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 } catch (e) {
                   showToast("פותח את הקבוצה - העתק את ההזמנה מהתצוגה המקדימה");
                 }
+                logOrderToHistory(liveItems, title, supplierId, "whatsapp");
                 window.open(settings.whatsappGroupLink.trim(), "_blank");
                 closePendingSheet();
               }}
@@ -5910,6 +5912,24 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       return;
     }
     setPendingOrder({ items, title, supplierId, isRequest: false });
+  }
+
+  // Record a sent order into the history. Used by every send path (channel + WhatsApp).
+  function logOrderToHistory(items, title, supplierId, channelUsed) {
+    if (!recordOrder) return;
+    const supName = supplierId && supplierId !== "__unassigned__"
+      ? suppliers.find((s) => s.id === supplierId)?.name || "ספק"
+      : "ספק כללי";
+    recordOrder({
+      kind: "order",
+      title: title || "הזמנה",
+      channel: channelUsed || channel,
+      supplierId: supplierId || null,
+      supplierName: supName,
+      by: currentUser?.name || "",
+      items: items.map(({ product, qty }) => ({ name: product.name, unit: product.unit, qty, price: Number(product.price || 0) })),
+      total: items.reduce((sum, { product, qty }) => sum + Number(product.price || 0) * Number(qty), 0),
+    });
   }
 
   function doSendGroupOrder(items, title, supplierId) {
@@ -5934,21 +5954,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       if (showToast) showToast(res.error);
       return;
     }
-    if (recordOrder) {
-      const supName = supplierId && supplierId !== "__unassigned__"
-        ? suppliers.find((s) => s.id === supplierId)?.name || "ספק"
-        : "ספק כללי";
-      recordOrder({
-        kind: "order",
-        title: title || "הזמנה",
-        channel,
-        supplierId: supplierId || null,
-        supplierName: supName,
-        by: currentUser?.name || "",
-        items: items.map(({ product, qty }) => ({ name: product.name, unit: product.unit, qty, price: Number(product.price || 0) })),
-        total: items.reduce((sum, { product, qty }) => sum + Number(product.price || 0) * Number(qty), 0),
-      });
-    }
+    logOrderToHistory(items, title, supplierId);
   }
 
   /* WhatsApp can't render the print table, so the menu goes out as plain text
