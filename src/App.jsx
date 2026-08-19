@@ -11311,7 +11311,7 @@ function InvoiceScanner({ products, persistProducts, showToast, onClose }) {
       let token = SUPABASE_ANON_KEY;
       try { const sess = await window.auth?.getSession?.(); if (sess?.access_token) token = sess.access_token; } catch (e) {}
 
-      const resp = await fetch(`${SUPABASE_URL}/functions/v1/parse-invoice`, {
+      const resp = await fetch(`${SUPABASE_URL}/functions/v1/smooth-processor`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY },
         body: JSON.stringify({ imageBase64: base64, mediaType }),
