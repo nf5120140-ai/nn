@@ -5069,6 +5069,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [pendingOrder, setPendingOrder] = useState(null); // review sheet before anything is sent
   const [orderSearch, setOrderSearch] = useState("");
   const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
+  const [orderCategoryFilter, setOrderCategoryFilter] = useState("all");
   const [supplierOverrides, setSupplierOverrides] = useState({}); // productId -> supplierId chosen at order time (overrides the product's default)
   const [adHocItems, setAdHocItems] = useState([]); // free-text products not in the catalog: { id, name, qty, supplierId }
   const [adHocName, setAdHocName] = useState("");
@@ -6337,15 +6338,23 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       </div>
 
       {orderMode === "stock" && (() => {
-        const baseList = orderSupplierFilter === "all"
-          ? lowStock
-          : products.filter((p) => (p.supplierId || "__unassigned__") === orderSupplierFilter);
+        // Start from either the low-stock list or the full catalog, depending on
+        // whether any "show everything" filter (supplier or category) is active.
+        const anyFullFilter = orderSupplierFilter !== "all" || orderCategoryFilter !== "all";
+        let baseList = anyFullFilter ? products.slice() : lowStock;
+        if (orderSupplierFilter !== "all") {
+          baseList = baseList.filter((p) => (p.supplierId || "__unassigned__") === orderSupplierFilter);
+        }
+        if (orderCategoryFilter !== "all") {
+          baseList = baseList.filter((p) => (p.category || "ללא קטגוריה") === orderCategoryFilter);
+        }
         const filteredLowStock = orderSearch
           ? baseList.filter((p) => p.name.includes(orderSearch))
           : baseList;
         const supplierOptionsInList = Array.from(new Set(products.map((p) => p.supplierId || "__unassigned__")));
+        const categoryOptionsInList = Array.from(new Set(products.map((p) => p.category || "ללא קטגוריה")));
 
-        return lowStock.length === 0 && orderSupplierFilter === "all" && !orderSearch ? (
+        return lowStock.length === 0 && !anyFullFilter && !orderSearch ? (
           <ShelfTag accent={C.sage}>
             <p style={{ color: C.sage }} className="font-bold text-center">כל המלאי תקין ✓</p>
           </ShelfTag>
@@ -6373,9 +6382,22 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 ))}
               </select>
             </div>
-            {orderSupplierFilter !== "all" && (
+            <div className="flex gap-2 mb-3">
+              <select
+                value={orderCategoryFilter}
+                onChange={(e) => setOrderCategoryFilter(e.target.value)}
+                className="flex-1 p-2 rounded-2xl border text-sm"
+                style={{ borderColor: C.kraftDark }}
+              >
+                <option value="all">כל הקטגוריות</option>
+                {categoryOptionsInList.map((cat) => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ))}
+              </select>
+            </div>
+            {anyFullFilter && (
               <p className="text-xs mb-2" style={{ color: C.steel }}>
-                מוצג כאן כל המלאי של הספק הזה (גם מה שיש ממנו מספיק) - סמן ✔ והקלד כמות רק למה שבאמת רוצה להזמין.
+                מוצג כאן כל המלאי לפי הסינון שבחרת (גם מה שיש ממנו מספיק) - סמן ✔ והקלד כמות רק למה שבאמת רוצה להזמין.
               </p>
             )}
 
