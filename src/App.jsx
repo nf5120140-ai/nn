@@ -11265,21 +11265,72 @@ const DEFAULT_PRODUCT_CATEGORIES = [
 ];
 
 // Best-effort match of an invoice line name to an existing product id.
+// Conservative: if we are not reasonably sure, return "" (=> "דלג / לא לעדכן"),
+// so the user picks manually instead of getting a wrong auto-match.
+
+// Common words that carry no identifying meaning - ignored when scoring, so a
+// shared "בד"ץ" or "ק"ג" alone never causes a false match.
+const MATCH_STOPWORDS = new Set([
+  'בדץ', 'בד"ץ', 'בד״ץ', 'כשר', 'למהדרin', 'למהדרין',
+  'קג', 'ק"ג', 'ק״ג', 'גרם', 'גר', 'ליטר', 'לטר', 'מל', 'מ"ל',
+  'יח', 'יחי', "יח'", 'יחידה', 'יחידות', 'שק', 'שקים', 'שקית', 'קרטון',
+  'גלון', 'דלי', 'מארז', 'מא', 'אריזה', 'חבילה', 'בקבוק',
+  'של', 'עם', 'ללא', 'בטעם', 'בטעמים',
+]);
+
+function matchTokens(s) {
+  return String(s || "")
+    .replace(/["'׳״.,()\/\-]/g, " ")   // strip punctuation/quote marks
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter(Boolean)
+    .filter((w) => w.length >= 3)                              // drop 1-2 char fragments (ק, ג, בד, ץ, מא...)
+    .filter((w) => !MATCH_STOPWORDS.has(w) && !/^\d+$/.test(w)); // drop stopwords & pure numbers
+}
+
 function bestProductMatch(itemName, products) {
   const n = (itemName || "").trim();
   if (!n) return "";
+
+  // 1) Exact name match - always trust.
   let m = products.find((p) => (p.name || "").trim() === n);
   if (m) return m.id;
-  m = products.find((p) => n.includes((p.name || "").trim()) || (p.name || "").trim().includes(n));
-  if (m) return m.id;
-  const nt = n.split(/\s+/).filter(Boolean);
-  let best = "", bestScore = 0;
+
+  // 2) Meaningful-word overlap (ignoring stopwords/numbers).
+  const nt = matchTokens(n);
+  if (nt.length === 0) return "";           // nothing distinctive to match on
+  const nSet = new Set(nt);
+
+  let best = "", bestScore = 0, bestProdLen = 0, secondScore = 0;
   products.forEach((p) => {
-    const pt = (p.name || "").split(/\s+/).filter(Boolean);
-    const score = pt.filter((w) => nt.includes(w)).length;
-    if (score > bestScore) { bestScore = score; best = p.id; }
+    const pt = matchTokens(p.name);
+    if (pt.length === 0) return;
+    const shared = pt.filter((w) => nSet.has(w)).length;
+    if (shared === 0) return;
+    // ratio of shared words relative to the shorter of the two names
+    const ratio = shared / Math.min(nt.length, pt.length);
+    // scaled score so ties break toward higher overlap
+    const score = shared * 100 + Math.round(ratio * 10);
+    if (score > bestScore) { secondScore = bestScore; bestScore = score; best = p.id; bestProdLen = pt.length; }
+    else if (score > secondScore) { secondScore = score; }
   });
-  return bestScore > 0 ? best : "";
+
+  if (!best) return "";
+
+  const bestShared = Math.floor(bestScore / 100);
+  const bestRatio = (bestScore % 100) / 10;
+
+  // Require a genuinely strong match before auto-linking:
+  //  - at least 2 meaningful words in common, OR one word that covers
+  //    (almost) the whole of a short product name; AND
+  //  - a decent overlap ratio; AND
+  //  - the best match is clearly ahead of the runner-up (not ambiguous).
+  const strongEnough =
+    (bestShared >= 2 && bestRatio >= 0.5) ||
+    (bestShared >= 1 && bestProdLen <= 2 && bestRatio >= 0.99);
+  const clearWinner = bestScore - secondScore >= 100 || secondScore === 0;
+
+  return (strongEnough && clearWinner) ? best : "";
 }
 
 function InvoiceScanner({ products, persistProducts, showToast, onClose }) {
