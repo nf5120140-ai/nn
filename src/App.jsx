@@ -1948,7 +1948,9 @@ function UnitRequestTab({
     .filter((p) => (search ? p.name.includes(search) : true))
     .filter((p) => (catFilter === "all" ? true : (p.category || "ללא קטגוריה") === catFilter));
 
-  const locked = current?.status === "submitted";
+  const isSubmitted = current?.status === "submitted";
+  const [addingMore, setAddingMore] = useState(false);
+  const locked = isSubmitted && !addingMore;
 
   useEffect(() => { setNoteDraft(current?.note || ""); }, [current?.id, current?.status]);
 
@@ -2050,6 +2052,45 @@ function UnitRequestTab({
     showToast("הבקשה נפתחה מחדש לעריכה");
   }
 
+  async function finishAddMore() {
+    setAddingMore(false);
+    if (notifyManagers) await notifyManagers(`🧺 ${currentUser.name} הוסיף פריטים לבקשה שכבר נשלחה`, { tab: "admin", section: "unitrequests" });
+    showToast("הפריטים נוספו לבקשה והמחסן עודכן");
+  }
+
+  function printRequest() {
+    if (!current || (current.items || []).length === 0) return showToast("אין מה להדפיס");
+    const rows = (current.items || [])
+      .map((i, idx) => `<tr style="background:${idx % 2 ? "#EAF3FB" : "#fff"}"><td>${idx + 1}</td><td class="name">${i.name}</td><td class="qty">${i.qty} ${i.unit || ""}</td></tr>`)
+      .join("");
+    const html = `
+      <!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="utf-8"><title>בקשה מהמחסן</title>
+      <style>
+        @page { size: A4 portrait; margin: 14mm; }
+        * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        body { font-family: Arial, sans-serif; color: #111; }
+        h1 { text-align: center; font-size: 22px; margin: 0 0 4px; }
+        .sub { text-align: center; color: #555; font-size: 13px; margin-bottom: 16px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #444; padding: 8px 10px; font-size: 15px; }
+        thead th { background: #3E8FCB; color: #fff; }
+        td { text-align: center; }
+        td.name { text-align: right; font-weight: bold; }
+        .note { margin-top: 16px; padding: 10px; border: 1px dashed #888; border-radius: 8px; font-size: 14px; }
+      </style></head><body>
+        <h1>בקשה מהמחסן</h1>
+        <div class="sub">${current.unitName || currentUser.name || ""} · ${new Date(current.submittedAt || current.updatedAt || current.createdAt || Date.now()).toLocaleDateString("he-IL")}</div>
+        <table>
+          <thead><tr><th style="width:36px">#</th><th>מוצר</th><th style="width:110px">כמות</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        ${noteDraft || current.note ? `<div class="note"><b>הערה:</b> ${noteDraft || current.note}</div>` : ""}
+      </body></html>`;
+    const win = window.open("", "_blank");
+    win.document.write(html);
+    win.document.close();
+  }
+
   const qtyOf = (id) => (current?.items || []).find((i) => i.productId === id)?.qty || 0;
   const totalItems = (current?.items || []).length;
   const customItems = (current?.items || []).filter((i) => i.custom);
@@ -2087,10 +2128,25 @@ function UnitRequestTab({
                 </button>
               )}
             </div>
-            {locked && (
-              <button onClick={reopen} className="w-full mt-2 py-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
-                פתח מחדש לעריכה
-              </button>
+            {isSubmitted && !addingMore && (
+              <div className="flex gap-2 mt-2">
+                <button onClick={() => setAddingMore(true)} className="flex-1 py-2 rounded-2xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>
+                  ➕ הוסף עוד לבקשה
+                </button>
+                <button onClick={reopen} className="flex-1 py-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
+                  פתח מחדש לעריכה
+                </button>
+              </div>
+            )}
+            {addingMore && (
+              <div className="mt-2">
+                <div className="text-xs mb-2 p-2 rounded-xl" style={{ background: "#FFF6E9", color: C.ink }}>
+                  מצב הוספה: הוסף פריטים למטה (חיפוש / מוצר חדש), והם יתווספו לבקשה שכבר נשלחה.
+                </div>
+                <button onClick={finishAddMore} className="w-full py-2 rounded-2xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>
+                  ✓ סיום - עדכן את המחסן
+                </button>
+              </div>
             )}
           </ShelfTag>
 
@@ -2114,7 +2170,14 @@ function UnitRequestTab({
                 className="w-full mt-3 p-2 rounded-2xl border text-sm"
                 style={{ borderColor: C.kraftDark, minHeight: 56, resize: "vertical", background: locked ? C.kraft : "#fff" }}
               />
-              {!locked && (
+              <button
+                onClick={printRequest}
+                className="w-full mt-3 py-2 rounded-2xl font-bold text-sm"
+                style={{ background: C.accent, color: "#fff" }}
+              >
+                🖨️ הדפס / שמור PDF
+              </button>
+              {!isSubmitted && (
                 <div className="flex gap-2 mt-3">
                   <button onClick={submit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
                     שלח למחסן
@@ -3760,6 +3823,57 @@ function App() {
     loadKey(KEYS.mapRooms, []).then((v) => setMapRooms(Array.isArray(v) ? v : [])).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id]);
+
+  // ---- Full backup / restore ----
+  const [backupOpen, setBackupOpen] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
+  async function exportBackup() {
+    setBackupBusy(true);
+    try {
+      const data = {};
+      for (const k of Object.values(KEYS)) {
+        try {
+          const v = await loadKey(k, null);
+          if (v !== null && v !== undefined) data[k] = v;
+        } catch (e) {}
+      }
+      const payload = { app: "kitchen", version: 1, exportedAt: new Date().toISOString(), data };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+      a.href = url;
+      a.download = `גיבוי-משק-חכם-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      showToast("הגיבוי הורד למכשיר");
+    } catch (e) {
+      showToast("שגיאה ביצירת הגיבוי");
+    }
+    setBackupBusy(false);
+  }
+  async function importBackup(file) {
+    if (!file) return;
+    setBackupBusy(true);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const data = parsed && parsed.data ? parsed.data : parsed;
+      const keys = Object.keys(data || {});
+      if (keys.length === 0) { showToast("קובץ הגיבוי ריק או לא תקין"); setBackupBusy(false); return; }
+      if (!window.confirm(`לשחזר ${keys.length} סוגי נתונים מהגיבוי?\n\nזה ידרוס את הנתונים הנוכחיים במערכת בנתונים מהקובץ. מומלץ להוריד גיבוי עדכני קודם.`)) { setBackupBusy(false); return; }
+      for (const k of keys) {
+        try { await saveKey(k, data[k]); } catch (e) {}
+      }
+      showToast("השחזור הושלם - טוען מחדש...");
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (e) {
+      showToast("קובץ הגיבוי לא תקין");
+      setBackupBusy(false);
+    }
+  }
   useEffect(() => {
     if (!currentUser) return;
     loadKey(KEYS.savedMenus, []).then((v) => setSavedMenus(Array.isArray(v) ? v : [])).catch(() => {});
@@ -4356,6 +4470,15 @@ function App() {
             )}
             <NotificationsToggle showToast={showToast} />
             <BiometricToggle currentUser={currentUser} showToast={showToast} />
+            {isManager(currentUser) && (
+              <button
+                onClick={() => { setBackupOpen(true); setShowMenu(false); }}
+                className="mx-3 mb-2 py-2 rounded-2xl font-bold text-sm"
+                style={{ background: C.sage, color: "#fff" }}
+              >
+                💾 גיבוי ושחזור
+              </button>
+            )}
             <button
               onClick={async () => { await window.auth.signOut(); setAuthProfile(null); setShowMenu(false); }}
               className="m-3 py-2 rounded-2xl font-bold text-sm"
@@ -4423,6 +4546,42 @@ function App() {
       )}
 
       <InternalChat currentUser={currentUser} users={users} isManager={isManager(currentUser)} notifyManagers={notifyManagers} notifyUser={notifyUser} openSignal={chatOpenSignal} onUnread={setChatUnread} />
+
+      {backupOpen && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => !backupBusy && setBackupOpen(false)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 520, borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}>
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>💾 גיבוי ושחזור</div>
+              <button onClick={() => !backupBusy && setBackupOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+
+            <p className="text-sm mb-3" style={{ color: C.steel }}>
+              הורד קובץ גיבוי של כל נתוני המערכת (מוצרים, תפריטים, משימות, מקומות, מפה, הזמנות ועוד) ושמור אותו במקום בטוח. אם משהו נמחק - אפשר לשחזר ממנו.
+            </p>
+
+            <button
+              onClick={exportBackup}
+              disabled={backupBusy}
+              className="w-full py-3 rounded-2xl font-bold mb-2"
+              style={{ background: C.ink, color: C.paper, opacity: backupBusy ? 0.6 : 1 }}
+            >
+              {backupBusy ? "עובד…" : "⬇️ הורד גיבוי עכשיו"}
+            </button>
+
+            <label
+              className="block w-full text-center py-3 rounded-2xl font-bold cursor-pointer"
+              style={{ background: "#fff", color: C.stamp, border: `1.5px dashed ${C.stamp}` }}
+            >
+              ⬆️ שחזר מקובץ גיבוי
+              <input type="file" accept=".json,application/json" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; importBackup(f); }} style={{ display: "none" }} disabled={backupBusy} />
+            </label>
+
+            <p className="text-xs mt-3 p-2 rounded-xl" style={{ background: "#FFF6E9", color: C.ink }}>
+              ⚠️ שחזור דורס את הנתונים הנוכחיים בנתונים מהקובץ. תמיד הורד גיבוי עדכני לפני שחזור. מומלץ להוריד גיבוי אחת לשבוע.
+            </p>
+          </div>
+        </div>
+      )}
       </div>
     </div>
   );
