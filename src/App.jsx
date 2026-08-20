@@ -10490,9 +10490,10 @@ function UnitRequestsAdmin({
   }
 
   function giveAll() {
+    // Issue the full requested quantity for every item - even beyond what's in stock.
     setEditing((cur) => ({
       ...cur,
-      items: cur.items.map((i) => ({ ...i, give: Math.min(i.qty, stockOf(i.productId)) })),
+      items: cur.items.map((i) => ({ ...i, give: i.qty })),
     }));
   }
 
