@@ -41,6 +41,7 @@ const KEYS = {
   menuItems: "kitchen-menu-items",
   weeklyMenu: "kitchen-weekly-menu",
   savedMenus: "kitchen-saved-menus",
+  mapRooms: "kitchen-map-rooms",
   reminders: "kitchen-reminders",
   stockLog: "kitchen-stock-log",
   orderHistory: "kitchen-order-history",
@@ -3502,6 +3503,7 @@ function App() {
       [KEYS.menuItems]: async () => setMenuItems((await loadKey(KEYS.menuItems, [])) || []),
       [KEYS.weeklyMenu]: async () => setWeeklyMenu((await loadKey(KEYS.weeklyMenu, {})) || {}),
       [KEYS.savedMenus]: async () => setSavedMenus((await loadKey(KEYS.savedMenus, [])) || []),
+      [KEYS.mapRooms]: async () => setMapRooms((await loadKey(KEYS.mapRooms, [])) || []),
       [KEYS.reminders]: async () => setReminders((await loadKey(KEYS.reminders, [])) || []),
       [KEYS.stockLog]: async () => setStockLog((await loadKey(KEYS.stockLog, [])) || []),
       [KEYS.orderHistory]: async () => setOrderHistory((await loadKey(KEYS.orderHistory, [])) || []),
@@ -3748,6 +3750,16 @@ function App() {
     setSavedMenus(next);
     await saveKey(KEYS.savedMenus, next);
   }
+  const [mapRooms, setMapRooms] = useState([]);
+  async function persistMapRooms(next) {
+    setMapRooms(next);
+    await saveKey(KEYS.mapRooms, next);
+  }
+  useEffect(() => {
+    if (!currentUser) return;
+    loadKey(KEYS.mapRooms, []).then((v) => setMapRooms(Array.isArray(v) ? v : [])).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
   useEffect(() => {
     if (!currentUser) return;
     loadKey(KEYS.savedMenus, []).then((v) => setSavedMenus(Array.isArray(v) ? v : [])).catch(() => {});
@@ -4207,6 +4219,17 @@ function App() {
             newTaskSignal={newTaskSignal}
           />
         )}
+        {tab === "map" && (
+          <MapTab
+            mapRooms={mapRooms}
+            persistMapRooms={persistMapRooms}
+            tasks={tasks}
+            persistTasks={persistTasks}
+            currentUser={currentUser}
+            showToast={showToast}
+            notifyManagers={notifyManagers}
+          />
+        )}
         {tab === "unitrequest" && canRequestFromStock(currentUser) && (
           <UnitRequestTab
             products={products}
@@ -4296,6 +4319,13 @@ function App() {
                   onClick={() => { setTab("tasks"); setShowMenu(false); }}
                   badge={myOpenTasks.length > 0 ? myOpenTasks.length : null}
                   badgeColor={C.mustard}
+                />
+              )}
+              {(isManager(currentUser) || currentUser.permissions?.tasks !== false) && (
+                <DrawerItem
+                  label="🗺️ מפת המוסד"
+                  active={tab === "map"}
+                  onClick={() => { setTab("map"); setShowMenu(false); }}
                 />
               )}
               {canRequestFromStock(currentUser) && (
@@ -7375,6 +7405,207 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+const MAP_STATUS = {
+  ok: { label: "רגיל", color: "#E5E7EB", text: "#231F3D" },
+  clean: { label: "לניקוי", color: "#EF4444", text: "#fff" },
+  progress: { label: "בטיפול", color: "#F59E0B", text: "#fff" },
+  done: { label: "נוקה", color: "#22C55E", text: "#fff" },
+};
+
+function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, showToast, notifyManagers }) {
+  const [activeBuilding, setActiveBuilding] = useState(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [sheetRoom, setSheetRoom] = useState(null);
+  const [newBuilding, setNewBuilding] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+
+  const buildings = Array.from(new Set((mapRooms || []).map((r) => r.building || "כללי"))).sort((a, b) => a.localeCompare(b, "he"));
+  const building = activeBuilding && buildings.includes(activeBuilding) ? activeBuilding : buildings[0];
+  const roomsHere = (mapRooms || []).filter((r) => (r.building || "כללי") === building);
+
+  // If a room is linked to a task that got marked done, show it as "done" (green).
+  function effStatus(room) {
+    if (room.taskId) {
+      const t = (tasks || []).find((x) => x.id === room.taskId);
+      if (t && t.status === "done") return "done";
+    }
+    return room.status || "ok";
+  }
+
+  async function setRoomStatus(room, status) {
+    await persistMapRooms((mapRooms || []).map((r) => (r.id === room.id ? { ...r, status, statusAt: Date.now() } : r)));
+    setSheetRoom((cur) => (cur && cur.id === room.id ? { ...cur, status } : cur));
+  }
+
+  async function addRoom() {
+    const b = (newBuilding.trim() || building || "כללי");
+    const l = newLabel.trim();
+    if (!l) { showToast("הזן מספר/שם חדר"); return; }
+    const room = { id: genId(), building: b, label: l, status: "ok", statusAt: Date.now() };
+    await persistMapRooms([...(mapRooms || []), room]);
+    setNewLabel("");
+    setActiveBuilding(b);
+    showToast("החדר נוסף");
+  }
+
+  async function deleteRoom(id) {
+    await persistMapRooms((mapRooms || []).filter((r) => r.id !== id));
+    setSheetRoom(null);
+  }
+
+  async function createTaskForRoom(room) {
+    const title = `ניקיון: ${room.building || "כללי"} · ${room.label}`;
+    const task = {
+      id: genId(),
+      title,
+      description: "",
+      location: `${room.building || "כללי"} · ${room.label}`,
+      assignedToId: "",
+      priority: "normal",
+      status: "open",
+      comments: [],
+      createdAt: Date.now(),
+      createdBy: currentUser?.name || "",
+      createdById: currentUser?.id || "",
+    };
+    await persistTasks([task, ...(tasks || [])]);
+    await persistMapRooms((mapRooms || []).map((r) => (r.id === room.id ? { ...r, status: "clean", statusAt: Date.now(), taskId: task.id } : r)));
+    if (notifyManagers) notifyManagers(`🧹 נפתחה משימת ניקיון: ${room.building || "כללי"} ${room.label}`, { tab: "tasks", taskId: task.id });
+    setSheetRoom(null);
+    showToast("נוצרה משימה והחדר סומן לניקוי");
+  }
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-3">
+        <div className="wh-display font-black text-lg" style={{ color: C.ink }}>🗺️ מפת המוסד</div>
+        <button onClick={() => setAddOpen(true)} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.ink, color: C.paper }}>
+          ➕ הוסף חדר
+        </button>
+      </div>
+
+      {/* Legend */}
+      <div className="flex gap-2 flex-wrap mb-3">
+        {Object.entries(MAP_STATUS).map(([k, s]) => (
+          <div key={k} className="flex items-center gap-1 text-xs" style={{ color: C.steel }}>
+            <span style={{ width: 14, height: 14, borderRadius: 4, background: s.color, border: `1px solid ${C.kraftDark}`, display: "inline-block" }} />
+            {s.label}
+          </div>
+        ))}
+      </div>
+
+      {buildings.length === 0 ? (
+        <ShelfTag accent={C.steel}>
+          <p className="text-sm text-center" style={{ color: C.steel }}>עדיין אין חדרים. לחץ "➕ הוסף חדר" כדי להתחיל.</p>
+        </ShelfTag>
+      ) : (
+        <>
+          {/* Building tabs */}
+          <div className="flex gap-2 overflow-x-auto pb-2 mb-3">
+            {buildings.map((b) => (
+              <button
+                key={b}
+                onClick={() => setActiveBuilding(b)}
+                className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
+                style={{ background: b === building ? C.ink : "#fff", color: b === building ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+              >
+                {b}
+              </button>
+            ))}
+          </div>
+
+          {/* Room grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))", gap: 8 }}>
+            {roomsHere.map((room) => {
+              const st = MAP_STATUS[effStatus(room)] || MAP_STATUS.ok;
+              return (
+                <button
+                  key={room.id}
+                  onClick={() => setSheetRoom(room)}
+                  style={{
+                    background: st.color, color: st.text, border: `1px solid ${C.kraftDark}`,
+                    borderRadius: 14, padding: "14px 6px", fontWeight: 800, fontSize: 15,
+                    minHeight: 60, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center",
+                  }}
+                >
+                  {room.label}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {/* Add room sheet */}
+      {addOpen && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setAddOpen(false)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 520, borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}>
+            <div className="wh-display font-black text-lg mb-3" style={{ color: C.ink }}>➕ הוסף חדר</div>
+            <label className="text-xs font-bold" style={{ color: C.steel }}>בניין</label>
+            <input
+              list="map-buildings"
+              value={newBuilding}
+              onChange={(e) => setNewBuilding(e.target.value)}
+              placeholder="שם/מספר בניין (או בחר קיים)"
+              className="w-full p-3 rounded-2xl border mb-3 mt-1"
+              style={{ borderColor: C.kraftDark, background: "#fff" }}
+            />
+            <datalist id="map-buildings">
+              {buildings.map((b) => <option key={b} value={b} />)}
+            </datalist>
+            <label className="text-xs font-bold" style={{ color: C.steel }}>מספר / שם חדר</label>
+            <input
+              value={newLabel}
+              onChange={(e) => setNewLabel(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") addRoom(); }}
+              placeholder="למשל 509"
+              className="w-full p-3 rounded-2xl border mb-3 mt-1"
+              style={{ borderColor: C.kraftDark, background: "#fff" }}
+            />
+            <div className="flex gap-2">
+              <button onClick={addRoom} className="flex-1 py-3 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>הוסף חדר</button>
+              <button onClick={() => setAddOpen(false)} className="px-4 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+            <p className="text-xs mt-2" style={{ color: C.steel }}>טיפ: כדי ליצור בניין חדש, פשוט כתוב שם בניין חדש.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Room status sheet */}
+      {sheetRoom && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setSheetRoom(null)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 520, borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}>
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>{sheetRoom.building || "כללי"} · {sheetRoom.label}</div>
+              <button onClick={() => setSheetRoom(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+
+            <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>סמן סטטוס</div>
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              {Object.entries(MAP_STATUS).map(([k, s]) => (
+                <button
+                  key={k}
+                  onClick={() => setRoomStatus(sheetRoom, k)}
+                  style={{ background: s.color, color: s.text, border: effStatus(sheetRoom) === k ? `3px solid ${C.ink}` : `1px solid ${C.kraftDark}`, borderRadius: 12, padding: "12px", fontWeight: 800 }}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
+
+            <button onClick={() => createTaskForRoom(sheetRoom)} className="w-full py-3 rounded-2xl font-bold mb-2" style={{ background: C.accent, color: "#fff" }}>
+              📋 צור משימה לחדר
+            </button>
+            <button onClick={() => { if (typeof window !== "undefined" && !window.confirm("למחוק את החדר מהמפה?")) return; deleteRoom(sheetRoom.id); }} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: "#fff", color: C.stamp, border: `1px solid ${C.kraftDark}` }}>
+              🗑️ מחק חדר
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
