@@ -10356,9 +10356,9 @@ function UnitRequestsAdmin({
   const [tab, setTab] = useState("pending");
   const [editing, setEditing] = useState(null); // { requestId, items, note }
   const [managingTemplate, setManagingTemplate] = useState(null); // unitId whose fixed list we're editing
-  const [addProductId, setAddProductId] = useState("");
+  const [addSearch, setAddSearch] = useState("");
+  const [addSelectedId, setAddSelectedId] = useState("");
   const [addQty, setAddQty] = useState(1);
-  const [addCustomName, setAddCustomName] = useState("");
 
   const all = [...(unitRequests || [])].sort((a, b) => (b.submittedAt || b.createdAt) - (a.submittedAt || a.createdAt));
   const pending = all.filter((r) => r.status === "submitted");
@@ -10467,26 +10467,26 @@ function UnitRequestsAdmin({
     setEditing((cur) => ({ ...cur, items: cur.items.filter((i) => i.productId !== productId) }));
   }
 
-  // Manager adds an item to the picking list - a catalog product or a free-text one.
+  // Manager adds an item: resolve the typed text to a catalog product (picked from
+  // the suggestions, or an exact name match), otherwise add it as a free-text product.
   function addItemToReview() {
     const q = Math.max(1, Number(addQty) || 1);
-    if (addProductId) {
-      const p = products.find((x) => x.id === addProductId);
-      if (!p) return;
+    const term = addSearch.trim();
+    let p = addSelectedId ? products.find((x) => x.id === addSelectedId) : null;
+    if (!p && term) p = products.find((x) => (x.name || "").trim() === term);
+    if (p) {
       setEditing((cur) => {
         if (cur.items.some((i) => i.productId === p.id)) {
           return { ...cur, items: cur.items.map((i) => (i.productId === p.id ? { ...i, qty: (i.qty || 0) + q, give: (i.give || 0) + q } : i)) };
         }
         return { ...cur, items: [...cur.items, { productId: p.id, name: p.name, unit: p.unit, qty: q, give: q }] };
       });
-      setAddProductId(""); setAddQty(1);
+    } else if (term) {
+      setEditing((cur) => ({ ...cur, items: [...cur.items, { productId: "custom-" + genId(), name: term, unit: "", qty: q, give: q, custom: true }] }));
+    } else {
       return;
     }
-    const nm = addCustomName.trim();
-    if (nm) {
-      setEditing((cur) => ({ ...cur, items: [...cur.items, { productId: "custom-" + genId(), name: nm, unit: "", qty: q, give: q, custom: true }] }));
-      setAddCustomName(""); setAddQty(1);
-    }
+    setAddSearch(""); setAddSelectedId(""); setAddQty(1);
   }
 
   function giveAll() {
@@ -10690,18 +10690,37 @@ function UnitRequestsAdmin({
 
         <div className="rounded-2xl p-3 mb-3" style={{ background: "#fff", border: `1px dashed ${C.kraftDark}` }}>
           <div className="text-sm font-bold mb-2" style={{ color: C.ink }}>➕ הוסף פריט לרשימה</div>
-          <div className="flex gap-2 mb-2">
-            <select
-              value={addProductId}
-              onChange={(e) => { setAddProductId(e.target.value); if (e.target.value) setAddCustomName(""); }}
-              className="flex-1 p-2 rounded-xl border text-sm"
-              style={{ borderColor: C.kraftDark, background: "#fff" }}
-            >
-              <option value="">— בחר מוצר מהמלאי —</option>
-              {products.map((p) => (
-                <option key={p.id} value={p.id}>{p.name}</option>
-              ))}
-            </select>
+          <div className="flex gap-2">
+            <div style={{ position: "relative", flex: 1 }}>
+              <input
+                value={addSearch}
+                onChange={(e) => { setAddSearch(e.target.value); setAddSelectedId(""); }}
+                onKeyDown={(e) => { if (e.key === "Enter") addItemToReview(); }}
+                placeholder="הקלד שם מוצר..."
+                className="w-full p-2 rounded-xl border text-sm"
+                style={{ borderColor: C.kraftDark, background: "#fff" }}
+              />
+              {(() => {
+                const term = addSearch.trim();
+                if (!term || addSelectedId) return null;
+                const matches = products.filter((p) => (p.name || "").trim().startsWith(term)).slice(0, 8);
+                if (matches.length === 0) return null;
+                return (
+                  <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 20, background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 220, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
+                    {matches.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => { setAddSearch(p.name); setAddSelectedId(p.id); }}
+                        className="w-full text-right px-3 py-2 text-sm"
+                        style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: "#fff" }}
+                      >
+                        {p.name}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
             <input
               type="number"
               value={addQty}
@@ -10709,20 +10728,11 @@ function UnitRequestsAdmin({
               className="w-16 text-center p-2 rounded-xl border"
               style={{ borderColor: C.kraftDark }}
             />
-          </div>
-          <div className="flex gap-2">
-            <input
-              value={addCustomName}
-              onChange={(e) => { setAddCustomName(e.target.value); if (e.target.value) setAddProductId(""); }}
-              onKeyDown={(e) => { if (e.key === "Enter") addItemToReview(); }}
-              placeholder="או מוצר חדש שלא במלאי..."
-              className="flex-1 p-2 rounded-xl border text-sm"
-              style={{ borderColor: C.kraftDark, background: "#fff" }}
-            />
             <button onClick={addItemToReview} className="px-4 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
               הוסף
             </button>
           </div>
+          <p className="text-xs mt-1" style={{ color: C.steel }}>בחר מההצעות שקופצות, או הקלד שם חדש והוסף.</p>
         </div>
 
         <textarea
