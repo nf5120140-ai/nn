@@ -1932,6 +1932,7 @@ function UnitRequestTab({
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("all");
   const [noteDraft, setNoteDraft] = useState("");
+  const [customName, setCustomName] = useState("");
 
   const thisWeek = weekStartIso();
   const mine = (unitRequests || []).filter((r) => r.unitId === currentUser.id);
@@ -1992,6 +1993,26 @@ function UnitRequestTab({
     await upsertCurrent(items);
   }
 
+  // Add a free-text product that isn't in the catalog.
+  async function addCustomItem() {
+    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
+    const name = customName.trim();
+    if (!name) return;
+    const items = [...(current?.items || []), { productId: "custom-" + genId(), name, unit: "", qty: 1, custom: true }];
+    await upsertCurrent(items);
+    setCustomName("");
+  }
+  async function updateCustomQty(pid, qty) {
+    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
+    const q = Math.max(0, Number(qty) || 0);
+    const items = (current?.items || []).map((i) => (i.productId === pid ? { ...i, qty: q } : i));
+    await upsertCurrent(items);
+  }
+  async function removeItem(pid) {
+    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
+    await upsertCurrent((current?.items || []).filter((i) => i.productId !== pid));
+  }
+
   async function loadFromTemplate() {
     if (locked) return showToast("הבקשה כבר נשלחה");
     if (template.length === 0) return showToast("לא הוגדרה רשימה שבועית קבועה");
@@ -2030,6 +2051,7 @@ function UnitRequestTab({
 
   const qtyOf = (id) => (current?.items || []).find((i) => i.productId === id)?.qty || 0;
   const totalItems = (current?.items || []).length;
+  const customItems = (current?.items || []).filter((i) => i.custom);
 
   return (
     <div>
@@ -2111,6 +2133,41 @@ function UnitRequestTab({
             className="w-full p-3 rounded-2xl border mb-3"
             style={{ borderColor: C.kraftDark, background: "#fff" }}
           />
+
+          {!locked && (
+            <div className="flex gap-2 mb-3">
+              <input
+                value={customName}
+                onChange={(e) => setCustomName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") addCustomItem(); }}
+                placeholder="מוצר שלא ברשימה..."
+                className="flex-1 p-3 rounded-2xl border"
+                style={{ borderColor: C.kraftDark, background: "#fff" }}
+              />
+              <button onClick={addCustomItem} className="px-4 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
+                הוסף
+              </button>
+            </div>
+          )}
+
+          {customItems.length > 0 && (
+            <ShelfTag accent={C.mustard} style={{ marginBottom: 12 }}>
+              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>מוצרים שהוספת ידנית</div>
+              <div className="flex flex-col gap-2">
+                {customItems.map((i) => (
+                  <div key={i.productId} className="flex justify-between items-center">
+                    <span className="font-bold text-sm" style={{ color: C.ink }}>{i.name}</span>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => updateCustomQty(i.productId, i.qty - 1)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}>−</button>
+                      <input type="number" value={i.qty === 0 ? "" : i.qty} onChange={(e) => updateCustomQty(i.productId, e.target.value)} disabled={locked} className="w-12 text-center p-1.5 rounded-xl border" style={{ borderColor: C.kraftDark }} />
+                      <button onClick={() => updateCustomQty(i.productId, i.qty + 1)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.ink, color: "#fff", opacity: locked ? 0.4 : 1 }}>+</button>
+                      <button onClick={() => removeItem(i.productId)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: "#fff", color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </ShelfTag>
+          )}
 
           <div className="flex gap-2 overflow-x-auto pb-2 mb-3">
             <button
