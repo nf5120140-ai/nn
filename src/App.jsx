@@ -40,6 +40,7 @@ const KEYS = {
   notifications: "kitchen-notifications",
   menuItems: "kitchen-menu-items",
   weeklyMenu: "kitchen-weekly-menu",
+  savedMenus: "kitchen-saved-menus",
   reminders: "kitchen-reminders",
   stockLog: "kitchen-stock-log",
   orderHistory: "kitchen-order-history",
@@ -3143,6 +3144,7 @@ function App() {
   const [notifications, setNotifications] = useState([]);
   const [menuItems, setMenuItems] = useState([]);
   const [weeklyMenu, setWeeklyMenu] = useState({});
+  const [savedMenus, setSavedMenus] = useState([]);
   const [reminders, setReminders] = useState([]);
   const [stockLog, setStockLog] = useState([]);
   const [orderHistory, setOrderHistory] = useState([]);
@@ -3442,6 +3444,7 @@ function App() {
       [KEYS.notifications]: async () => setNotifications((await loadKey(KEYS.notifications, [])) || []),
       [KEYS.menuItems]: async () => setMenuItems((await loadKey(KEYS.menuItems, [])) || []),
       [KEYS.weeklyMenu]: async () => setWeeklyMenu((await loadKey(KEYS.weeklyMenu, {})) || {}),
+      [KEYS.savedMenus]: async () => setSavedMenus((await loadKey(KEYS.savedMenus, [])) || []),
       [KEYS.reminders]: async () => setReminders((await loadKey(KEYS.reminders, [])) || []),
       [KEYS.stockLog]: async () => setStockLog((await loadKey(KEYS.stockLog, [])) || []),
       [KEYS.orderHistory]: async () => setOrderHistory((await loadKey(KEYS.orderHistory, [])) || []),
@@ -3684,6 +3687,15 @@ function App() {
     setWeeklyMenu(next);
     await saveKey(KEYS.weeklyMenu, next);
   }
+  async function persistSavedMenus(next) {
+    setSavedMenus(next);
+    await saveKey(KEYS.savedMenus, next);
+  }
+  useEffect(() => {
+    if (!currentUser) return;
+    loadKey(KEYS.savedMenus, []).then((v) => setSavedMenus(Array.isArray(v) ? v : [])).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
   async function persistReminders(next) {
     setReminders(next);
     await saveKey(KEYS.reminders, next);
@@ -4119,6 +4131,8 @@ function App() {
             recordOrder={recordOrder}
             orderHistory={orderHistory}
             deleteOrderHistoryEntry={deleteOrderHistoryEntry}
+            savedMenus={savedMenus}
+            persistSavedMenus={persistSavedMenus}
           />
         )}
         {tab === "tasks" && (
@@ -5047,7 +5061,7 @@ function HebrewCalendarWidget() {
   );
 }
 
-function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry }) {
+function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry, savedMenus, persistSavedMenus }) {
   const mayApprove = canSendOrders(currentUser);
   const myPending = (orderRequests || []).filter((r) => r.createdById === currentUser?.id && r.status === "pending");
   const suppliers = settings.suppliers || [];
@@ -5069,7 +5083,6 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [pendingOrder, setPendingOrder] = useState(null); // review sheet before anything is sent
   const [orderSearch, setOrderSearch] = useState("");
   const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
-  const [orderCategoryFilter, setOrderCategoryFilter] = useState("all");
   const [supplierOverrides, setSupplierOverrides] = useState({}); // productId -> supplierId chosen at order time (overrides the product's default)
   const [adHocItems, setAdHocItems] = useState([]); // free-text products not in the catalog: { id, name, qty, supplierId }
   const [adHocName, setAdHocName] = useState("");
@@ -5078,6 +5091,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [weekView, setWeekView] = useState("grid"); // "grid" (like the Excel sheet) | "days"
   const [menuWeek, setMenuWeek] = useState("next"); // which week the printed menu is for
   const [parshaOverride, setParshaOverride] = useState("");
+  const [savedMenusOpen, setSavedMenusOpen] = useState(false);
 
   // Keep the in-progress order (quantities, picks, extras, ad-hoc items) so it survives
   // switching tabs or reloading. Stored per-organization on this device.
@@ -6088,25 +6102,29 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
     function tableFor(slotKey, slotLabel) {
       const types = dishTypesForSlot(dishTypes, slotKey);
+      const pal = slotKey === "dinner"
+        ? { strong: "#F6D2A6", weak: "#FCEBD4", head: "#DE9542" }   // ערב - warm
+        : { strong: "#BBD9F2", weak: "#E6F1FB", head: "#3E8FCB" };  // צהריים - cool blue
       const header = days
         .map(([, label], idx) => {
           const d = parseIsoLocal(targetWeekStart);
           d.setDate(d.getDate() + idx);
           const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
-          return `<th>${label}<div class="date">${dateStr}</div></th>`;
+          return `<th style="background:${pal.head};color:#fff">${label}<div class="date">${dateStr}</div></th>`;
         })
         .join("");
 
       const body = types
-        .map((dt) => {
+        .map((dt, ri) => {
+          const rowBg = ri % 2 === 0 ? pal.strong : pal.weak;
           const cells = days
             .map(([dayKey]) => {
               const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
               const m = menuItems.find((mi) => mi.id === id);
-              return `<td>${m ? m.name : ""}</td>`;
+              return `<td style="background:${rowBg}">${m ? m.name : ""}</td>`;
             })
             .join("");
-          return `<tr><th class="rowhead">${dt.name}</th>${cells}</tr>`;
+          return `<tr><th class="rowhead" style="background:${rowBg}">${dt.name}</th>${cells}</tr>`;
         })
         .join("");
 
@@ -6117,9 +6135,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       if (!anything) return "";
 
       return `
-        <h2>ארוחת ${slotLabel}</h2>
+        <h2 style="color:${pal.head}">ארוחת ${slotLabel}</h2>
         <table>
-          <thead><tr><th class="corner"></th>${header}</tr></thead>
+          <thead><tr><th class="corner" style="background:${pal.head}"></th>${header}</tr></thead>
           <tbody>${body}</tbody>
         </table>`;
     }
@@ -6134,17 +6152,16 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           <title>תפריט שבועי</title>
           <style>
             @page { size: A4 landscape; margin: 12mm; }
-            body { font-family: Arial, sans-serif; padding: 8px; color: #111; }
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            body { font-family: Arial, sans-serif; padding: 8px; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             h1 { text-align: center; font-size: 22px; margin: 0 0 4px; }
             .sub { text-align: center; font-size: 12px; color: #666; margin-bottom: 18px; }
             h2 { font-size: 16px; margin: 18px 0 6px; }
             table { width: 100%; border-collapse: collapse; margin-bottom: 10px; page-break-inside: avoid; }
             th, td { border: 1px solid #444; padding: 8px 6px; text-align: center; font-size: 14px; }
-            thead th { background: #2E86C4; color: #fff; font-size: 15px; }
+            thead th { color: #fff; font-size: 15px; }
             .date { font-size: 10px; font-weight: normal; opacity: 0.85; }
-            .corner { background: #2E86C4; }
-            .rowhead { background: #D6E7F5; text-align: right; font-weight: bold; width: 110px; }
-            tbody tr:nth-child(even) td { background: #F5F9FD; }
+            .rowhead { text-align: right; font-weight: bold; width: 110px; }
           </style>
         </head>
         <body>
@@ -6158,6 +6175,40 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     const win = window.open("", "_blank");
     win.document.write(html);
     win.document.close();
+  }
+
+  // Save a readable copy of the current week's menu into a separate archive,
+  // so it can be looked back on week to week. Never touches the live menu or dish types.
+  async function saveCurrentMenu() {
+    const slots = MEAL_SLOTS.map(([slotKey, slotLabel]) => ({
+      slotKey,
+      slotLabel,
+      rows: dishTypesForSlot(dishTypes, slotKey).map((dt) => ({
+        dishType: dt.name,
+        cells: WEEK_DAYS.map(([dayKey, dayLabel]) => {
+          const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+          const m = menuItems.find((mi) => mi.id === id);
+          return { day: dayLabel, name: m ? m.name : "" };
+        }),
+      })),
+    })).filter((s) => s.rows.some((r) => r.cells.some((c) => c.name)));
+
+    if (slots.length === 0) { showToast("אין תפריט מלא לשמירה"); return; }
+
+    const snap = {
+      id: genId(),
+      savedAt: Date.now(),
+      weekLabel: weekLabel(targetWeekStart),
+      parsha: parshaTitle || "",
+      slots,
+      menu: weeklyMenu,
+    };
+    await persistSavedMenus([snap, ...(savedMenus || [])].slice(0, 100));
+    showToast("התפריט נשמר בהיסטוריית התפריטים");
+  }
+  async function deleteSavedMenu(id) {
+    await persistSavedMenus((savedMenus || []).filter((s) => s.id !== id));
+    showToast("התפריט נמחק מההיסטוריה");
   }
 
 
@@ -6338,23 +6389,15 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       </div>
 
       {orderMode === "stock" && (() => {
-        // Start from either the low-stock list or the full catalog, depending on
-        // whether any "show everything" filter (supplier or category) is active.
-        const anyFullFilter = orderSupplierFilter !== "all" || orderCategoryFilter !== "all";
-        let baseList = anyFullFilter ? products.slice() : lowStock;
-        if (orderSupplierFilter !== "all") {
-          baseList = baseList.filter((p) => (p.supplierId || "__unassigned__") === orderSupplierFilter);
-        }
-        if (orderCategoryFilter !== "all") {
-          baseList = baseList.filter((p) => (p.category || "ללא קטגוריה") === orderCategoryFilter);
-        }
+        const baseList = orderSupplierFilter === "all"
+          ? lowStock
+          : products.filter((p) => (p.supplierId || "__unassigned__") === orderSupplierFilter);
         const filteredLowStock = orderSearch
           ? baseList.filter((p) => p.name.includes(orderSearch))
           : baseList;
         const supplierOptionsInList = Array.from(new Set(products.map((p) => p.supplierId || "__unassigned__")));
-        const categoryOptionsInList = Array.from(new Set(products.map((p) => p.category || "ללא קטגוריה")));
 
-        return lowStock.length === 0 && !anyFullFilter && !orderSearch ? (
+        return lowStock.length === 0 && orderSupplierFilter === "all" && !orderSearch ? (
           <ShelfTag accent={C.sage}>
             <p style={{ color: C.sage }} className="font-bold text-center">כל המלאי תקין ✓</p>
           </ShelfTag>
@@ -6382,22 +6425,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 ))}
               </select>
             </div>
-            <div className="flex gap-2 mb-3">
-              <select
-                value={orderCategoryFilter}
-                onChange={(e) => setOrderCategoryFilter(e.target.value)}
-                className="flex-1 p-2 rounded-2xl border text-sm"
-                style={{ borderColor: C.kraftDark }}
-              >
-                <option value="all">כל הקטגוריות</option>
-                {categoryOptionsInList.map((cat) => (
-                  <option key={cat} value={cat}>{cat}</option>
-                ))}
-              </select>
-            </div>
-            {anyFullFilter && (
+            {orderSupplierFilter !== "all" && (
               <p className="text-xs mb-2" style={{ color: C.steel }}>
-                מוצג כאן כל המלאי לפי הסינון שבחרת (גם מה שיש ממנו מספיק) - סמן ✔ והקלד כמות רק למה שבאמת רוצה להזמין.
+                מוצג כאן כל המלאי של הספק הזה (גם מה שיש ממנו מספיק) - סמן ✔ והקלד כמות רק למה שבאמת רוצה להזמין.
               </p>
             )}
 
@@ -6693,6 +6723,23 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                 🖨️ הדפס תפריט שבועי
               </button>
 
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={saveCurrentMenu}
+                  className="flex-1 py-3 rounded-2xl text-sm font-bold"
+                  style={{ background: C.sage, color: "#fff" }}
+                >
+                  💾 שמור עותק של התפריט
+                </button>
+                <button
+                  onClick={() => setSavedMenusOpen(true)}
+                  className="flex-1 py-3 rounded-2xl text-sm font-bold"
+                  style={{ background: C.kraft, color: C.ink }}
+                >
+                  📚 תפריטים שמורים{savedMenus?.length ? ` (${savedMenus.length})` : ""}
+                </button>
+              </div>
+
               <button
                 onClick={sendWeeklyMenuImage}
                 className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
@@ -6963,6 +7010,83 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       )}
 
       <OrderSummarySheet />
+
+      {savedMenusOpen && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setSavedMenusOpen(false)}>
+          <div
+            dir="rtl"
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: C.paper, width: "100%", maxWidth: 640, maxHeight: "90vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}
+          >
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>📚 תפריטים שמורים</div>
+              <button onClick={() => setSavedMenusOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+
+            {(!savedMenus || savedMenus.length === 0) ? (
+              <p className="text-sm text-center py-6" style={{ color: C.steel }}>עדיין לא שמרת תפריטים. לחץ "💾 שמור עותק של התפריט" כדי לשמור את תפריט השבוע.</p>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {savedMenus.map((snap) => (
+                  <div key={snap.id} className="rounded-2xl p-3" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+                    <div className="flex justify-between items-center mb-1">
+                      <div className="font-bold text-sm" style={{ color: C.ink }}>
+                        {snap.parsha ? `תפריט ${snap.parsha}` : "תפריט"} · {snap.weekLabel}
+                      </div>
+                      <button
+                        onClick={() => { if (typeof window !== "undefined" && !window.confirm("למחוק את התפריט השמור?")) return; deleteSavedMenu(snap.id); }}
+                        title="מחק"
+                        className="rounded-full flex items-center justify-center"
+                        style={{ width: 26, height: 26, background: "#fff", color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                      >🗑️</button>
+                    </div>
+                    <div className="text-xs mb-2" style={{ color: C.steel }}>נשמר: {new Date(snap.savedAt).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>
+                    <details>
+                      <summary className="text-xs font-bold cursor-pointer" style={{ color: C.accent }}>הצג תפריט</summary>
+                      <div className="mt-2" style={{ overflowX: "auto" }}>
+                        {(snap.slots || []).map((slot) => {
+                          const pal = slot.slotKey === "dinner"
+                            ? { strong: "#F6D2A6", weak: "#FCEBD4", head: "#DE9542" }
+                            : { strong: "#BBD9F2", weak: "#E6F1FB", head: "#3E8FCB" };
+                          const dayLabels = (slot.rows[0]?.cells || []).map((c) => c.day);
+                          return (
+                            <div key={slot.slotKey} className="mb-3">
+                              <div className="font-bold text-sm mb-1" style={{ color: pal.head }}>ארוחת {slot.slotLabel}</div>
+                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                                <thead>
+                                  <tr>
+                                    <th style={{ background: pal.head, color: "#fff", border: `1px solid ${C.kraftDark}`, padding: "4px 6px" }}></th>
+                                    {dayLabels.map((d, i) => (
+                                      <th key={i} style={{ background: pal.head, color: "#fff", border: `1px solid ${C.kraftDark}`, padding: "4px 6px", whiteSpace: "nowrap" }}>{d}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {slot.rows.map((row, ri) => {
+                                    const bg = ri % 2 === 0 ? pal.strong : pal.weak;
+                                    return (
+                                      <tr key={ri}>
+                                        <th style={{ background: bg, color: C.ink, border: `1px solid ${C.kraftDark}`, padding: "4px 6px", textAlign: "right", fontWeight: 700 }}>{row.dishType}</th>
+                                        {row.cells.map((c, ci) => (
+                                          <td key={ci} style={{ background: bg, color: C.ink, border: `1px solid ${C.kraftDark}`, padding: "4px 6px", textAlign: "center" }}>{c.name}</td>
+                                        ))}
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </details>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -11287,72 +11411,21 @@ const DEFAULT_PRODUCT_CATEGORIES = [
 ];
 
 // Best-effort match of an invoice line name to an existing product id.
-// Conservative: if we are not reasonably sure, return "" (=> "דלג / לא לעדכן"),
-// so the user picks manually instead of getting a wrong auto-match.
-
-// Common words that carry no identifying meaning - ignored when scoring, so a
-// shared "בד"ץ" or "ק"ג" alone never causes a false match.
-const MATCH_STOPWORDS = new Set([
-  'בדץ', 'בד"ץ', 'בד״ץ', 'כשר', 'למהדרin', 'למהדרין',
-  'קג', 'ק"ג', 'ק״ג', 'גרם', 'גר', 'ליטר', 'לטר', 'מל', 'מ"ל',
-  'יח', 'יחי', "יח'", 'יחידה', 'יחידות', 'שק', 'שקים', 'שקית', 'קרטון',
-  'גלון', 'דלי', 'מארז', 'מא', 'אריזה', 'חבילה', 'בקבוק',
-  'של', 'עם', 'ללא', 'בטעם', 'בטעמים',
-]);
-
-function matchTokens(s) {
-  return String(s || "")
-    .replace(/["'׳״.,()\/\-]/g, " ")   // strip punctuation/quote marks
-    .split(/\s+/)
-    .map((w) => w.trim())
-    .filter(Boolean)
-    .filter((w) => w.length >= 3)                              // drop 1-2 char fragments (ק, ג, בד, ץ, מא...)
-    .filter((w) => !MATCH_STOPWORDS.has(w) && !/^\d+$/.test(w)); // drop stopwords & pure numbers
-}
-
 function bestProductMatch(itemName, products) {
   const n = (itemName || "").trim();
   if (!n) return "";
-
-  // 1) Exact name match - always trust.
   let m = products.find((p) => (p.name || "").trim() === n);
   if (m) return m.id;
-
-  // 2) Meaningful-word overlap (ignoring stopwords/numbers).
-  const nt = matchTokens(n);
-  if (nt.length === 0) return "";           // nothing distinctive to match on
-  const nSet = new Set(nt);
-
-  let best = "", bestScore = 0, bestProdLen = 0, secondScore = 0;
+  m = products.find((p) => n.includes((p.name || "").trim()) || (p.name || "").trim().includes(n));
+  if (m) return m.id;
+  const nt = n.split(/\s+/).filter(Boolean);
+  let best = "", bestScore = 0;
   products.forEach((p) => {
-    const pt = matchTokens(p.name);
-    if (pt.length === 0) return;
-    const shared = pt.filter((w) => nSet.has(w)).length;
-    if (shared === 0) return;
-    // ratio of shared words relative to the shorter of the two names
-    const ratio = shared / Math.min(nt.length, pt.length);
-    // scaled score so ties break toward higher overlap
-    const score = shared * 100 + Math.round(ratio * 10);
-    if (score > bestScore) { secondScore = bestScore; bestScore = score; best = p.id; bestProdLen = pt.length; }
-    else if (score > secondScore) { secondScore = score; }
+    const pt = (p.name || "").split(/\s+/).filter(Boolean);
+    const score = pt.filter((w) => nt.includes(w)).length;
+    if (score > bestScore) { bestScore = score; best = p.id; }
   });
-
-  if (!best) return "";
-
-  const bestShared = Math.floor(bestScore / 100);
-  const bestRatio = (bestScore % 100) / 10;
-
-  // Require a genuinely strong match before auto-linking:
-  //  - at least 2 meaningful words in common, OR one word that covers
-  //    (almost) the whole of a short product name; AND
-  //  - a decent overlap ratio; AND
-  //  - the best match is clearly ahead of the runner-up (not ambiguous).
-  const strongEnough =
-    (bestShared >= 2 && bestRatio >= 0.5) ||
-    (bestShared >= 1 && bestProdLen <= 2 && bestRatio >= 0.99);
-  const clearWinner = bestScore - secondScore >= 100 || secondScore === 0;
-
-  return (strongEnough && clearWinner) ? best : "";
+  return bestScore > 0 ? best : "";
 }
 
 function InvoiceScanner({ products, persistProducts, showToast, onClose }) {
@@ -11384,7 +11457,7 @@ function InvoiceScanner({ products, persistProducts, showToast, onClose }) {
       let token = SUPABASE_ANON_KEY;
       try { const sess = await window.auth?.getSession?.(); if (sess?.access_token) token = sess.access_token; } catch (e) {}
 
-      const resp = await fetch(`${SUPABASE_URL}/functions/v1/smooth-processor`, {
+      const resp = await fetch(`${SUPABASE_URL}/functions/v1/parse-invoice`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY },
         body: JSON.stringify({ imageBase64: base64, mediaType }),
