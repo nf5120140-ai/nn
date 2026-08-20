@@ -4228,6 +4228,7 @@ function App() {
             currentUser={currentUser}
             showToast={showToast}
             notifyManagers={notifyManagers}
+            locations={locations}
           />
         )}
         {tab === "unitrequest" && canRequestFromStock(currentUser) && (
@@ -7416,9 +7417,11 @@ const MAP_STATUS = {
   done: { label: "נוקה", color: "#22C55E", text: "#fff" },
 };
 
-function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, showToast, notifyManagers }) {
+function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, showToast, notifyManagers, locations }) {
   const [activeBuilding, setActiveBuilding] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [selectedLocs, setSelectedLocs] = useState([]);
   const [sheetRoom, setSheetRoom] = useState(null);
   const [newBuilding, setNewBuilding] = useState("");
   const [newLabel, setNewLabel] = useState("");
@@ -7457,6 +7460,21 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
     setSheetRoom(null);
   }
 
+  // Which locations are already on the map (by building|label), to avoid duplicates.
+  const existingKeys = new Set((mapRooms || []).map((r) => `${r.building || "כללי"}|${r.label}`));
+  function locKey(l) { return `${l.group || "כללי"}|${l.name}`; }
+
+  async function importSelectedLocations() {
+    const toAdd = (locations || [])
+      .filter((l) => selectedLocs.includes(l.id) && !existingKeys.has(locKey(l)))
+      .map((l) => ({ id: genId(), building: l.group || "כללי", label: l.name, status: "ok", statusAt: Date.now() }));
+    if (toAdd.length === 0) { showToast("לא נבחרו חדרים חדשים"); return; }
+    await persistMapRooms([...(mapRooms || []), ...toAdd]);
+    setSelectedLocs([]);
+    setImportOpen(false);
+    showToast(`נוספו ${toAdd.length} חדרים מהמקומות`);
+  }
+
   async function createTaskForRoom(room) {
     const title = `ניקיון: ${room.building || "כללי"} · ${room.label}`;
     const task = {
@@ -7483,9 +7501,14 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
     <div>
       <div className="flex justify-between items-center mb-3">
         <div className="wh-display font-black text-lg" style={{ color: C.ink }}>🗺️ מפת המוסד</div>
-        <button onClick={() => setAddOpen(true)} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.ink, color: C.paper }}>
-          ➕ הוסף חדר
-        </button>
+        <div className="flex gap-2">
+          <button onClick={() => setImportOpen(true)} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
+            📍 מהמקומות
+          </button>
+          <button onClick={() => setAddOpen(true)} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.ink, color: C.paper }}>
+            ➕ הוסף חדר
+          </button>
+        </div>
       </div>
 
       {/* Legend */}
@@ -7571,6 +7594,71 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
               <button onClick={() => setAddOpen(false)} className="px-4 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
             </div>
             <p className="text-xs mt-2" style={{ color: C.steel }}>טיפ: כדי ליצור בניין חדש, פשוט כתוב שם בניין חדש.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Import from locations sheet */}
+      {importOpen && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setImportOpen(false)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 560, maxHeight: "88vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}>
+            <div className="flex justify-between items-center mb-2">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>📍 הוספה מרשימת המקומות</div>
+              <button onClick={() => setImportOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+            {(!locations || locations.length === 0) ? (
+              <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין מקומות מוגדרים. הוסף אותם בניהול ← מקומות.</p>
+            ) : (
+              <>
+                {Array.from(new Set(locations.map((l) => l.group || "כללי"))).sort((a, b) => a.localeCompare(b, "he")).map((grp) => {
+                  const inGroup = locations.filter((l) => (l.group || "כללי") === grp);
+                  const selectableIds = inGroup.filter((l) => !existingKeys.has(locKey(l))).map((l) => l.id);
+                  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedLocs.includes(id));
+                  return (
+                    <div key={grp} className="mb-3">
+                      <div className="flex justify-between items-center mb-1">
+                        <div className="font-bold text-sm" style={{ color: C.accent }}>{grp}</div>
+                        {selectableIds.length > 0 && (
+                          <button
+                            onClick={() => setSelectedLocs((cur) => allSelected ? cur.filter((id) => !selectableIds.includes(id)) : Array.from(new Set([...cur, ...selectableIds])))}
+                            className="text-xs font-bold px-2 py-1 rounded-full"
+                            style={{ background: C.kraft, color: C.ink }}
+                          >
+                            {allSelected ? "בטל הכל" : "בחר הכל"}
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {inGroup.map((l) => {
+                          const already = existingKeys.has(locKey(l));
+                          const sel = selectedLocs.includes(l.id);
+                          return (
+                            <button
+                              key={l.id}
+                              disabled={already}
+                              onClick={() => setSelectedLocs((cur) => sel ? cur.filter((id) => id !== l.id) : [...cur, l.id])}
+                              className="px-3 py-1.5 rounded-full text-sm font-bold"
+                              style={{
+                                background: already ? "#E5E7EB" : sel ? C.sage : "#fff",
+                                color: already ? C.steel : sel ? "#fff" : C.ink,
+                                border: `1px solid ${C.kraftDark}`,
+                                opacity: already ? 0.6 : 1,
+                              }}
+                            >
+                              {already ? "✓ " : sel ? "✓ " : ""}{l.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+                <button onClick={importSelectedLocations} className="w-full py-3 rounded-2xl font-bold sticky bottom-0" style={{ background: C.sage, color: "#fff" }}>
+                  הוסף {selectedLocs.length > 0 ? `(${selectedLocs.length})` : ""} חדרים נבחרים
+                </button>
+                <p className="text-xs mt-2 text-center" style={{ color: C.steel }}>חדרים אפורים כבר קיימים במפה.</p>
+              </>
+            )}
           </div>
         </div>
       )}
