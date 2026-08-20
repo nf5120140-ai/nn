@@ -10356,6 +10356,9 @@ function UnitRequestsAdmin({
   const [tab, setTab] = useState("pending");
   const [editing, setEditing] = useState(null); // { requestId, items, note }
   const [managingTemplate, setManagingTemplate] = useState(null); // unitId whose fixed list we're editing
+  const [addProductId, setAddProductId] = useState("");
+  const [addQty, setAddQty] = useState(1);
+  const [addCustomName, setAddCustomName] = useState("");
 
   const all = [...(unitRequests || [])].sort((a, b) => (b.submittedAt || b.createdAt) - (a.submittedAt || a.createdAt));
   const pending = all.filter((r) => r.status === "submitted");
@@ -10387,6 +10390,17 @@ function UnitRequestsAdmin({
     // No specific number - open the share/chooser so the manager picks the worker.
     const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
     window.open(url, "_blank");
+  }
+
+  function sendListEmail(items, unitName, weekOf) {
+    const text = buildListText(items, unitName, weekOf);
+    const subject = `רשימת ליקוט למחסן${unitName ? " - " + unitName : ""}`;
+    window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}`;
+  }
+
+  function sendListSms(items, unitName, weekOf) {
+    const text = buildListText(items, unitName, weekOf);
+    window.location.href = `sms:?body=${encodeURIComponent(text)}`;
   }
 
   /* Print a clean picking sheet to take to the warehouse. */
@@ -10451,6 +10465,28 @@ function UnitRequestsAdmin({
 
   function removeItem(productId) {
     setEditing((cur) => ({ ...cur, items: cur.items.filter((i) => i.productId !== productId) }));
+  }
+
+  // Manager adds an item to the picking list - a catalog product or a free-text one.
+  function addItemToReview() {
+    const q = Math.max(1, Number(addQty) || 1);
+    if (addProductId) {
+      const p = products.find((x) => x.id === addProductId);
+      if (!p) return;
+      setEditing((cur) => {
+        if (cur.items.some((i) => i.productId === p.id)) {
+          return { ...cur, items: cur.items.map((i) => (i.productId === p.id ? { ...i, qty: (i.qty || 0) + q, give: (i.give || 0) + q } : i)) };
+        }
+        return { ...cur, items: [...cur.items, { productId: p.id, name: p.name, unit: p.unit, qty: q, give: q }] };
+      });
+      setAddProductId(""); setAddQty(1);
+      return;
+    }
+    const nm = addCustomName.trim();
+    if (nm) {
+      setEditing((cur) => ({ ...cur, items: [...cur.items, { productId: "custom-" + genId(), name: nm, unit: "", qty: q, give: q, custom: true }] }));
+      setAddCustomName(""); setAddQty(1);
+    }
   }
 
   function giveAll() {
@@ -10651,6 +10687,43 @@ function UnitRequestsAdmin({
           })}
         </div>
 
+        <div className="rounded-2xl p-3 mb-3" style={{ background: "#fff", border: `1px dashed ${C.kraftDark}` }}>
+          <div className="text-sm font-bold mb-2" style={{ color: C.ink }}>➕ הוסף פריט לרשימה</div>
+          <div className="flex gap-2 mb-2">
+            <select
+              value={addProductId}
+              onChange={(e) => { setAddProductId(e.target.value); if (e.target.value) setAddCustomName(""); }}
+              className="flex-1 p-2 rounded-xl border text-sm"
+              style={{ borderColor: C.kraftDark, background: "#fff" }}
+            >
+              <option value="">— בחר מוצר מהמלאי —</option>
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <input
+              type="number"
+              value={addQty}
+              onChange={(e) => setAddQty(Math.max(1, Number(e.target.value) || 1))}
+              className="w-16 text-center p-2 rounded-xl border"
+              style={{ borderColor: C.kraftDark }}
+            />
+          </div>
+          <div className="flex gap-2">
+            <input
+              value={addCustomName}
+              onChange={(e) => { setAddCustomName(e.target.value); if (e.target.value) setAddProductId(""); }}
+              onKeyDown={(e) => { if (e.key === "Enter") addItemToReview(); }}
+              placeholder="או מוצר חדש שלא במלאי..."
+              className="flex-1 p-2 rounded-xl border text-sm"
+              style={{ borderColor: C.kraftDark, background: "#fff" }}
+            />
+            <button onClick={addItemToReview} className="px-4 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+              הוסף
+            </button>
+          </div>
+        </div>
+
         <textarea
           value={editing.note}
           onChange={(e) => setEditing({ ...editing, note: e.target.value })}
@@ -10660,18 +10733,32 @@ function UnitRequestsAdmin({
           style={{ borderColor: C.kraftDark }}
         />
 
-        {/* Take the list to the warehouse: send to a worker or print. */}
-        <div className="flex gap-2 mb-3">
+        {/* Take the list to the warehouse: send via WhatsApp / SMS / email or print. */}
+        <div className="grid grid-cols-2 gap-2 mb-3">
           <button
             onClick={() => sendListWhatsapp(editing.items, editing.unitName, editing.weekOf)}
-            className="flex-1 py-2.5 rounded-2xl font-bold text-sm"
+            className="py-2.5 rounded-2xl font-bold text-sm"
             style={{ background: "#25D366", color: "#fff" }}
           >
-            💬 שלח לעובד
+            💬 וואטסאפ
+          </button>
+          <button
+            onClick={() => sendListSms(editing.items, editing.unitName, editing.weekOf)}
+            className="py-2.5 rounded-2xl font-bold text-sm"
+            style={{ background: C.mustard, color: C.ink }}
+          >
+            💬 SMS
+          </button>
+          <button
+            onClick={() => sendListEmail(editing.items, editing.unitName, editing.weekOf)}
+            className="py-2.5 rounded-2xl font-bold text-sm"
+            style={{ background: C.steel, color: "#fff" }}
+          >
+            ✉️ מייל
           </button>
           <button
             onClick={() => printList(editing.items, editing.unitName, editing.weekOf)}
-            className="flex-1 py-2.5 rounded-2xl font-bold text-sm"
+            className="py-2.5 rounded-2xl font-bold text-sm"
             style={{ background: C.accent, color: "#fff" }}
           >
             🖨️ הדפס
