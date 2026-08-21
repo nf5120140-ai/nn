@@ -5976,12 +5976,6 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
             {!isRequest && (
               <>
                 <div className="flex justify-between text-sm mt-1">
-                  <span style={{ color: C.steel }}>ערוץ:</span>
-                  <b style={{ color: channelMeta(channel).color }}>
-                    {channelMeta(channel).icon} {channelMeta(channel).label}
-                  </b>
-                </div>
-                <div className="flex justify-between text-sm mt-1">
                   <span style={{ color: C.steel }}>יעד:</span>
                   <b style={{ color: missingDest ? C.stamp : C.ink, direction: "ltr" }}>
                     {dest || "לא הוגדר!"}
@@ -6102,72 +6096,78 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
             </details>
           )}
 
-          <button
-            onClick={() => {
-              const p = pendingOrder;
-              const sendItems = p.items.filter(({ qty }) => Number(qty) > 0);
-              setPendingOrder(null);
-              setEditingDraftId(null);
-              if (p.isRequest) submitOrderRequest(sendItems, p.supplierId, p.sourceLabel);
-              else doSendGroupOrder(sendItems, p.title, p.supplierId);
-            }}
-            disabled={missingDest || isEmpty}
-            className="w-full py-3 rounded-2xl wh-display font-bold"
-            style={{
-              background: missingDest || isEmpty ? C.kraftDark : isRequest ? C.accent : channelMeta(channel).color,
-              color: "#fff",
-              opacity: missingDest || isEmpty ? 0.6 : 1,
-            }}
-          >
-            {isRequest
-              ? "📤 שלח בקשה לאישור"
-              : `${channelMeta(channel).icon} אשר ושלח ל${supplierName}`}
-          </button>
+          {isRequest ? (
+            <button
+              onClick={() => {
+                const p = pendingOrder;
+                const sendItems = p.items.filter(({ qty }) => Number(qty) > 0);
+                setPendingOrder(null);
+                setEditingDraftId(null);
+                submitOrderRequest(sendItems, p.supplierId, p.sourceLabel);
+              }}
+              disabled={isEmpty}
+              className="w-full py-3 rounded-2xl wh-display font-bold"
+              style={{ background: isEmpty ? C.kraftDark : C.accent, color: "#fff", opacity: isEmpty ? 0.6 : 1 }}
+            >
+              📤 שלח בקשה לאישור
+            </button>
+          ) : (
+            <>
+              <div className="text-xs font-bold text-center mb-2" style={{ color: C.steel }}>
+                שלח ל{supplierName} דרך:
+              </div>
+              <div className="flex gap-4 justify-center flex-wrap mb-1">
+                {(() => {
+                  const iconBtn = (bg, emoji, label, onClick, dark) => (
+                    <button
+                      onClick={onClick}
+                      disabled={isEmpty}
+                      title={label}
+                      style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, opacity: isEmpty ? 0.5 : 1, background: "transparent", border: "none", cursor: "pointer" }}
+                    >
+                      <span style={{ width: 50, height: 50, borderRadius: "50%", background: bg, color: dark ? C.ink : "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, boxShadow: "0 2px 8px rgba(0,0,0,0.22)" }}>{emoji}</span>
+                      <span style={{ fontSize: 11, color: C.steel, fontWeight: 700 }}>{label}</span>
+                    </button>
+                  );
+                  const sendVia = (ch) => () => {
+                    const p = pendingOrder;
+                    const sendItems = p.items.filter(({ qty }) => Number(qty) > 0);
+                    setPendingOrder(null);
+                    setEditingDraftId(null);
+                    doSendGroupOrder(sendItems, p.title, p.supplierId, ch);
+                  };
+                  const waChooser = async () => {
+                    try { await navigator.clipboard.writeText(messageText); } catch (e) {}
+                    logOrderToHistory(liveItems, title, supplierId, "whatsapp");
+                    window.open(`https://wa.me/?text=${encodeURIComponent(messageText)}`, "_blank");
+                    closePendingSheet();
+                  };
+                  const waGroup = async () => {
+                    try { await navigator.clipboard.writeText(messageText); showToast("ההזמנה הועתקה - הדבק בקבוצה"); } catch (e) {}
+                    logOrderToHistory(liveItems, title, supplierId, "whatsapp");
+                    window.open(settings.whatsappGroupLink.trim(), "_blank");
+                    closePendingSheet();
+                  };
+                  return (
+                    <>
+                      {iconBtn("#25D366", "💬", "וואטסאפ", waChooser)}
+                      {(settings?.whatsappGroupLink || "").trim() ? iconBtn("#128C7E", "👥", "קבוצה", waGroup) : null}
+                      {iconBtn(C.mustard, "✉️", "SMS", sendVia("sms"), true)}
+                      {iconBtn(C.steel, "📧", "מייל", sendVia("email"))}
+                    </>
+                  );
+                })()}
+              </div>
+            </>
+          )}
 
           <button
             onClick={saveDraftFromPending}
-            className="w-full py-3 mt-2 rounded-2xl wh-display font-bold"
+            className="w-full py-2 mt-3 rounded-2xl wh-display font-bold text-sm"
             style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
           >
             💾 שמור כטיוטה
           </button>
-
-          {!isRequest && (
-            <button
-              onClick={async () => {
-                try { await navigator.clipboard.writeText(messageText); } catch (e) {}
-                logOrderToHistory(liveItems, title, supplierId, "whatsapp");
-                // wa.me/?text opens WhatsApp with the order already typed; the user
-                // taps the target chat/group (invite links can't carry text at all).
-                window.open(`https://wa.me/?text=${encodeURIComponent(messageText)}`, "_blank");
-                closePendingSheet();
-              }}
-              className="w-full py-3 mt-2 rounded-2xl wh-display font-bold"
-              style={{ background: "#25D366", color: "#fff" }}
-            >
-              📤 שלח בוואטסאפ (בחר את הקבוצה)
-            </button>
-          )}
-
-          {!isRequest && (settings?.whatsappGroupLink || "").trim() && (
-            <button
-              onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(messageText);
-                  showToast("ההזמנה הועתקה - פותח את הקבוצה, החזק בתיבת ההודעה והדבק");
-                } catch (e) {
-                  showToast("פותח את הקבוצה - העתק את ההזמנה מהתצוגה המקדימה");
-                }
-                logOrderToHistory(liveItems, title, supplierId, "whatsapp");
-                window.open(settings.whatsappGroupLink.trim(), "_blank");
-                closePendingSheet();
-              }}
-              className="w-full py-3 mt-2 rounded-2xl wh-display font-bold"
-              style={{ background: "#128C7E", color: "#fff" }}
-            >
-              👥 פתח את הקבוצה הקבועה (הדבקה ידנית)
-            </button>
-          )}
         </div>
       </div>
     );
@@ -6200,7 +6200,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     });
   }
 
-  function doSendGroupOrder(items, title, supplierId) {
+  function doSendGroupOrder(items, title, supplierId, channelOverride) {
+    const ch = channelOverride || channel;
     const lines = items.map(({ product, qty }) => `- ${qty} ${product.unit} ${product.name}`);
     let phone = "";
     let email = "";
@@ -6212,7 +6213,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       phone = resolvedPhone();
       email = resolvedEmail();
     }
-    const res = sendViaChannel(channel, {
+    const res = sendViaChannel(ch, {
       phone,
       email,
       text: lines.join("\n"),
@@ -6222,7 +6223,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
       if (showToast) showToast(res.error);
       return;
     }
-    logOrderToHistory(items, title, supplierId);
+    logOrderToHistory(items, title, supplierId, ch);
   }
 
   /* WhatsApp can't render the print table, so the menu goes out as plain text
@@ -6597,39 +6598,33 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           <option value="__manual__">יעד אחר (הזנה ידנית)</option>
         </select>
 
-        {mayApprove && <ChannelPicker value={channel} onChange={setChannel} />}
-
         {mayApprove && (selectedSupplierId === "__manual__" || suppliers.length === 0) && (
-          channel === "email" ? (
+          <div className="flex flex-col gap-2 mt-2">
+            <input
+              value={manualPhone}
+              onChange={(e) => setManualPhone(e.target.value)}
+              placeholder="טלפון ליעד (לוואטסאפ/SMS): 972501234567"
+              className="p-2 rounded-2xl border w-full"
+              style={{ borderColor: C.kraftDark, direction: "ltr" }}
+            />
             <input
               value={manualEmail}
               onChange={(e) => setManualEmail(e.target.value)}
               type="email"
-              placeholder="supplier@example.com"
-              className="mt-2 p-2 rounded-2xl border w-full"
+              placeholder="מייל ליעד (אופציונלי): supplier@example.com"
+              className="p-2 rounded-2xl border w-full"
               style={{ borderColor: C.kraftDark, direction: "ltr" }}
             />
-          ) : (
-            <input
-              value={manualPhone}
-              onChange={(e) => setManualPhone(e.target.value)}
-              placeholder="972501234567"
-              className="mt-2 p-2 rounded-2xl border w-full"
-              style={{ borderColor: C.kraftDark, direction: "ltr" }}
-            />
-          )
+          </div>
         )}
 
         {mayApprove && selectedSupplierId !== "__manual__" && suppliers.length > 0 && (() => {
           const s = suppliers.find((x) => x.id === selectedSupplierId);
           if (!s) return null;
-          const missing = channel === "email" ? !s.email : !s.phone;
-          if (!missing) return null;
+          if (s.phone || s.email) return null;
           return (
             <p className="text-xs mt-2" style={{ color: C.stamp }}>
-              {channel === "email"
-                ? `לספק "${s.name}" לא שמור מייל - הוסף אותו במסך ניהול ← ספקים.`
-                : `לספק "${s.name}" לא שמור טלפון - הוסף אותו במסך ניהול ← ספקים.`}
+              לספק "{s.name}" לא שמור טלפון או מייל - הוסף במסך ניהול ← ספקים.
             </p>
           );
         })()}
@@ -6743,10 +6738,10 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               <button
                 onClick={sendOrder}
                 className="w-full py-3 rounded-2xl wh-display font-bold"
-                style={{ background: mayApprove ? channelMeta(channel).color : C.accent, color: "#fff" }}
+                style={{ background: mayApprove ? C.sage : C.accent, color: "#fff" }}
               >
                 {mayApprove
-                  ? `${channelMeta(channel).icon} שלח הזמנה ב${channelMeta(channel).label}`
+                  ? `📤 שלח הזמנה`
                   : "📤 שלח בקשה לאישור מנהל"}
               </button>
             ) : (
@@ -6886,10 +6881,10 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                           : setPendingOrder({ items, title: "לפי מנות בודדות", supplierId, isRequest: true, sourceLabel: "לפי מנות בודדות" })
                       }
                       className="w-full py-3 mb-2 rounded-2xl wh-display font-bold"
-                      style={{ background: mayApprove ? channelMeta(channel).color : C.accent, color: "#fff" }}
+                      style={{ background: mayApprove ? C.sage : C.accent, color: "#fff" }}
                     >
                       {mayApprove
-                        ? `${channelMeta(channel).icon} שלח ל${supplierName} (${items.length} מוצרים)`
+                        ? `📤 שלח ל${supplierName} (${items.length} מוצרים)`
                         : `📤 בקש אישור ל${supplierName} (${items.length} מוצרים)`}
                     </button>
                   );
@@ -7242,10 +7237,10 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                           : setPendingOrder({ items, title: "לפי תפריט שבועי", supplierId, isRequest: true, sourceLabel: "לפי תפריט שבועי" })
                       }
                       className="w-full py-3 mb-2 rounded-2xl wh-display font-bold"
-                      style={{ background: mayApprove ? channelMeta(channel).color : C.accent, color: "#fff" }}
+                      style={{ background: mayApprove ? C.sage : C.accent, color: "#fff" }}
                     >
                       {mayApprove
-                        ? `${channelMeta(channel).icon} שלח ל${supplierName} (${items.length} מוצרים)`
+                        ? `📤 שלח ל${supplierName} (${items.length} מוצרים)`
                         : `📤 בקש אישור ל${supplierName} (${items.length} מוצרים)`}
                     </button>
                   );
@@ -10744,36 +10739,24 @@ function UnitRequestsAdmin({
           style={{ borderColor: C.kraftDark }}
         />
 
-        {/* Take the list to the warehouse: send via WhatsApp / SMS / email or print. */}
-        <div className="grid grid-cols-2 gap-2 mb-3">
-          <button
-            onClick={() => sendListWhatsapp(editing.items, editing.unitName, editing.weekOf)}
-            className="py-2.5 rounded-2xl font-bold text-sm"
-            style={{ background: "#25D366", color: "#fff" }}
-          >
-            💬 וואטסאפ
-          </button>
-          <button
-            onClick={() => sendListSms(editing.items, editing.unitName, editing.weekOf)}
-            className="py-2.5 rounded-2xl font-bold text-sm"
-            style={{ background: C.mustard, color: C.ink }}
-          >
-            💬 SMS
-          </button>
-          <button
-            onClick={() => sendListEmail(editing.items, editing.unitName, editing.weekOf)}
-            className="py-2.5 rounded-2xl font-bold text-sm"
-            style={{ background: C.steel, color: "#fff" }}
-          >
-            ✉️ מייל
-          </button>
-          <button
-            onClick={() => printList(editing.items, editing.unitName, editing.weekOf)}
-            className="py-2.5 rounded-2xl font-bold text-sm"
-            style={{ background: C.accent, color: "#fff" }}
-          >
-            🖨️ הדפס
-          </button>
+        {/* Take the list to the warehouse: small icons for each channel. */}
+        <div className="flex gap-4 justify-center flex-wrap mb-3">
+          {(() => {
+            const ic = (bg, emoji, label, onClick, dark) => (
+              <button onClick={onClick} title={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: "transparent", border: "none", cursor: "pointer" }}>
+                <span style={{ width: 46, height: 46, borderRadius: "50%", background: bg, color: dark ? C.ink : "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, boxShadow: "0 2px 8px rgba(0,0,0,0.22)" }}>{emoji}</span>
+                <span style={{ fontSize: 11, color: C.steel, fontWeight: 700 }}>{label}</span>
+              </button>
+            );
+            return (
+              <>
+                {ic("#25D366", "💬", "וואטסאפ", () => sendListWhatsapp(editing.items, editing.unitName, editing.weekOf))}
+                {ic(C.mustard, "✉️", "SMS", () => sendListSms(editing.items, editing.unitName, editing.weekOf), true)}
+                {ic(C.steel, "📧", "מייל", () => sendListEmail(editing.items, editing.unitName, editing.weekOf))}
+                {ic(C.accent, "🖨️", "הדפס", () => printList(editing.items, editing.unitName, editing.weekOf))}
+              </>
+            );
+          })()}
         </div>
 
         <button onClick={fulfill} className="w-full py-3 rounded-2xl wh-display font-bold mb-2" style={{ background: C.sage, color: "#fff" }}>
