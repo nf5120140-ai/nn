@@ -98,6 +98,10 @@ const MEAL_SLOTS = [
 const IDB_NAME = "kitchen-offline";
 const IDB_STORE = "kv";
 const DIRTY_KEYS_LS = "kitchen-dirty-keys";
+// Counts writes currently in flight per namespaced key, so the dirty guard stays
+// on until the last concurrent write to that key commits (prevents a realtime
+// reload from reverting an optimistic update mid-write).
+const inFlightWrites = new Map();
 
 let idbPromise = null;
 function openIdb() {
@@ -336,13 +340,28 @@ async function saveKey(baseKey, value) {
     return { synced: false };
   }
 
+  // Protect the in-flight window: mark dirty BEFORE the network write so that any
+  // realtime reload firing mid-write (including the echo of our own change) returns
+  // the fresh local value from cache instead of stale server data. We only clear the
+  // guard once the LAST in-flight write to this key has committed, so rapid successive
+  // saves don't uncover the window prematurely.
+  markDirty(key);
+  inFlightWrites.set(key, (inFlightWrites.get(key) || 0) + 1);
   try {
     await window.storage.set(key, JSON.stringify(value), true);
-    clearDirty(key);
+    const remaining = (inFlightWrites.get(key) || 1) - 1;
+    if (remaining <= 0) {
+      inFlightWrites.delete(key);
+      clearDirty(key);
+    } else {
+      inFlightWrites.set(key, remaining);
+    }
     return { synced: true };
   } catch (e) {
+    const remaining = (inFlightWrites.get(key) || 1) - 1;
+    inFlightWrites.set(key, Math.max(0, remaining));
     console.error("storage save failed, queued for sync", key, e);
-    markDirty(key);
+    markDirty(key); // stays dirty for the retry queue
     return { synced: false };
   }
 }
