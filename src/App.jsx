@@ -6113,6 +6113,50 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
             </button>
           ) : (
             <>
+              {/* Choose where it goes, right above the send icons. */}
+              <div className="mb-3 p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+                <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>איש קשר / יעד</label>
+                <select
+                  value={supplierId === "__unassigned__" ? "__manual__" : supplierId}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "__manual__") {
+                      setSelectedSupplierId("__manual__");
+                      setPendingOrder((po) => (po ? { ...po, supplierId: "__unassigned__" } : po));
+                    } else {
+                      setSelectedSupplierId(v);
+                      setPendingOrder((po) => (po ? { ...po, supplierId: v } : po));
+                    }
+                  }}
+                  className="p-2 rounded-2xl border w-full"
+                  style={{ borderColor: C.kraftDark, background: "#fff" }}
+                >
+                  {suppliers.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                  <option value="__manual__">יעד אחר (הזנה ידנית)</option>
+                </select>
+                {(supplierId === "__unassigned__" || suppliers.length === 0) && (
+                  <div className="flex flex-col gap-2 mt-2">
+                    <input
+                      value={manualPhone}
+                      onChange={(e) => setManualPhone(e.target.value)}
+                      placeholder="טלפון ליעד (וואטסאפ/SMS): 972501234567"
+                      className="p-2 rounded-2xl border w-full"
+                      style={{ borderColor: C.kraftDark, direction: "ltr" }}
+                    />
+                    <input
+                      value={manualEmail}
+                      onChange={(e) => setManualEmail(e.target.value)}
+                      type="email"
+                      placeholder="מייל ליעד (אופציונלי)"
+                      className="p-2 rounded-2xl border w-full"
+                      style={{ borderColor: C.kraftDark, direction: "ltr" }}
+                    />
+                  </div>
+                )}
+              </div>
+
               <div className="text-xs font-bold text-center mb-2" style={{ color: C.steel }}>
                 שלח ל{supplierName} דרך:
               </div>
@@ -6582,6 +6626,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
         </ShelfTag>
       )}
 
+      {!mayApprove && (
       <div className="mb-4">
         <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
           {mayApprove ? "שלח הזמנה לספק" : "ספק מוצע (המנהל יוכל לשנות)"}
@@ -6629,6 +6674,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
           );
         })()}
       </div>
+      )}
 
       {orderMode === "stock" && (() => {
         const baseList = orderSupplierFilter === "all"
