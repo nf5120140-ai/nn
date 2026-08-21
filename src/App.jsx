@@ -6180,12 +6180,6 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                     setEditingDraftId(null);
                     doSendGroupOrder(sendItems, p.title, p.supplierId, ch);
                   };
-                  const waChooser = async () => {
-                    try { await navigator.clipboard.writeText(messageText); } catch (e) {}
-                    logOrderToHistory(liveItems, title, supplierId, "whatsapp");
-                    window.open(`https://wa.me/?text=${encodeURIComponent(messageText)}`, "_blank");
-                    closePendingSheet();
-                  };
                   const waGroup = async () => {
                     try { await navigator.clipboard.writeText(messageText); showToast("ההזמנה הועתקה - הדבק בקבוצה"); } catch (e) {}
                     logOrderToHistory(liveItems, title, supplierId, "whatsapp");
@@ -6194,7 +6188,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                   };
                   return (
                     <>
-                      {iconBtn("#25D366", "💬", "וואטסאפ", waChooser)}
+                      {iconBtn("#25D366", "💬", "וואטסאפ", sendVia("whatsapp"))}
                       {(settings?.whatsappGroupLink || "").trim() ? iconBtn("#128C7E", "👥", "קבוצה", waGroup) : null}
                       {iconBtn(C.mustard, "✉️", "SMS", sendVia("sms"), true)}
                       {iconBtn(C.steel, "📧", "מייל", sendVia("email"))}
