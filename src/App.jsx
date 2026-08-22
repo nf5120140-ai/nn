@@ -7638,6 +7638,78 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
   const [sheetRoom, setSheetRoom] = useState(null);
   const [newBuilding, setNewBuilding] = useState("");
   const [newLabel, setNewLabel] = useState("");
+  const [reorderMode, setReorderMode] = useState(false);
+  const [dragOrder, setDragOrder] = useState(null); // working copy while dragging
+  const [dragId, setDragId] = useState(null);
+  const dragIdRef = useRef(null);
+  const orderRef = useRef(null);
+  useEffect(() => { dragIdRef.current = dragId; }, [dragId]);
+  useEffect(() => { orderRef.current = dragOrder; }, [dragOrder]);
+
+  // Open tasks that belong to a room: linked by id, by stamped roomId, or by matching location.
+  function openTasksForRoom(room) {
+    const roomLoc = `${room.building || "כללי"} · ${room.label}`;
+    const seen = new Set();
+    return (tasks || []).filter((t) => {
+      if (t.status === "done") return false;
+      const match = t.roomId === room.id || t.id === room.taskId || t.location === roomLoc;
+      if (!match || seen.has(t.id)) return false;
+      seen.add(t.id);
+      return true;
+    });
+  }
+
+  async function markTaskDoneFromRoom(taskId) {
+    await persistTasks((tasks || []).map((t) => (t.id === taskId ? { ...t, status: "done", completedAt: Date.now() } : t)));
+  }
+
+  // Drag-to-reorder (pointer based, works on touch): reorders rooms within the same building.
+  function startDrag(e, room) {
+    if (!reorderMode) return;
+    e.preventDefault();
+    setDragId(room.id);
+    setDragOrder((mapRooms || []).slice());
+  }
+  useEffect(() => {
+    if (!dragId) return;
+    function onMove(ev) {
+      const p = ev.touches ? ev.touches[0] : ev;
+      if (!p) return;
+      const el = document.elementFromPoint(p.clientX, p.clientY);
+      const tile = el && el.closest ? el.closest("[data-room-id]") : null;
+      if (!tile) return;
+      const overId = tile.getAttribute("data-room-id");
+      const did = dragIdRef.current;
+      if (!overId || overId === did) return;
+      const list = (orderRef.current || []).slice();
+      const from = list.findIndex((r) => r.id === did);
+      const to = list.findIndex((r) => r.id === overId);
+      if (from < 0 || to < 0) return;
+      if ((list[from].building || "כללי") !== (list[to].building || "כללי")) return; // same building only
+      const [moved] = list.splice(from, 1);
+      list.splice(to, 0, moved);
+      setDragOrder(list);
+    }
+    function onUp() {
+      const list = orderRef.current;
+      setDragId(null);
+      if (list) persistMapRooms(list);
+      setDragOrder(null);
+    }
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [dragId]);
+
+  const displayRooms = dragOrder || mapRooms || [];
+  // Buildings in first-appearance order (so a custom room order stays stable).
+  const buildingOrder = [];
+  displayRooms.forEach((r) => { const b = r.building || "כללי"; if (!buildingOrder.includes(b)) buildingOrder.push(b); });
 
   const buildings = Array.from(new Set((mapRooms || []).map((r) => r.building || "כללי"))).sort((a, b) => a.localeCompare(b, "he"));
   const building = activeBuilding && buildings.includes(activeBuilding) ? activeBuilding : buildings[0];
@@ -7695,6 +7767,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
       title,
       description: "",
       location: `${room.building || "כללי"} · ${room.label}`,
+      roomId: room.id,
       assignedToId: "",
       priority: "normal",
       status: "open",
@@ -7715,6 +7788,11 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
       <div className="flex justify-between items-center mb-3">
         <div className="wh-display font-black text-lg" style={{ color: C.ink }}>🗺️ מפת המוסד</div>
         <div className="flex gap-2">
+          {displayRooms.length > 0 && (
+            <button onClick={() => setReorderMode((v) => !v)} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: reorderMode ? C.sage : C.kraft, color: reorderMode ? "#fff" : C.ink }}>
+              {reorderMode ? "✓ סיום סידור" : "↕️ סדר"}
+            </button>
+          )}
           <button onClick={() => setImportOpen(true)} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
             📍 מהמקומות
           </button>
@@ -7740,39 +7818,55 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
         </ShelfTag>
       ) : (
         <>
-          {/* Building tabs */}
-          <div className="flex gap-2 overflow-x-auto pb-2 mb-3">
-            {buildings.map((b) => (
-              <button
-                key={b}
-                onClick={() => setActiveBuilding(b)}
-                className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
-                style={{ background: b === building ? C.ink : "#fff", color: b === building ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
-              >
-                {b}
-              </button>
-            ))}
-          </div>
-
-          {/* Room grid */}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(84px, 1fr))", gap: 8 }}>
-            {roomsHere.map((room) => {
-              const st = MAP_STATUS[effStatus(room)] || MAP_STATUS.ok;
-              return (
-                <button
-                  key={room.id}
-                  onClick={() => setSheetRoom(room)}
-                  style={{
-                    background: st.color, color: st.text, border: `1px solid ${C.kraftDark}`,
-                    borderRadius: 14, padding: "14px 6px", fontWeight: 800, fontSize: 15,
-                    minHeight: 60, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center",
-                  }}
-                >
-                  {room.label}
-                </button>
-              );
-            })}
-          </div>
+          {reorderMode && (
+            <p className="text-xs mb-2 p-2 rounded-xl text-center" style={{ background: C.kraft, color: C.ink }}>
+              גרור חדר כדי לשנות את הסדר (בתוך אותו בניין). לסיום לחץ "✓ סיום סידור".
+            </p>
+          )}
+          {/* One scroll: every building is a row — name on the side, its rooms flowing next to it. */}
+          {buildingOrder.map((b) => {
+            const rooms = displayRooms.filter((r) => (r.building || "כללי") === b);
+            return (
+              <div key={b} style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 14 }}>
+                <div style={{ width: 54, flexShrink: 0, fontWeight: 900, fontSize: 13, color: C.accent, textAlign: "center", background: C.kraft, borderRadius: 10, padding: "8px 4px", wordBreak: "break-word", lineHeight: 1.2 }}>
+                  {b}
+                </div>
+                <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(58px, 1fr))", gap: 6 }}>
+                  {rooms.map((room) => {
+                    const st = MAP_STATUS[effStatus(room)] || MAP_STATUS.ok;
+                    const openCount = openTasksForRoom(room).length;
+                    const isDragging = dragId === room.id;
+                    return (
+                      <button
+                        key={room.id}
+                        data-room-id={room.id}
+                        onClick={reorderMode ? undefined : () => setSheetRoom(room)}
+                        onPointerDown={reorderMode ? (e) => startDrag(e, room) : undefined}
+                        style={{
+                          position: "relative",
+                          background: st.color, color: st.text, border: `1px solid ${C.kraftDark}`,
+                          borderRadius: 12, padding: "8px 4px", fontWeight: 800, fontSize: 13,
+                          minHeight: 44, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center",
+                          touchAction: reorderMode ? "none" : "auto",
+                          opacity: isDragging ? 0.5 : 1,
+                          boxShadow: isDragging ? `0 0 0 2px ${C.ink}` : "none",
+                          cursor: reorderMode ? "grab" : "pointer",
+                        }}
+                      >
+                        {reorderMode && <span style={{ position: "absolute", top: 2, right: 4, fontSize: 11, opacity: 0.7 }}>⠿</span>}
+                        {openCount > 0 && !reorderMode && (
+                          <span style={{ position: "absolute", top: -6, left: -6, minWidth: 18, height: 18, borderRadius: 9, background: C.stamp, color: "#fff", fontSize: 11, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", border: "2px solid #fff" }}>
+                            {openCount}
+                          </span>
+                        )}
+                        {room.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
         </>
       )}
 
@@ -7884,6 +7978,40 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
               <div className="wh-display font-black text-lg" style={{ color: C.ink }}>{sheetRoom.building || "כללי"} · {sheetRoom.label}</div>
               <button onClick={() => setSheetRoom(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
             </div>
+
+            {(() => {
+              const openTasks = openTasksForRoom(sheetRoom);
+              return (
+                <div className="mb-3">
+                  <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>
+                    משימות פתוחות על החדר {openTasks.length > 0 ? `(${openTasks.length})` : ""}
+                  </div>
+                  {openTasks.length === 0 ? (
+                    <p className="text-sm py-2 px-3 rounded-xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, color: C.steel }}>
+                      אין משימות פתוחות על החדר.
+                    </p>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {openTasks.map((t) => (
+                        <div key={t.id} className="flex items-center gap-2 p-2 rounded-xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+                          <div className="flex-1">
+                            <div className="text-sm font-bold" style={{ color: C.ink }}>{t.title}</div>
+                            {t.assignedToId ? null : <div className="text-xs" style={{ color: C.steel }}>לא משויך</div>}
+                          </div>
+                          <button
+                            onClick={() => markTaskDoneFromRoom(t.id)}
+                            className="px-3 py-1.5 rounded-full text-xs font-bold"
+                            style={{ background: C.sage, color: "#fff" }}
+                          >
+                            ✓ בוצע
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>סמן סטטוס</div>
             <div className="grid grid-cols-2 gap-2 mb-3">
