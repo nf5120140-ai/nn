@@ -3714,7 +3714,7 @@ function App() {
       await persistTasks(next);
 
       for (const t of due) {
-        const msg = `⏰ בדיקת המשך: ${t.title}`;
+        const msg = `⏰ תזכורת: ${t.title}`;
         const link = { tab: "tasks", taskId: t.id };
         // Nudge the assignee, and the manager who set it if that's someone else.
         const recipients = new Set([t.assignedToId, t.createdById].filter(Boolean));
@@ -7672,8 +7672,9 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
 
   // Create a full task (any kind, not just cleaning) tied to a room.
   async function createRoomTask(payload, room) {
+    const { notifyNow, ...rest } = payload;
     const created = {
-      ...payload,
+      ...rest,
       id: genId(),
       roomId: room.id,
       status: "open",
@@ -7684,11 +7685,13 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
     };
     await persistTasks([created, ...(tasks || [])]);
     setTaskFormRoom(null);
-    if (payload.assignedToId && notifyUser) {
-      notifyUser(payload.assignedToId, `משימה חדשה: ${payload.title}`, { tab: "tasks", taskId: created.id });
-    }
-    if (notifyManagers) {
-      notifyManagers(`🛠️ נפתחה משימה: ${room.building || "כללי"} ${room.label} — ${payload.title}`, { tab: "tasks", taskId: created.id });
+    if (notifyNow) {
+      if (payload.assignedToId && notifyUser) {
+        notifyUser(payload.assignedToId, `משימה חדשה: ${payload.title}`, { tab: "tasks", taskId: created.id });
+      }
+      if (notifyManagers) {
+        notifyManagers(`🛠️ נפתחה משימה: ${room.building || "כללי"} ${room.label} — ${payload.title}`, { tab: "tasks", taskId: created.id });
+      }
     }
     showToast("המשימה נוצרה");
   }
@@ -7869,13 +7872,15 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
       </div>
 
       {/* Legend */}
-      <div className="flex gap-2 flex-wrap mb-3">
-        {Object.entries(MAP_STATUS).map(([k, s]) => (
-          <div key={k} className="flex items-center gap-1 text-xs" style={{ color: C.steel }}>
-            <span style={{ width: 14, height: 14, borderRadius: 4, background: s.color, border: `1px solid ${C.kraftDark}`, display: "inline-block" }} />
-            {s.label}
-          </div>
-        ))}
+      <div className="flex gap-3 flex-wrap mb-3">
+        <div className="flex items-center gap-1 text-xs" style={{ color: C.steel }}>
+          <span style={{ width: 14, height: 14, borderRadius: 4, background: "#EF4444", border: `1px solid ${C.kraftDark}`, display: "inline-block" }} />
+          יש משימה פתוחה
+        </div>
+        <div className="flex items-center gap-1 text-xs" style={{ color: C.steel }}>
+          <span style={{ width: 14, height: 14, borderRadius: 4, background: "#E5E7EB", border: `1px solid ${C.kraftDark}`, display: "inline-block" }} />
+          פנוי
+        </div>
       </div>
 
       {buildings.length === 0 ? (
@@ -7912,8 +7917,8 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
                 </div>
                 <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(58px, 1fr))", gap: 6 }}>
                   {rooms.map((room) => {
-                    const st = MAP_STATUS[effStatus(room)] || MAP_STATUS.ok;
                     const openCount = openTasksForRoom(room).length;
+                    const hasOpen = openCount > 0;
                     const isDragging = dragId === room.id;
                     return (
                       <button
@@ -7923,7 +7928,9 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
                         onPointerDown={reorderMode ? (e) => startDrag(e, room) : undefined}
                         style={{
                           position: "relative",
-                          background: st.color, color: st.text, border: `1px solid ${C.kraftDark}`,
+                          background: hasOpen ? "#EF4444" : "#E5E7EB",
+                          color: hasOpen ? "#fff" : "#231F3D",
+                          border: `1px solid ${C.kraftDark}`,
                           borderRadius: 12, padding: "8px 4px", fontWeight: 800, fontSize: 13,
                           minHeight: 44, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center",
                           touchAction: reorderMode ? "none" : "auto",
@@ -8092,19 +8099,6 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
               );
             })()}
 
-            <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>סמן סטטוס</div>
-            <div className="grid grid-cols-2 gap-2 mb-3">
-              {Object.entries(MAP_STATUS).map(([k, s]) => (
-                <button
-                  key={k}
-                  onClick={() => setRoomStatus(sheetRoom, k)}
-                  style={{ background: s.color, color: s.text, border: effStatus(sheetRoom) === k ? `3px solid ${C.ink}` : `1px solid ${C.kraftDark}`, borderRadius: 12, padding: "12px", fontWeight: 800 }}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-
             <button onClick={() => { const r = sheetRoom; setSheetRoom(null); setTaskFormRoom(r); }} className="w-full py-3 rounded-2xl font-bold mb-2" style={{ background: C.accent, color: "#fff" }}>
               ➕ צור משימה לחדר
             </button>
@@ -8224,12 +8218,13 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
   }
 
   async function addTask(newTask) {
-    const created = { ...newTask, id: genId(), createdAt: Date.now(), createdBy: currentUser.name, createdById: currentUser.id, status: "open", comments: [] };
+    const { notifyNow, ...rest } = newTask;
+    const created = { ...rest, id: genId(), createdAt: Date.now(), createdBy: currentUser.name, createdById: currentUser.id, status: "open", comments: [] };
     const next = [...tasks, created];
     await persistTasks(next);
     setShowNew(false);
     showToast("המשימה נוצרה");
-    if (notifyUser) notifyUser(newTask.assignedToId, `משימה חדשה: ${newTask.title}`, { tab: "tasks", taskId: created.id });
+    if (notifyNow && newTask.assignedToId && notifyUser) notifyUser(newTask.assignedToId, `משימה חדשה: ${newTask.title}`, { tab: "tasks", taskId: created.id });
   }
 
   async function notifyWhatsapp(task, mode = "share") {
@@ -9001,6 +8996,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
   const [imageBusy, setImageBusy] = useState(false);
   const [remindDate, setRemindDate] = useState("");
   const [remindTime, setRemindTime] = useState("09:00");
+  const [notifyNow, setNotifyNow] = useState(false);
 
   async function handleImage(e) {
     const file = e.target.files?.[0];
@@ -9091,9 +9087,19 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
         </div>
         {remindDate && (
           <p className="text-xs mt-1" style={{ color: C.steel }}>
-            תישלח התראה בתאריך ובשעה שנבחרו — כך אפשר לקבוע משימה עתידית כבר עכשיו.
+            ההתראה תישלח בתאריך ובשעה שנבחרו — לא עכשיו.
           </p>
         )}
+      </div>
+
+      <div style={{ borderTop: `1px solid ${C.kraftDark}`, paddingTop: 10 }}>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={notifyNow} onChange={(e) => setNotifyNow(e.target.checked)} style={{ width: 18, height: 18 }} />
+          <span className="text-sm font-bold" style={{ color: C.ink }}>🔔 התרע לעובד עכשיו (מיידי)</span>
+        </label>
+        <p className="text-xs mt-1" style={{ color: C.steel }}>
+          בלי סימון — לא תישלח התראה כרגע. אם קבעת תזכורת למעלה, ההתראה תישלח בזמן שנקבע.
+        </p>
       </div>
 
       <div className="flex gap-2">
@@ -9101,12 +9107,12 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
           onClick={() => {
             if (!title.trim()) return;
             if (lockedLocationLabel) {
-              onSubmit({ title, description, assignedToId, priority, categoryId, location: lockedLocationLabel, locationId: "", imageData, followUpAt: combineDateTime(remindDate, remindTime) });
+              onSubmit({ title, description, assignedToId, priority, categoryId, location: lockedLocationLabel, locationId: "", imageData, followUpAt: combineDateTime(remindDate, remindTime), notifyNow });
               return;
             }
             const loc = (locations || []).find((l) => l.id === locationId);
             const locationLabel = loc ? `${loc.group || "אחר"} · ${loc.name}` : "";
-            onSubmit({ title, description, assignedToId, priority, categoryId, location: locationLabel, locationId, imageData, followUpAt: combineDateTime(remindDate, remindTime) });
+            onSubmit({ title, description, assignedToId, priority, categoryId, location: locationLabel, locationId, imageData, followUpAt: combineDateTime(remindDate, remindTime), notifyNow });
           }}
           className="flex-1 py-2 rounded-2xl font-bold"
           style={{ background: C.ink, color: C.paper }}
