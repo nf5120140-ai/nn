@@ -4361,6 +4361,9 @@ function App() {
             currentUser={currentUser}
             showToast={showToast}
             notifyManagers={notifyManagers}
+            notifyUser={notifyUser}
+            users={users}
+            taskCategories={taskCategories}
             locations={locations}
           />
         )}
@@ -7630,12 +7633,13 @@ const MAP_STATUS = {
   done: { label: "נוקה", color: "#22C55E", text: "#fff" },
 };
 
-function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, showToast, notifyManagers, locations }) {
+function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, showToast, notifyManagers, notifyUser, users, taskCategories, locations }) {
   const [activeBuilding, setActiveBuilding] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [selectedLocs, setSelectedLocs] = useState([]);
   const [sheetRoom, setSheetRoom] = useState(null);
+  const [taskFormRoom, setTaskFormRoom] = useState(null);
   const [newBuilding, setNewBuilding] = useState("");
   const [newLabel, setNewLabel] = useState("");
   const [reorderMode, setReorderMode] = useState(false);
@@ -7664,6 +7668,29 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
 
   async function markTaskDoneFromRoom(taskId) {
     await persistTasks((tasks || []).map((t) => (t.id === taskId ? { ...t, status: "done", completedAt: Date.now() } : t)));
+  }
+
+  // Create a full task (any kind, not just cleaning) tied to a room.
+  async function createRoomTask(payload, room) {
+    const created = {
+      ...payload,
+      id: genId(),
+      roomId: room.id,
+      status: "open",
+      comments: [],
+      createdAt: Date.now(),
+      createdBy: currentUser?.name || "",
+      createdById: currentUser?.id || "",
+    };
+    await persistTasks([created, ...(tasks || [])]);
+    setTaskFormRoom(null);
+    if (payload.assignedToId && notifyUser) {
+      notifyUser(payload.assignedToId, `משימה חדשה: ${payload.title}`, { tab: "tasks", taskId: created.id });
+    }
+    if (notifyManagers) {
+      notifyManagers(`🛠️ נפתחה משימה: ${room.building || "כללי"} ${room.label} — ${payload.title}`, { tab: "tasks", taskId: created.id });
+    }
+    showToast("המשימה נוצרה");
   }
 
   // Drag-to-reorder (pointer based, works on touch). Rooms reorder within a building;
@@ -8078,12 +8105,35 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
               ))}
             </div>
 
-            <button onClick={() => createTaskForRoom(sheetRoom)} className="w-full py-3 rounded-2xl font-bold mb-2" style={{ background: C.accent, color: "#fff" }}>
-              📋 צור משימה לחדר
+            <button onClick={() => { const r = sheetRoom; setSheetRoom(null); setTaskFormRoom(r); }} className="w-full py-3 rounded-2xl font-bold mb-2" style={{ background: C.accent, color: "#fff" }}>
+              ➕ צור משימה לחדר
+            </button>
+            <button onClick={() => createTaskForRoom(sheetRoom)} className="w-full py-2 rounded-2xl font-bold text-sm mb-2" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+              🧹 ניקיון מהיר
             </button>
             <button onClick={() => { if (typeof window !== "undefined" && !window.confirm("למחוק את החדר מהמפה?")) return; deleteRoom(sheetRoom.id); }} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: "#fff", color: C.stamp, border: `1px solid ${C.kraftDark}` }}>
               🗑️ מחק חדר
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Full task form for a room — any kind of task, not just cleaning */}
+      {taskFormRoom && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setTaskFormRoom(null)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 560, maxHeight: "90vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}>
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>➕ משימה חדשה — {taskFormRoom.building || "כללי"} · {taskFormRoom.label}</div>
+              <button onClick={() => setTaskFormRoom(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+            <NewTaskForm
+              users={users || []}
+              locations={locations}
+              taskCategories={taskCategories}
+              lockedLocationLabel={`${taskFormRoom.building || "כללי"} · ${taskFormRoom.label}`}
+              onSubmit={(payload) => createRoomTask(payload, taskFormRoom)}
+              onCancel={() => setTaskFormRoom(null)}
+            />
           </div>
         </div>
       )}
@@ -8940,7 +8990,7 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
   );
 }
 
-function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
+function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, lockedLocationLabel }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [assignedToId, setAssignedToId] = useState(users[0]?.id || "");
@@ -8970,13 +9020,21 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
     <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
       <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="כותרת" className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }} autoFocus />
       <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="פירוט (אופציונלי)" className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }} rows={2} />
-      <LocationPicker locations={locations} value={locationId} onChange={setLocationId} />
-      {locationId && (() => {
-        const loc = (locations || []).find((l) => l.id === locationId);
-        return loc?.imageData ? (
-          <img src={loc.imageData} alt="" className="rounded-2xl" style={{ maxHeight: 100 }} />
-        ) : null;
-      })()}
+      {lockedLocationLabel ? (
+        <div className="p-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+          📍 {lockedLocationLabel}
+        </div>
+      ) : (
+        <>
+          <LocationPicker locations={locations} value={locationId} onChange={setLocationId} />
+          {locationId && (() => {
+            const loc = (locations || []).find((l) => l.id === locationId);
+            return loc?.imageData ? (
+              <img src={loc.imageData} alt="" className="rounded-2xl" style={{ maxHeight: 100 }} />
+            ) : null;
+          })()}
+        </>
+      )}
       <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
         <option value="">בחר קטגוריה (אופציונלי)</option>
         {(taskCategories || []).map((c) => (
@@ -9042,6 +9100,10 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories }) {
         <button
           onClick={() => {
             if (!title.trim()) return;
+            if (lockedLocationLabel) {
+              onSubmit({ title, description, assignedToId, priority, categoryId, location: lockedLocationLabel, locationId: "", imageData, followUpAt: combineDateTime(remindDate, remindTime) });
+              return;
+            }
             const loc = (locations || []).find((l) => l.id === locationId);
             const locationLabel = loc ? `${loc.group || "אחר"} · ${loc.name}` : "";
             onSubmit({ title, description, assignedToId, priority, categoryId, location: locationLabel, locationId, imageData, followUpAt: combineDateTime(remindDate, remindTime) });
