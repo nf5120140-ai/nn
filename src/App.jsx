@@ -7640,10 +7640,13 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
   const [newLabel, setNewLabel] = useState("");
   const [reorderMode, setReorderMode] = useState(false);
   const [dragOrder, setDragOrder] = useState(null); // working copy while dragging
-  const [dragId, setDragId] = useState(null);
+  const [dragId, setDragId] = useState(null);       // room being dragged
+  const [dragBuilding, setDragBuilding] = useState(null); // building being dragged
   const dragIdRef = useRef(null);
+  const dragBRef = useRef(null);
   const orderRef = useRef(null);
   useEffect(() => { dragIdRef.current = dragId; }, [dragId]);
+  useEffect(() => { dragBRef.current = dragBuilding; }, [dragBuilding]);
   useEffect(() => { orderRef.current = dragOrder; }, [dragOrder]);
 
   // Open tasks that belong to a room: linked by id, by stamped roomId, or by matching location.
@@ -7663,36 +7666,72 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
     await persistTasks((tasks || []).map((t) => (t.id === taskId ? { ...t, status: "done", completedAt: Date.now() } : t)));
   }
 
-  // Drag-to-reorder (pointer based, works on touch): reorders rooms within the same building.
+  // Drag-to-reorder (pointer based, works on touch). Rooms reorder within a building;
+  // dragging a building's side-label reorders whole buildings.
   function startDrag(e, room) {
     if (!reorderMode) return;
     e.preventDefault();
     setDragId(room.id);
+    setDragBuilding(null);
     setDragOrder((mapRooms || []).slice());
   }
+  function startDragBuilding(e, b) {
+    if (!reorderMode) return;
+    e.preventDefault();
+    setDragBuilding(b);
+    setDragId(null);
+    setDragOrder((mapRooms || []).slice());
+  }
+  // Rebuild the rooms array so buildings follow a new order (rooms within each kept).
+  function moveBuildingBlock(list, fromB, toB) {
+    if (fromB === toB) return list;
+    const order = [];
+    list.forEach((r) => { const b = r.building || "כללי"; if (!order.includes(b)) order.push(b); });
+    const fi = order.indexOf(fromB), ti = order.indexOf(toB);
+    if (fi < 0 || ti < 0) return list;
+    order.splice(fi, 1);
+    order.splice(ti, 0, fromB);
+    const byB = {};
+    list.forEach((r) => { const b = r.building || "כללי"; (byB[b] = byB[b] || []).push(r); });
+    const out = [];
+    order.forEach((b) => (byB[b] || []).forEach((r) => out.push(r)));
+    return out;
+  }
+  const dragging = dragId || dragBuilding;
   useEffect(() => {
-    if (!dragId) return;
+    if (!dragging) return;
     function onMove(ev) {
       const p = ev.touches ? ev.touches[0] : ev;
       if (!p) return;
       const el = document.elementFromPoint(p.clientX, p.clientY);
-      const tile = el && el.closest ? el.closest("[data-room-id]") : null;
-      if (!tile) return;
-      const overId = tile.getAttribute("data-room-id");
-      const did = dragIdRef.current;
-      if (!overId || overId === did) return;
-      const list = (orderRef.current || []).slice();
-      const from = list.findIndex((r) => r.id === did);
-      const to = list.findIndex((r) => r.id === overId);
-      if (from < 0 || to < 0) return;
-      if ((list[from].building || "כללי") !== (list[to].building || "כללי")) return; // same building only
-      const [moved] = list.splice(from, 1);
-      list.splice(to, 0, moved);
-      setDragOrder(list);
+      if (!el || !el.closest) return;
+      if (dragBRef.current) {
+        const bl = el.closest("[data-building]");
+        if (!bl) return;
+        const overB = bl.getAttribute("data-building");
+        const fromB = dragBRef.current;
+        if (!overB || overB === fromB) return;
+        setDragOrder(moveBuildingBlock(orderRef.current || [], fromB, overB));
+      } else {
+        const tile = el.closest("[data-room-id]");
+        if (!tile) return;
+        const overId = tile.getAttribute("data-room-id");
+        const did = dragIdRef.current;
+        if (!overId || overId === did) return;
+        const list = (orderRef.current || []).slice();
+        const from = list.findIndex((r) => r.id === did);
+        const to = list.findIndex((r) => r.id === overId);
+        if (from < 0 || to < 0) return;
+        if ((list[from].building || "כללי") !== (list[to].building || "כללי")) return; // same building only
+        const [moved] = list.splice(from, 1);
+        list.splice(to, 0, moved);
+        setDragOrder(list);
+      }
     }
     function onUp() {
       const list = orderRef.current;
       setDragId(null);
+      setDragBuilding(null);
       if (list) persistMapRooms(list);
       setDragOrder(null);
     }
@@ -7704,7 +7743,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onUp);
     };
-  }, [dragId]);
+  }, [dragging]);
 
   const displayRooms = dragOrder || mapRooms || [];
   // Buildings in first-appearance order (so a custom room order stays stable).
@@ -7820,7 +7859,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
         <>
           {reorderMode && (
             <p className="text-xs mb-2 p-2 rounded-xl text-center" style={{ background: C.kraft, color: C.ink }}>
-              גרור חדר כדי לשנות את הסדר (בתוך אותו בניין). לסיום לחץ "✓ סיום סידור".
+              גרור חדר כדי לסדר בתוך הבניין, או גרור את שם הבניין (בצד) כדי להעביר בניין שלם. לסיום לחץ "✓ סיום סידור".
             </p>
           )}
           {/* One scroll: every building is a row — name on the side, its rooms flowing next to it. */}
@@ -7828,8 +7867,21 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
             const rooms = displayRooms.filter((r) => (r.building || "כללי") === b);
             return (
               <div key={b} style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 14 }}>
-                <div style={{ width: 54, flexShrink: 0, fontWeight: 900, fontSize: 13, color: C.accent, textAlign: "center", background: C.kraft, borderRadius: 10, padding: "8px 4px", wordBreak: "break-word", lineHeight: 1.2 }}>
-                  {b}
+                <div
+                  data-building={b}
+                  onPointerDown={reorderMode ? (e) => startDragBuilding(e, b) : undefined}
+                  style={{
+                    width: 54, flexShrink: 0, fontWeight: 900, fontSize: 13,
+                    color: dragBuilding === b ? "#fff" : C.accent,
+                    textAlign: "center", background: dragBuilding === b ? C.accent : C.kraft,
+                    borderRadius: 10, padding: "8px 4px", wordBreak: "break-word", lineHeight: 1.2,
+                    touchAction: reorderMode ? "none" : "auto",
+                    cursor: reorderMode ? "grab" : "default",
+                    boxShadow: dragBuilding === b ? `0 0 0 2px ${C.ink}` : "none",
+                    opacity: dragBuilding && dragBuilding !== b ? 0.6 : 1,
+                  }}
+                >
+                  {reorderMode ? "⠿ " : ""}{b}
                 </div>
                 <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(58px, 1fr))", gap: 6 }}>
                   {rooms.map((room) => {
