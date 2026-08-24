@@ -7641,6 +7641,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
   const [sheetRoom, setSheetRoom] = useState(null);
   const [taskFormRoom, setTaskFormRoom] = useState(null);
   const [newBuilding, setNewBuilding] = useState("");
+  const [buildingChoice, setBuildingChoice] = useState("");
   const [newLabel, setNewLabel] = useState("");
   const [reorderMode, setReorderMode] = useState(false);
   const [dragOrder, setDragOrder] = useState(null); // working copy while dragging
@@ -7799,14 +7800,17 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
   }
 
   async function addRoom() {
-    const b = (newBuilding.trim() || building || "כללי");
+    let b;
+    if (buildingChoice && buildingChoice !== "__new__") b = buildingChoice;
+    else b = newBuilding.trim();
+    if (!b) b = "כללי";
     const l = newLabel.trim();
     if (!l) { showToast("הזן מספר/שם חדר"); return; }
-    const room = { id: genId(), building: b, label: l, status: "ok", statusAt: Date.now() };
+    const room = { id: genId(), building: b, label: l };
     await persistMapRooms([...(mapRooms || []), room]);
     setNewLabel("");
     setActiveBuilding(b);
-    showToast("החדר נוסף");
+    showToast(`החדר נוסף ל${b}`);
   }
 
   async function deleteRoom(id) {
@@ -7865,7 +7869,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
           <button onClick={() => setImportOpen(true)} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
             📍 מהמקומות
           </button>
-          <button onClick={() => setAddOpen(true)} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.ink, color: C.paper }}>
+          <button onClick={() => { setBuildingChoice(buildingOrder[0] || "__new__"); setNewBuilding(""); setAddOpen(true); }} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.ink, color: C.paper }}>
             ➕ הוסף חדר
           </button>
         </div>
@@ -7961,18 +7965,28 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
         <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setAddOpen(false)}>
           <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 520, borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}>
             <div className="wh-display font-black text-lg mb-3" style={{ color: C.ink }}>➕ הוסף חדר</div>
-            <label className="text-xs font-bold" style={{ color: C.steel }}>בניין</label>
-            <input
-              list="map-buildings"
-              value={newBuilding}
-              onChange={(e) => setNewBuilding(e.target.value)}
-              placeholder="שם/מספר בניין (או בחר קיים)"
-              className="w-full p-3 rounded-2xl border mb-3 mt-1"
-              style={{ borderColor: C.kraftDark, background: "#fff" }}
-            />
-            <datalist id="map-buildings">
-              {buildings.map((b) => <option key={b} value={b} />)}
-            </datalist>
+            <label className="text-xs font-bold" style={{ color: C.steel }}>בחר בניין</label>
+            {buildingOrder.length > 0 && (
+              <select
+                value={buildingChoice}
+                onChange={(e) => setBuildingChoice(e.target.value)}
+                className="w-full p-3 rounded-2xl border mb-3 mt-1"
+                style={{ borderColor: C.kraftDark, background: "#fff" }}
+              >
+                {buildingOrder.map((b) => <option key={b} value={b}>{b}</option>)}
+                <option value="__new__">➕ בניין חדש…</option>
+              </select>
+            )}
+            {(buildingChoice === "__new__" || buildingOrder.length === 0) && (
+              <input
+                value={newBuilding}
+                onChange={(e) => setNewBuilding(e.target.value)}
+                placeholder="שם/מספר בניין חדש"
+                autoFocus
+                className="w-full p-3 rounded-2xl border mb-3 mt-1"
+                style={{ borderColor: C.kraftDark, background: "#fff" }}
+              />
+            )}
             <label className="text-xs font-bold" style={{ color: C.steel }}>מספר / שם חדר</label>
             <input
               value={newLabel}
@@ -7986,7 +8000,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
               <button onClick={addRoom} className="flex-1 py-3 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>הוסף חדר</button>
               <button onClick={() => setAddOpen(false)} className="px-4 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
             </div>
-            <p className="text-xs mt-2" style={{ color: C.steel }}>טיפ: כדי ליצור בניין חדש, פשוט כתוב שם בניין חדש.</p>
+            <p className="text-xs mt-2" style={{ color: C.steel }}>אפשר להוסיף כמה חדרים ברצף לאותו בניין — הבניין נשאר נבחר.</p>
           </div>
         </div>
       )}
