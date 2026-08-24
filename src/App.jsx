@@ -3716,8 +3716,9 @@ function App() {
       for (const t of due) {
         const msg = `⏰ תזכורת: ${t.title}`;
         const link = { tab: "tasks", taskId: t.id };
-        // Nudge the assignee, and the manager who set it if that's someone else.
-        const recipients = new Set([t.assignedToId, t.createdById].filter(Boolean));
+        // Send to the assignee; only fall back to the creator if nobody is assigned.
+        // notifyUser already skips the current device's own user, so no self-pop.
+        const recipients = new Set([t.assignedToId || t.createdById].filter(Boolean));
         for (const uid of recipients) {
           await notifyUser(uid, msg, link);
         }
@@ -3985,7 +3986,7 @@ function App() {
   }
 
   async function notifyManagers(message, link) {
-    const managers = users.filter((u) => u.role === "manager");
+    const managers = users.filter((u) => u.role === "manager" && u.id !== currentUser?.id);
     if (managers.length === 0) return;
     const next = [
       ...notifications,
@@ -3997,6 +3998,8 @@ function App() {
   /* `link` tells the notification bell where to jump when tapped, e.g.
      { tab: "tasks", taskId } or { tab: "admin", section: "unitrequests" }. */
   async function notifyUser(userId, message, link) {
+    // Never notify the person performing the action — no self-pop on your own task.
+    if (!userId || userId === currentUser?.id) return;
     const next = [
       ...notifications,
       { id: genId(), userId, message, link, read: false, createdAt: Date.now() },
