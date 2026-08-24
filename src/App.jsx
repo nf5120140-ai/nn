@@ -3194,10 +3194,11 @@ function AccessibilityWidget() {
         aria-label="הגדרות נגישות"
         title="נגישות"
         style={{
-          position: "fixed", bottom: 88, left: 16, zIndex: 3000,
-          width: 52, height: 52, borderRadius: "50%", border: "2px solid #fff",
-          background: C.accent, color: "#fff", fontSize: 26, cursor: "pointer",
+          position: "fixed", bottom: 16, left: 12, zIndex: 3000,
+          width: 46, height: 46, borderRadius: "50%", border: "2px solid #fff",
+          background: C.accent, color: "#fff", fontSize: 23, cursor: "pointer",
           boxShadow: "0 4px 14px rgba(0,0,0,0.3)", display: "flex", alignItems: "center", justifyContent: "center",
+          opacity: 0.92,
         }}
       >
         ♿
@@ -3342,6 +3343,27 @@ function App() {
       }
     } catch (e) { /* ignore */ }
   }, []);
+
+  // Make the phone/browser Back button move between tabs instead of leaving the app.
+  const tabRef = useRef(tab);
+  useEffect(() => { tabRef.current = tab; }, [tab]);
+  const skipTabPushRef = useRef(false);
+  const firstTabRef = useRef(true);
+  useEffect(() => {
+    try { window.history.replaceState({ appTab: tabRef.current }, ""); } catch (e) {}
+    const onPop = (e) => {
+      const t = (e.state && e.state.appTab) || "dashboard";
+      skipTabPushRef.current = true;
+      setTab(t);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  useEffect(() => {
+    if (firstTabRef.current) { firstTabRef.current = false; return; }
+    if (skipTabPushRef.current) { skipTabPushRef.current = false; return; }
+    try { window.history.pushState({ appTab: tab }, ""); } catch (e) {}
+  }, [tab]);
   const [showMenu, setShowMenu] = useState(false);
   const [locked, setLocked] = useState(() => isBiometricEnabled());
   const [biometricPrompt, setBiometricPrompt] = useState(false);
