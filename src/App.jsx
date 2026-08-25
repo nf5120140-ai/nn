@@ -3194,11 +3194,11 @@ function AccessibilityWidget() {
         aria-label="הגדרות נגישות"
         title="נגישות"
         style={{
-          position: "fixed", bottom: 16, left: 12, zIndex: 3000,
-          width: 46, height: 46, borderRadius: "50%", border: "2px solid #fff",
-          background: C.accent, color: "#fff", fontSize: 23, cursor: "pointer",
-          boxShadow: "0 4px 14px rgba(0,0,0,0.3)", display: "flex", alignItems: "center", justifyContent: "center",
-          opacity: 0.92,
+          position: "fixed", bottom: 20, left: 0, zIndex: 3000,
+          width: 28, height: 32, borderRadius: "0 11px 11px 0", border: "1px solid #fff", borderLeft: "none",
+          background: C.accent, color: "#fff", fontSize: 15, cursor: "pointer", paddingRight: 2,
+          boxShadow: "0 2px 8px rgba(0,0,0,0.25)", display: "flex", alignItems: "center", justifyContent: "center",
+          opacity: 0.7,
         }}
       >
         ♿
@@ -6955,7 +6955,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                   })}
                 </div>
 
-                <ExtrasPanel />
+                {ExtrasPanel()}
 
                 {Object.entries(groupRowsBySupplier(buildOrderRows(menuNeeds, menuQtys))).map(([supplierId, items]) => {
                   const supplierName = supplierId === "__unassigned__" ? "ספק כללי" : suppliers.find((s) => s.id === supplierId)?.name || "ספק";
@@ -7311,7 +7311,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
                   })}
                 </div>
 
-                <ExtrasPanel />
+                {ExtrasPanel()}
 
                 {Object.entries(groupRowsBySupplier(buildOrderRows(weekNeeds.rows, weekQtys))).map(([supplierId, items]) => {
                   const supplierName = supplierId === "__unassigned__" ? "ספק כללי" : suppliers.find((s) => s.id === supplierId)?.name || "ספק";
@@ -7338,7 +7338,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
         )
       )}
 
-      <OrderSummarySheet />
+      {OrderSummarySheet()}
 
       {savedMenusOpen && (
         <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setSavedMenusOpen(false)}>
