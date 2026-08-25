@@ -5990,7 +5990,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
     const liveItems = items.filter(({ qty }) => Number(qty) > 0);
     const total = liveItems.reduce((sum, { product, qty }) => sum + Number(product.price || 0) * Number(qty), 0);
-    const messageText = liveItems.map(({ product, qty }) => `- ${qty} ${product.unit} ${product.name}`).join("\n");
+    const messageText = liveItems.map(({ product, qty }) => `- ${qty} ${product.unit} ${(product.orderName && product.orderName.trim()) || product.name}`).join("\n");
     const isEmpty = liveItems.length === 0;
     const missingDest = !isRequest && !dest;
 
@@ -6287,7 +6287,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
   function doSendGroupOrder(items, title, supplierId, channelOverride) {
     const ch = channelOverride || channel;
-    const lines = items.map(({ product, qty }) => `- ${qty} ${product.unit} ${product.name}`);
+    const lines = items.map(({ product, qty }) => `- ${qty} ${product.unit} ${(product.orderName && product.orderName.trim()) || product.name}`);
     let phone = "";
     let email = "";
     if (supplierId && supplierId !== "__unassigned__") {
@@ -12588,7 +12588,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
     await persistCategories(next);
   }
 
-  const empty = { name: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "", unitVisible: true, imageData: null };
+  const empty = { name: "", orderName: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "", unitVisible: true, imageData: null };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
   const [scanningBarcode, setScanningBarcode] = useState(false);
@@ -12936,6 +12936,11 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
         <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם מוצר</label>
           <input placeholder="שם מוצר" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם אצל הספק (להזמנה)</label>
+          <input placeholder="ריק = אותו שם כמו למעלה" value={form.orderName || ""} onChange={(e) => setForm({ ...form, orderName: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+          <p className="text-xs mt-1" style={{ color: C.steel }}>אם הספק מכיר את המוצר בשם אחר (למשל "נתחי עוף"), כתוב אותו כאן — הוא יופיע בהזמנה במקום שם התפריט.</p>
         </div>
         <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>ברקוד</label>
