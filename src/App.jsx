@@ -5389,6 +5389,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
   const [adHocItems, setAdHocItems] = useState([]); // free-text products not in the catalog: { id, name, qty, supplierId }
   const [adHocName, setAdHocName] = useState("");
   const [orderNote, setOrderNote] = useState("שלום, הזמנה לשבוע:");
+  // Suppliers already sent this round — their send button is hidden until the selection changes.
+  const [sentSuppliers, setSentSuppliers] = useState([]);
+  useEffect(() => { setSentSuppliers([]); }, [pickedIds, selectedForOrder, orderMode]);
   // Menu-time reminders: "order product X on day Y" — created as tasks so the existing
   // reminder engine fires them at the set time.
   const [remOpen, setRemOpen] = useState(false);
@@ -6293,6 +6296,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                   const waGroup = async () => {
                     try { await navigator.clipboard.writeText(messageText); showToast("ההזמנה הועתקה - הדבק בקבוצה"); } catch (e) {}
                     logOrderToHistory(liveItems, title, supplierId, "whatsapp");
+                    if (supplierId) setSentSuppliers((cur) => (cur.includes(supplierId) ? cur : [...cur, supplierId]));
                     window.open(settings.whatsappGroupLink.trim(), "_blank");
                     closePendingSheet();
                   };
@@ -6372,6 +6376,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
       if (showToast) showToast(res.error);
       return;
     }
+    if (supplierId) setSentSuppliers((cur) => (cur.includes(supplierId) ? cur : [...cur, supplierId]));
     logOrderToHistory(items, title, supplierId, ch);
   }
 
@@ -7021,7 +7026,12 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
 
                 {ExtrasPanel()}
 
-                {Object.entries(groupRowsBySupplier(buildOrderRows(menuNeeds, menuQtys))).map(([supplierId, items]) => {
+                {sentSuppliers.length > 0 && (
+                  <div className="text-xs text-center mb-2 p-2 rounded-xl" style={{ background: "#E7F3EA", color: C.sage }}>
+                    ✓ כבר נשלח ({sentSuppliers.length}) — <button onClick={() => setSentSuppliers([])} style={{ textDecoration: "underline", color: C.accent, fontWeight: 700 }}>הצג שוב לשליחה חוזרת</button>
+                  </div>
+                )}
+                {Object.entries(groupRowsBySupplier(buildOrderRows(menuNeeds, menuQtys))).filter(([supplierId]) => !sentSuppliers.includes(supplierId)).map(([supplierId, items]) => {
                   const supplierName = supplierId === "__unassigned__" ? "ספק כללי" : suppliers.find((s) => s.id === supplierId)?.name || "ספק";
                   return (
                     <button
@@ -7444,7 +7454,12 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
 
                 {ExtrasPanel()}
 
-                {Object.entries(groupRowsBySupplier(buildOrderRows(weekNeeds.rows, weekQtys))).map(([supplierId, items]) => {
+                {sentSuppliers.length > 0 && (
+                  <div className="text-xs text-center mb-2 p-2 rounded-xl" style={{ background: "#E7F3EA", color: C.sage }}>
+                    ✓ כבר נשלח ({sentSuppliers.length}) — <button onClick={() => setSentSuppliers([])} style={{ textDecoration: "underline", color: C.accent, fontWeight: 700 }}>הצג שוב לשליחה חוזרת</button>
+                  </div>
+                )}
+                {Object.entries(groupRowsBySupplier(buildOrderRows(weekNeeds.rows, weekQtys))).filter(([supplierId]) => !sentSuppliers.includes(supplierId)).map(([supplierId, items]) => {
                   const supplierName = supplierId === "__unassigned__" ? "ספק כללי" : suppliers.find((s) => s.id === supplierId)?.name || "ספק";
                   return (
                     <button
