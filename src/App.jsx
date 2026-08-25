@@ -9068,6 +9068,7 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
   const [priority, setPriority] = useState(task.priority || "normal");
   const [categoryId, setCategoryId] = useState(task.categoryId || "");
   const [locationId, setLocationId] = useState(task.locationId || "");
+  const [imageData, setImageData] = useState(task.imageData || null);
 
   const locationGroups = Object.entries(
     (locations || []).reduce((acc, loc) => {
@@ -9089,6 +9090,7 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
       categoryId,
       locationId,
       location: loc ? loc.name : "",
+      imageData,
     });
   }
 
@@ -9157,6 +9159,27 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
         <option value="normal">עדיפות רגילה</option>
         <option value="urgent">עדיפות דחופה</option>
       </select>
+
+      <div>
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תמונה</label>
+        {imageData ? (
+          <div className="flex flex-col gap-2">
+            <img src={imageData} alt="" className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%", objectFit: "cover" }} />
+            <div className="flex gap-2">
+              <label className="flex-1 text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                🔄 החלף תמונה
+                <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
+              </label>
+              <button onClick={() => setImageData(null)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>🗑️ הסר</button>
+            </div>
+          </div>
+        ) : (
+          <label className="block text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px dashed ${C.kraftDark}` }}>
+            📷 הוסף תמונה
+            <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
+          </label>
+        )}
+      </div>
 
       <div className="flex gap-2">
         <button onClick={submit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
