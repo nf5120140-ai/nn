@@ -3738,11 +3738,11 @@ function App() {
       for (const t of due) {
         const msg = `⏰ תזכורת: ${t.title}`;
         const link = { tab: "tasks", taskId: t.id };
-        // Send to the assignee; only fall back to the creator if nobody is assigned.
-        // notifyUser already skips the current device's own user, so no self-pop.
+        // Deliver to the assignee, or the creator if nobody is assigned. Uses the
+        // low-level delivery so a reminder you set for yourself still reaches you.
         const recipients = new Set([t.assignedToId || t.createdById].filter(Boolean));
         for (const uid of recipients) {
-          await notifyUser(uid, msg, link);
+          await deliverNotification(uid, msg, link);
         }
       }
     }
@@ -4019,15 +4019,21 @@ function App() {
   }
   /* `link` tells the notification bell where to jump when tapped, e.g.
      { tab: "tasks", taskId } or { tab: "admin", section: "unitrequests" }. */
-  async function notifyUser(userId, message, link) {
-    // Never notify the person performing the action — no self-pop on your own task.
-    if (!userId || userId === currentUser?.id) return;
+  // Low-level delivery: records the in-app notification and sends the push. Used by
+  // scheduled reminders, which must reach everyone — including the person who set them.
+  async function deliverNotification(userId, message, link) {
+    if (!userId) return;
     const next = [
       ...notifications,
       { id: genId(), userId, message, link, read: false, createdAt: Date.now() },
     ];
     await persistNotifications(next);
     pushTo([userId], "ניהול משק חכם", message, link);
+  }
+  async function notifyUser(userId, message, link) {
+    // Never notify the person performing the action — no self-pop on your own task.
+    if (!userId || userId === currentUser?.id) return;
+    await deliverNotification(userId, message, link);
   }
 
   const lowStock = products.filter((p) => Number(p.quantity) <= Number(p.threshold));
@@ -4343,6 +4349,8 @@ function App() {
             lowStock={lowStock}
             products={products}
             settings={settings}
+            tasks={tasks}
+            persistTasks={persistTasks}
             persistSettings={persistSettings}
             isManager={isManager(currentUser)}
             menuItems={menuItems}
@@ -5355,7 +5363,7 @@ function HebrewCalendarWidget() {
   );
 }
 
-function OrderTab({ lowStock, products, settings, persistSettings, isManager, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry, savedMenus, persistSavedMenus }) {
+function OrderTab({ lowStock, products, settings, persistSettings, isManager, tasks, persistTasks, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry, savedMenus, persistSavedMenus }) {
   const mayApprove = canSendOrders(currentUser);
   const myPending = (orderRequests || []).filter((r) => r.createdById === currentUser?.id && r.status === "pending");
   const suppliers = settings.suppliers || [];
@@ -5380,6 +5388,45 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   const [supplierOverrides, setSupplierOverrides] = useState({}); // productId -> supplierId chosen at order time (overrides the product's default)
   const [adHocItems, setAdHocItems] = useState([]); // free-text products not in the catalog: { id, name, qty, supplierId }
   const [adHocName, setAdHocName] = useState("");
+  const [orderNote, setOrderNote] = useState("שלום, הזמנה לשבוע:");
+  // Menu-time reminders: "order product X on day Y" — created as tasks so the existing
+  // reminder engine fires them at the set time.
+  const [remOpen, setRemOpen] = useState(false);
+  const [remProduct, setRemProduct] = useState("");
+  const [remDate, setRemDate] = useState("");
+  const [remTime, setRemTime] = useState("08:00");
+  const [remNote, setRemNote] = useState("");
+  const orderReminders = (tasks || [])
+    .filter((t) => t.kind === "order-reminder" && t.status !== "done")
+    .sort((a, b) => (a.followUpAt || 0) - (b.followUpAt || 0));
+  async function createOrderReminder() {
+    const name = remProduct.trim();
+    if (!name) { showToast("בחר או כתוב מוצר לתזכורת"); return; }
+    if (!remDate) { showToast("בחר יום לתזכורת"); return; }
+    const when = combineDateTime(remDate, remTime);
+    const task = {
+      id: genId(),
+      kind: "order-reminder",
+      title: `🛒 להזמין: ${name}${remNote.trim() ? ` — ${remNote.trim()}` : ""}`,
+      description: "",
+      location: "",
+      assignedToId: "",
+      priority: "normal",
+      categoryId: "",
+      followUpAt: when,
+      status: "open",
+      comments: [],
+      createdAt: Date.now(),
+      createdBy: currentUser?.name || "",
+      createdById: currentUser?.id || "",
+    };
+    await persistTasks([task, ...(tasks || [])]);
+    setRemProduct(""); setRemNote(""); setRemDate("");
+    showToast("התזכורת נוספה ✓");
+  }
+  async function deleteOrderReminder(id) {
+    await persistTasks((tasks || []).filter((t) => t.id !== id));
+  }
   const [selectedForOrder, setSelectedForOrder] = useState([]);
   const [openPicker, setOpenPicker] = useState(null);
   const [weekView, setWeekView] = useState("grid"); // "grid" (like the Excel sheet) | "days"
@@ -5990,7 +6037,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
 
     const liveItems = items.filter(({ qty }) => Number(qty) > 0);
     const total = liveItems.reduce((sum, { product, qty }) => sum + Number(product.price || 0) * Number(qty), 0);
-    const messageText = liveItems.map(({ product, qty }) => `- ${qty} ${product.unit} ${(product.orderName && product.orderName.trim()) || product.name}`).join("\n");
+    const itemLines = liveItems.map(({ product, qty }) => `- ${qty} ${product.unit} ${(product.orderName && product.orderName.trim()) || product.name}`).join("\n");
+    const noteText = !isRequest && orderNote.trim() ? orderNote.trim() : "";
+    const messageText = [noteText, itemLines].filter(Boolean).join("\n\n");
     const isEmpty = liveItems.length === 0;
     const missingDest = !isRequest && !dest;
 
@@ -6128,6 +6177,20 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               <span style={{ color: C.ink }}>₪{total.toFixed(0)}</span>
             </div>
           </div>
+
+          {!isRequest && (
+            <div className="mb-3">
+              <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>פתיח ההודעה (נשלח בראש ההזמנה)</label>
+              <textarea
+                value={orderNote}
+                onChange={(e) => setOrderNote(e.target.value)}
+                rows={2}
+                placeholder="למשל: שלום, הזמנה לשבוע:"
+                className="w-full p-2 rounded-2xl border text-sm"
+                style={{ borderColor: C.kraftDark, background: "#fff" }}
+              />
+            </div>
+          )}
 
           {!isEmpty && (
             <details className="mb-3" open>
@@ -6288,6 +6351,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
   function doSendGroupOrder(items, title, supplierId, channelOverride) {
     const ch = channelOverride || channel;
     const lines = items.map(({ product, qty }) => `- ${qty} ${product.unit} ${(product.orderName && product.orderName.trim()) || product.name}`);
+    const body = orderNote.trim() ? `${orderNote.trim()}\n\n${lines.join("\n")}` : lines.join("\n");
     let phone = "";
     let email = "";
     if (supplierId && supplierId !== "__unassigned__") {
@@ -6301,7 +6365,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
     const res = sendViaChannel(ch, {
       phone,
       email,
-      text: lines.join("\n"),
+      text: body,
       subject: title ? `${title} — ${todayStr()}` : ORDER_SUBJECT,
     });
     if (!res.ok) {
@@ -7111,6 +7175,73 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, me
               >
                 📅 יום-יום
               </button>
+            </div>
+
+            {/* Reminder to order a specific product on a specific day */}
+            <div className="rounded-2xl p-3 mb-4" style={{ background: "#fff", border: `1px dashed ${C.kraftDark}` }}>
+              <button onClick={() => setRemOpen((v) => !v)} className="w-full flex justify-between items-center text-sm font-bold" style={{ color: C.ink }}>
+                <span>🔔 תזכורת להזמין מוצר ביום מסוים</span>
+                <span>{remOpen ? "▲" : "▼"}</span>
+              </button>
+              {remOpen && (
+                <div className="mt-3 flex flex-col gap-2">
+                  <div style={{ position: "relative" }}>
+                    <input
+                      value={remProduct}
+                      onChange={(e) => setRemProduct(e.target.value)}
+                      placeholder="שם מוצר (הקלד לבחירה)"
+                      className="w-full p-2 rounded-2xl border text-sm"
+                      style={{ borderColor: C.kraftDark, background: "#fff" }}
+                    />
+                    {(() => {
+                      const term = remProduct.trim();
+                      if (!term) return null;
+                      if (products.some((p) => (p.name || "").trim() === term)) return null;
+                      const matches = products.filter((p) => (p.name || "").trim().startsWith(term)).slice(0, 6);
+                      if (matches.length === 0) return null;
+                      return (
+                        <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 20, background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 180, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
+                          {matches.map((p) => (
+                            <button key={p.id} onClick={() => setRemProduct(p.name)} className="w-full text-right px-3 py-2 text-sm" style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: "#fff" }}>
+                              {p.name}
+                            </button>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+                  <div className="flex gap-2">
+                    <input type="date" value={remDate} onChange={(e) => setRemDate(e.target.value)} className="flex-1 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }} />
+                    <input type="time" value={remTime} onChange={(e) => setRemTime(e.target.value)} className="w-28 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }} />
+                  </div>
+                  <input
+                    value={remNote}
+                    onChange={(e) => setRemNote(e.target.value)}
+                    placeholder="הערה (אופציונלי) — כמות, ספק וכו׳"
+                    className="w-full p-2 rounded-2xl border text-sm"
+                    style={{ borderColor: C.kraftDark }}
+                  />
+                  <button onClick={createOrderReminder} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+                    ➕ צור תזכורת
+                  </button>
+                  <p className="text-xs" style={{ color: C.steel }}>ההתראה תישלח אליך בתאריך ובשעה שקבעת.</p>
+
+                  {orderReminders.length > 0 && (
+                    <div className="mt-2 flex flex-col gap-1">
+                      <div className="text-xs font-bold" style={{ color: C.steel }}>תזכורות קרובות:</div>
+                      {orderReminders.map((t) => (
+                        <div key={t.id} className="flex justify-between items-center text-sm p-2 rounded-xl" style={{ background: C.kraft }}>
+                          <span style={{ color: C.ink }}>
+                            {t.title.replace(/^🛒 להזמין: /, "")}
+                            {t.followUpAt ? <span style={{ color: C.steel }}> · {new Date(t.followUpAt).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" })} {new Date(t.followUpAt).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}</span> : null}
+                          </span>
+                          <button onClick={() => deleteOrderReminder(t.id)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {weekView === "grid" && (
@@ -12278,7 +12409,15 @@ function ProductAutocomplete({ products, value, onChange, onPick, onCreateProduc
         value={display}
         onChange={(e) => { setQ(e.target.value); setOpen(true); }}
         onFocus={() => { setQ(""); setOpen(true); }}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onBlur={() => setTimeout(() => {
+          // Forgiving: if they typed a brand-new name that matches no existing product,
+          // add it to inventory automatically so it isn't silently lost on save.
+          const t = q.trim();
+          if (t && !hasExact && onCreateProduct && matches.length === 0) {
+            createAndPick();
+          }
+          setOpen(false);
+        }, 150)}
         placeholder={placeholder}
         className={`p-2 rounded-xl border w-full text-sm ${bold ? "font-bold" : ""}`}
         style={{ borderColor: C.kraftDark, background: "#fff", fontSize: bold ? "1rem" : undefined }}
