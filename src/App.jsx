@@ -5391,7 +5391,6 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
   const [orderNote, setOrderNote] = useState("שלום, הזמנה לשבוע:");
   // Suppliers already sent this round — their send button is hidden until the selection changes.
   const [sentSuppliers, setSentSuppliers] = useState([]);
-  useEffect(() => { setSentSuppliers([]); }, [pickedIds, selectedForOrder, orderMode]);
   // Menu-time reminders: "order product X on day Y" — created as tasks so the existing
   // reminder engine fires them at the set time.
   const [remOpen, setRemOpen] = useState(false);
@@ -5431,6 +5430,8 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
     await persistTasks((tasks || []).filter((t) => t.id !== id));
   }
   const [selectedForOrder, setSelectedForOrder] = useState([]);
+  // Reset the "already sent" suppliers whenever the selection or mode changes.
+  useEffect(() => { setSentSuppliers([]); }, [pickedIds, selectedForOrder, orderMode]);
   const [openPicker, setOpenPicker] = useState(null);
   const [weekView, setWeekView] = useState("grid"); // "grid" (like the Excel sheet) | "days"
   const [menuWeek, setMenuWeek] = useState("next"); // which week the printed menu is for
