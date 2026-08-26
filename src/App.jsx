@@ -5476,6 +5476,17 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
 
   const [drafts, setDrafts] = useState([]);
   const [editingDraftId, setEditingDraftId] = useState(null); // which saved draft the review sheet is editing (null = brand-new order)
+  const [sheetAddSearch, setSheetAddSearch] = useState(""); // add-a-product box inside the review sheet
+  function addProductToPending(product) {
+    setPendingOrder((po) => {
+      if (!po) return po;
+      if (po.items.some((it) => it.product.id === product.id)) {
+        return { ...po, items: po.items.map((it) => (it.product.id === product.id ? { ...it, qty: (Number(it.qty) || 0) + 1 } : it)) };
+      }
+      return { ...po, items: [...po.items, { product, qty: 1 }] };
+    });
+    setSheetAddSearch("");
+  }
   useEffect(() => {
     loadKey(KEYS.orderDrafts, []).then((d) => setDrafts(Array.isArray(d) ? d : [])).catch(() => {});
   }, []);
@@ -6182,6 +6193,33 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
             </div>
           </div>
 
+          {/* Add a product to this order/draft right here */}
+          <div className="mb-3" style={{ position: "relative" }}>
+            <input
+              value={sheetAddSearch}
+              onChange={(e) => setSheetAddSearch(e.target.value)}
+              placeholder="➕ הוסף מוצר להזמנה..."
+              className="w-full p-2 rounded-2xl border text-sm"
+              style={{ borderColor: C.mustard, background: "#fff" }}
+            />
+            {(() => {
+              const term = sheetAddSearch.trim();
+              if (!term) return null;
+              const inOrder = new Set(items.map((it) => it.product.id));
+              const matches = products.filter((p) => (p.name || "").trim().startsWith(term) && !inOrder.has(p.id)).slice(0, 6);
+              if (matches.length === 0) return null;
+              return (
+                <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 30, background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 200, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
+                  {matches.map((p) => (
+                    <button key={p.id} onClick={() => addProductToPending(p)} className="w-full text-right px-3 py-2 text-sm" style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: "#fff" }}>
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+
           {!isRequest && (
             <div className="mb-3">
               <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>פתיח ההודעה (נשלח בראש ההזמנה)</label>
@@ -6665,6 +6703,16 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
         </button>
       </div>
 
+      {orderMode !== "history" && (selectedForOrder.length > 0 || pickedIds.length > 0 || Object.keys(orderExtras).length > 0 || adHocItems.length > 0) && (
+        <button
+          onClick={() => { if (window.confirm("לאפס את כל ההזמנה? כל הסימונים והכמויות יימחקו.")) { clearOrderDraft(); setSentSuppliers([]); showToast("ההזמנה אופסה"); } }}
+          className="w-full py-2 mb-4 rounded-2xl text-sm font-bold"
+          style={{ background: "#fff", color: C.stamp, border: `1.5px solid ${C.stamp}` }}
+        >
+          🗑️ אפס הזמנה (מחק הכל)
+        </button>
+      )}
+
       {orderMode === "history" && (
         <div className="flex flex-col gap-3">
           {(!orderHistory || orderHistory.length === 0) ? (
@@ -6790,7 +6838,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
       {orderMode === "stock" && (() => {
         const baseList = orderSupplierFilter === "all"
           ? lowStock
-          : products.filter((p) => (p.supplierId || "__unassigned__") === orderSupplierFilter);
+          : orderSupplierFilter === "__all_products__"
+            ? products
+            : products.filter((p) => (p.supplierId || "__unassigned__") === orderSupplierFilter);
         const filteredLowStock = orderSearch
           ? baseList.filter((p) => p.name.includes(orderSearch))
           : baseList;
@@ -6817,6 +6867,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                 style={{ borderColor: C.kraftDark }}
               >
                 <option value="all">מתחת לסף בלבד</option>
+                <option value="__all_products__">כל המוצרים</option>
                 {supplierOptionsInList.map((sid) => (
                   <option key={sid} value={sid}>
                     {sid === "__unassigned__" ? "ללא ספק משויך" : suppliers.find((s) => s.id === sid)?.name || "ספק"}
@@ -6826,7 +6877,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
             </div>
             {orderSupplierFilter !== "all" && (
               <p className="text-xs mb-2" style={{ color: C.steel }}>
-                מוצג כאן כל המלאי של הספק הזה (גם מה שיש ממנו מספיק) - סמן ✔ והקלד כמות רק למה שבאמת רוצה להזמין.
+                {orderSupplierFilter === "__all_products__"
+                  ? "מוצגים כאן כל המוצרים (גם מה שיש ממנו מספיק) - סמן ✔ והקלד כמות רק למה שבאמת רוצה להזמין."
+                  : "מוצג כאן כל המלאי של הספק הזה (גם מה שיש ממנו מספיק) - סמן ✔ והקלד כמות רק למה שבאמת רוצה להזמין."}
               </p>
             )}
 
