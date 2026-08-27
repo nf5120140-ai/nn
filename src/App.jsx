@@ -11066,9 +11066,24 @@ function UnitRequestsAdmin({
       requestId: r.id,
       unitName: r.unitName,
       weekOf: r.weekOf,
-      items: (r.items || []).map((i) => ({ ...i, give: Math.min(i.qty, stockOf(i.productId)) })),
-      note: "",
+      reopened: !!r.reopened,
+      priorIssued: r.priorIssued || [],
+      items: (r.items || []).map((i) => ({ ...i, give: r.reopened ? 0 : Math.min(i.qty, stockOf(i.productId)) })),
+      note: r.managerNote || "",
     });
+  }
+
+  // Return an already-fulfilled request to "pending" so the manager can add to it and
+  // issue the extra. Keeps a record of what was already issued so nothing is double-counted.
+  async function reopenForMore(r) {
+    await persistUnitRequests(
+      (unitRequests || []).map((x) =>
+        x.id === r.id
+          ? { ...x, status: "submitted", reopened: true, priorIssued: x.issuedItems || x.priorIssued || [] }
+          : x
+      )
+    );
+    showToast("הבקשה הוחזרה לטיפול — הוסף ונפק את התוספת");
   }
 
   function setGive(productId, val) {
@@ -11132,6 +11147,17 @@ function UnitRequestsAdmin({
       if (logStockChange) await logStockChange(i.productId, -i.give, `${currentUser.name} → ${req.unitName}`);
     }
 
+    // Cumulative record: if this request was reopened after a prior issue, add the new
+    // amounts on top of what was already given (so history shows the full total).
+    const prior = editing.priorIssued || [];
+    const mergedMap = {};
+    [...prior, ...issued.map((i) => ({ productId: i.productId, name: i.name, unit: i.unit, qty: i.give }))].forEach((it) => {
+      const k = it.productId;
+      if (mergedMap[k]) mergedMap[k] = { ...mergedMap[k], qty: (Number(mergedMap[k].qty) || 0) + (Number(it.qty) || 0) };
+      else mergedMap[k] = { ...it };
+    });
+    const mergedIssued = Object.values(mergedMap);
+
     await persistUnitRequests(
       (unitRequests || []).map((r) =>
         r.id === editing.requestId
@@ -11141,7 +11167,9 @@ function UnitRequestsAdmin({
               fulfilledAt: Date.now(),
               fulfilledBy: currentUser.name,
               managerNote: editing.note,
-              issuedItems: issued.map((i) => ({ productId: i.productId, name: i.name, unit: i.unit, qty: i.give })),
+              issuedItems: mergedIssued,
+              reopened: false,
+              priorIssued: [],
             }
           : r
       )
@@ -11253,6 +11281,11 @@ function UnitRequestsAdmin({
         </div>
 
         <div className="flex flex-col gap-2 mb-4">
+          {editing.reopened && (
+            <div className="text-xs p-2 rounded-xl" style={{ background: "#FFF3E0", color: C.ink, border: `1px solid ${C.mustard}` }}>
+              הבקשה כבר נופקה קודם. הכמויות מתחילות מ-0 — הזן כמות רק למה שאתה <b>מוסיף עכשio</b>. מה שכבר ניפקת נשמר ולא יורד מהמלאי שוב.
+            </div>
+          )}
           {editing.items.length === 0 && (
             <ShelfTag accent={C.stamp}>
               <p className="text-sm text-center" style={{ color: C.steel }}>
@@ -11506,6 +11539,13 @@ function UnitRequestsAdmin({
                     </span>
                     {r.status === "fulfilled" && (
                       <div className="flex gap-1.5">
+                        <button
+                          onClick={() => reopenForMore(r)}
+                          className="px-3 py-1 rounded-2xl font-bold text-xs"
+                          style={{ background: C.mustard, color: C.ink }}
+                        >
+                          ↩️ החזר להוספה
+                        </button>
                         <button
                           onClick={() => sendListWhatsapp(r.issuedItems || r.items || [], r.unitName, r.weekOf)}
                           className="px-3 py-1 rounded-2xl font-bold text-xs"
