@@ -7908,7 +7908,12 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
   }
 
   async function markTaskDoneFromRoom(taskId) {
-    await persistTasks((tasks || []).map((t) => (t.id === taskId ? { ...t, status: "done", completedAt: Date.now() } : t)));
+    let base = tasks;
+    try {
+      const latest = await loadKey(KEYS.tasks, null);
+      if (Array.isArray(latest)) base = latest;
+    } catch (e) {}
+    await persistTasks(base.map((t) => (t.id === taskId ? { ...t, status: "done", completedAt: Date.now() } : t)));
   }
 
   // Create a full task (any kind, not just cleaning) tied to a room.
@@ -8449,7 +8454,15 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
   }
 
   async function updateStatus(task, status) {
-    const next = tasks.map((t) =>
+    // Closing/reopening writes the whole task list, and last-writer-wins. If we build
+    // it from a stale in-memory copy, another device's save can revert this change (the
+    // task "reopens"). So read the freshest list first, then apply only this one task.
+    let base = tasks;
+    try {
+      const latest = await loadKey(KEYS.tasks, null);
+      if (Array.isArray(latest)) base = latest;
+    } catch (e) { /* offline - fall back to in-memory */ }
+    const next = base.map((t) =>
       t.id === task.id
         ? { ...t, status, completedAt: status === "done" ? Date.now() : null }
         : t
