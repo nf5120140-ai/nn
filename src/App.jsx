@@ -2007,11 +2007,12 @@ function UnitRequestTab({
     await persistUnitRequests([...others, updated]);
   }
 
-  async function setQty(product, qty) {
+  async function setQty(product, qty, unit) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const q = Math.max(0, Number(qty) || 0);
+    const u = unit || (current?.items || []).find((i) => i.productId === product.id)?.unit || product.unit;
     const items = (current?.items || []).filter((i) => i.productId !== product.id);
-    if (q > 0) items.push({ productId: product.id, name: product.name, unit: product.unit, qty: q });
+    if (q > 0) items.push({ productId: product.id, name: product.name, unit: u, qty: q });
     await upsertCurrent(items);
   }
 
@@ -2111,6 +2112,7 @@ function UnitRequestTab({
   }
 
   const qtyOf = (id) => (current?.items || []).find((i) => i.productId === id)?.qty || 0;
+  const unitOf = (p) => (current?.items || []).find((i) => i.productId === p.id)?.unit || p.unit;
   const totalItems = (current?.items || []).length;
   const customItems = (current?.items || []).filter((i) => i.custom);
 
@@ -2287,6 +2289,9 @@ function UnitRequestTab({
           <div className="flex flex-col gap-2">
             {filtered.map((p) => {
               const q = qtyOf(p.id);
+              const u = unitOf(p);
+              const isBox = u === "ארגז";
+              const step = isBox ? 0.5 : 1;
               return (
                 <ShelfTag key={p.id} accent={q > 0 ? C.sage : C.kraftDark}>
                   <div className="flex justify-between items-center">
@@ -2301,7 +2306,7 @@ function UnitRequestTab({
                     </div>
                     <div className="flex items-center gap-1">
                       <button
-                        onClick={() => setQty(p, q - 1)}
+                        onClick={() => setQty(p, Math.max(0, q - step), u)}
                         disabled={locked || q === 0}
                         className="w-8 h-8 rounded-xl font-bold"
                         style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked || q === 0 ? 0.4 : 1 }}
@@ -2310,20 +2315,30 @@ function UnitRequestTab({
                       </button>
                       <input
                         type="number"
+                        step={step}
                         value={q === 0 ? "" : q}
-                        onChange={(e) => setQty(p, e.target.value)}
+                        onChange={(e) => setQty(p, e.target.value, u)}
                         disabled={locked}
                         placeholder="0"
                         className="w-14 text-center p-1.5 rounded-xl border"
                         style={{ borderColor: C.kraftDark }}
                       />
                       <button
-                        onClick={() => setQty(p, q + 1)}
+                        onClick={() => setQty(p, q + step, u)}
                         disabled={locked}
                         className="w-8 h-8 rounded-xl font-bold"
                         style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}
                       >
                         +
+                      </button>
+                      <button
+                        onClick={() => setQty(p, q > 0 ? q : step, isBox ? (p.unit || "יח׳") : "ארגז")}
+                        disabled={locked}
+                        title="החלף בין יחידות לארגזים"
+                        className="px-2 h-8 rounded-xl font-bold text-xs whitespace-nowrap"
+                        style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}
+                      >
+                        {isBox ? "🧺 ארגז" : (p.unit || "יח׳")}
                       </button>
                     </div>
                   </div>
