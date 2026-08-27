@@ -2078,13 +2078,28 @@ function UnitRequestTab({
     showToast("הפריטים נוספו לבקשה והמחסן עודכן");
   }
 
-  function printRequest() {
-    if (!current || (current.items || []).length === 0) return showToast("אין מה להדפיס");
-    const rows = (current.items || [])
+  // Load a previous request's items into this week's request, so it can be edited and re-sent.
+  async function reuseRequest(r) {
+    if (locked && current?.status === "submitted") {
+      // fine — reuse replaces into a fresh editable request below
+    }
+    const items = (r.items || []).map((i) => ({ ...i }));
+    await upsertCurrent(items);
+    setView("current");
+    showToast("הבקשה הועתקה לעריכה — אפשר לשנות ולשלוח מחדש");
+  }
+
+  function printRequest(req) {
+    const r = req || current;
+    const printItems = (r && r.status === "fulfilled" && Array.isArray(r.issuedItems) && r.issuedItems.length) ? r.issuedItems : (r ? r.items : []);
+    if (!r || (printItems || []).length === 0) return showToast("אין מה להדפיס");
+    const rows = (printItems || [])
       .map((i, idx) => `<tr style="background:${idx % 2 ? "#EAF3FB" : "#fff"}"><td>${idx + 1}</td><td class="name">${i.name}</td><td class="qty">${i.qty} ${i.unit || ""}</td></tr>`)
       .join("");
+    const noteText = (req ? r.managerNote || r.note : (noteDraft || r.note)) || "";
+    const heading = r.status === "fulfilled" ? "בקשה שאושרה מהמחסן" : "בקשה מהמחסן";
     const html = `
-      <!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="utf-8"><title>בקשה מהמחסן</title>
+      <!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="utf-8"><title>${heading}</title>
       <style>
         @page { size: A4 portrait; margin: 14mm; }
         * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
@@ -2098,13 +2113,13 @@ function UnitRequestTab({
         td.name { text-align: right; font-weight: bold; }
         .note { margin-top: 16px; padding: 10px; border: 1px dashed #888; border-radius: 8px; font-size: 14px; }
       </style></head><body>
-        <h1>בקשה מהמחסן</h1>
-        <div class="sub">${current.unitName || currentUser.name || ""} · ${new Date(current.submittedAt || current.updatedAt || current.createdAt || Date.now()).toLocaleDateString("he-IL")}</div>
+        <h1>${heading}</h1>
+        <div class="sub">${r.unitName || currentUser.name || ""} · ${new Date(r.fulfilledAt || r.submittedAt || r.updatedAt || r.createdAt || Date.now()).toLocaleDateString("he-IL")}</div>
         <table>
           <thead><tr><th style="width:36px">#</th><th>מוצר</th><th style="width:110px">כמות</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
-        ${noteDraft || current.note ? `<div class="note"><b>הערה:</b> ${noteDraft || current.note}</div>` : ""}
+        ${noteText ? `<div class="note"><b>הערה:</b> ${noteText}</div>` : ""}
       </body></html>`;
     const win = window.open("", "_blank");
     win.document.write(html);
@@ -2397,6 +2412,14 @@ function UnitRequestTab({
                     הערת המחסן: {r.managerNote}
                   </div>
                 )}
+                <div className="flex gap-2 mt-2">
+                  <button onClick={() => reuseRequest(r)} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.ink, color: "#fff" }}>
+                    📋 פתח וערוך מחדש
+                  </button>
+                  <button onClick={() => printRequest(r)} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                    🖨️ הדפס טבלה
+                  </button>
+                </div>
               </ShelfTag>
             );
           })}
@@ -11127,8 +11150,8 @@ function UnitRequestsAdmin({
     const shortages = editing.items.filter((i) => i.give < i.qty);
     if (notifyUser) {
       const msg = shortages.length
-        ? `🧺 הבקשה שלך נופקה חלקית (${shortages.length} מוצרים בחוסר)`
-        : "🧺 הבקשה שלך נופקה במלואה ✓";
+        ? `🧺 הבקשה שלך נופקה חלקית (${shortages.length} מוצרים בחוסר) — אפשר להדפיס כטבלה מההיסטוריה`
+        : "🧺 הבקשה שלך נופקה במלואה ✓ — אפשר להדפיס כטבלה מההיסטוריה";
       await notifyUser(req.unitId, msg, { tab: "unitrequest" });
     }
     setEditing(null);
@@ -11155,7 +11178,7 @@ function UnitRequestsAdmin({
       )
     );
     if (notifyUser && req) {
-      await notifyUser(req.unitId, "🧺 הבקשה שלך טופלה ✓", { tab: "unitrequest" });
+      await notifyUser(req.unitId, "🧺 הבקשה שלך טופלה ✓ — אפשר להדפיס כטבלה מההיסטוריה", { tab: "unitrequest" });
     }
     setEditing(null);
     showToast("הבקשה סומנה כטופלה (המלאי לא שונה)");
