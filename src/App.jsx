@@ -5440,14 +5440,14 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
     .filter((t) => t.kind === "order-reminder" && t.status !== "done")
     .sort((a, b) => (a.followUpAt || 0) - (b.followUpAt || 0));
   async function createOrderReminder() {
-    const name = remProduct.trim();
-    if (!name) { showToast("בחר או כתוב מוצר לתזכורת"); return; }
     if (!remDate) { showToast("בחר יום לתזכורת"); return; }
+    const name = remProduct.trim();
     const when = combineDateTime(remDate, remTime);
+    const label = name ? `🛒 להזמין: ${name}` : "🛒 תזכורת הזמנה";
     const task = {
       id: genId(),
       kind: "order-reminder",
-      title: `🛒 להזמין: ${name}${remNote.trim() ? ` — ${remNote.trim()}` : ""}`,
+      title: `${label}${remNote.trim() ? ` — ${remNote.trim()}` : ""}`,
       description: "",
       location: "",
       assignedToId: "",
@@ -6751,6 +6751,74 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
         </button>
       )}
 
+      {orderMode !== "history" && (
+        <div className="rounded-2xl p-3 mb-4" style={{ background: "#fff", border: `1px dashed ${C.kraftDark}` }}>
+          <button onClick={() => setRemOpen((v) => !v)} className="w-full flex justify-between items-center text-sm font-bold" style={{ color: C.ink }}>
+            <span>🔔 תזכורת הזמנה / מוצר ליום מסוים</span>
+            <span>{remOpen ? "▲" : "▼"}</span>
+          </button>
+          {remOpen && (
+            <div className="mt-3 flex flex-col gap-2">
+              <div style={{ position: "relative" }}>
+                <input
+                  value={remProduct}
+                  onChange={(e) => setRemProduct(e.target.value)}
+                  placeholder="מוצר ספציפי (אופציונלי) — ריק = תזכורת הזמנה כללית"
+                  className="w-full p-2 rounded-2xl border text-sm"
+                  style={{ borderColor: C.kraftDark, background: "#fff" }}
+                />
+                {(() => {
+                  const term = remProduct.trim();
+                  if (!term) return null;
+                  if (products.some((p) => (p.name || "").trim() === term)) return null;
+                  const matches = products.filter((p) => (p.name || "").trim().startsWith(term)).slice(0, 6);
+                  if (matches.length === 0) return null;
+                  return (
+                    <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 20, background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 180, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
+                      {matches.map((p) => (
+                        <button key={p.id} onClick={() => setRemProduct(p.name)} className="w-full text-right px-3 py-2 text-sm" style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: "#fff" }}>
+                          {p.name}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+              <div className="flex gap-2">
+                <input type="date" value={remDate} onChange={(e) => setRemDate(e.target.value)} className="flex-1 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }} />
+                <input type="time" value={remTime} onChange={(e) => setRemTime(e.target.value)} className="w-28 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }} />
+              </div>
+              <input
+                value={remNote}
+                onChange={(e) => setRemNote(e.target.value)}
+                placeholder="הערה (אופציונלי) — כמות, ספק וכו׳"
+                className="w-full p-2 rounded-2xl border text-sm"
+                style={{ borderColor: C.kraftDark }}
+              />
+              <button onClick={createOrderReminder} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+                ➕ צור תזכורת
+              </button>
+              <p className="text-xs" style={{ color: C.steel }}>ההתראה תישלח אליך בתאריך ובשעה שקבעת.</p>
+
+              {orderReminders.length > 0 && (
+                <div className="mt-2 flex flex-col gap-1">
+                  <div className="text-xs font-bold" style={{ color: C.steel }}>תזכורות קרובות:</div>
+                  {orderReminders.map((t) => (
+                    <div key={t.id} className="flex justify-between items-center text-sm p-2 rounded-xl" style={{ background: C.kraft }}>
+                      <span style={{ color: C.ink }}>
+                        {t.title.replace(/^🛒 (להזמין: )?/, "")}
+                        {t.followUpAt ? <span style={{ color: C.steel }}> · {new Date(t.followUpAt).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" })} {new Date(t.followUpAt).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}</span> : null}
+                      </span>
+                      <button onClick={() => deleteOrderReminder(t.id)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
       {orderMode === "history" && (
         <div className="flex flex-col gap-3">
           {(!orderHistory || orderHistory.length === 0) ? (
@@ -7277,73 +7345,6 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
               >
                 📅 יום-יום
               </button>
-            </div>
-
-            {/* Reminder to order a specific product on a specific day */}
-            <div className="rounded-2xl p-3 mb-4" style={{ background: "#fff", border: `1px dashed ${C.kraftDark}` }}>
-              <button onClick={() => setRemOpen((v) => !v)} className="w-full flex justify-between items-center text-sm font-bold" style={{ color: C.ink }}>
-                <span>🔔 תזכורת להזמין מוצר ביום מסוים</span>
-                <span>{remOpen ? "▲" : "▼"}</span>
-              </button>
-              {remOpen && (
-                <div className="mt-3 flex flex-col gap-2">
-                  <div style={{ position: "relative" }}>
-                    <input
-                      value={remProduct}
-                      onChange={(e) => setRemProduct(e.target.value)}
-                      placeholder="שם מוצר (הקלד לבחירה)"
-                      className="w-full p-2 rounded-2xl border text-sm"
-                      style={{ borderColor: C.kraftDark, background: "#fff" }}
-                    />
-                    {(() => {
-                      const term = remProduct.trim();
-                      if (!term) return null;
-                      if (products.some((p) => (p.name || "").trim() === term)) return null;
-                      const matches = products.filter((p) => (p.name || "").trim().startsWith(term)).slice(0, 6);
-                      if (matches.length === 0) return null;
-                      return (
-                        <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 20, background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 180, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
-                          {matches.map((p) => (
-                            <button key={p.id} onClick={() => setRemProduct(p.name)} className="w-full text-right px-3 py-2 text-sm" style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: "#fff" }}>
-                              {p.name}
-                            </button>
-                          ))}
-                        </div>
-                      );
-                    })()}
-                  </div>
-                  <div className="flex gap-2">
-                    <input type="date" value={remDate} onChange={(e) => setRemDate(e.target.value)} className="flex-1 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }} />
-                    <input type="time" value={remTime} onChange={(e) => setRemTime(e.target.value)} className="w-28 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }} />
-                  </div>
-                  <input
-                    value={remNote}
-                    onChange={(e) => setRemNote(e.target.value)}
-                    placeholder="הערה (אופציונלי) — כמות, ספק וכו׳"
-                    className="w-full p-2 rounded-2xl border text-sm"
-                    style={{ borderColor: C.kraftDark }}
-                  />
-                  <button onClick={createOrderReminder} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
-                    ➕ צור תזכורת
-                  </button>
-                  <p className="text-xs" style={{ color: C.steel }}>ההתראה תישלח אליך בתאריך ובשעה שקבעת.</p>
-
-                  {orderReminders.length > 0 && (
-                    <div className="mt-2 flex flex-col gap-1">
-                      <div className="text-xs font-bold" style={{ color: C.steel }}>תזכורות קרובות:</div>
-                      {orderReminders.map((t) => (
-                        <div key={t.id} className="flex justify-between items-center text-sm p-2 rounded-xl" style={{ background: C.kraft }}>
-                          <span style={{ color: C.ink }}>
-                            {t.title.replace(/^🛒 להזמין: /, "")}
-                            {t.followUpAt ? <span style={{ color: C.steel }}> · {new Date(t.followUpAt).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" })} {new Date(t.followUpAt).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}</span> : null}
-                          </span>
-                          <button onClick={() => deleteOrderReminder(t.id)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
             </div>
 
             {weekView === "grid" && (
