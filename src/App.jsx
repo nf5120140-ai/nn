@@ -5432,7 +5432,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
   // Menu-time reminders: "order product X on day Y" — created as tasks so the existing
   // reminder engine fires them at the set time.
   const [remOpen, setRemOpen] = useState(false);
-  const [showSelection, setShowSelection] = useState(false);
+  const [showOnlyMarked, setShowOnlyMarked] = useState(false); // filter lists to show only marked items
   const [remProduct, setRemProduct] = useState("");
   const [remDate, setRemDate] = useState("");
   const [remTime, setRemTime] = useState("08:00");
@@ -5762,14 +5762,6 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
     return groups;
   }
 
-  // Everything currently marked for the order in the active mode (for the "what's marked" view).
-  const selectionRows = orderMode === "stock"
-    ? products.filter((p) => selectedForOrder.includes(p.id)).map((p) => ({ product: p, qty: qtys[p.id] ?? 1 })).filter(({ qty }) => Number(qty) > 0)
-    : orderMode === "menu"
-      ? buildOrderRows(menuNeeds, menuQtys)
-      : orderMode === "week"
-        ? buildOrderRows(weekNeeds.rows, weekQtys)
-        : [];
 
   function buildStockMessage() {
     const lines = products
@@ -6751,38 +6743,6 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
         </button>
       </div>
 
-      {orderMode !== "history" && (
-        <div className="mb-4">
-          <button
-            onClick={() => setShowSelection((v) => !v)}
-            className="w-full py-2 rounded-2xl text-sm font-bold flex items-center justify-center gap-2"
-            style={{ background: showSelection ? C.ink : C.mustard, color: showSelection ? C.paper : C.ink }}
-          >
-            👁️ מה מסומן להזמנה ({selectionRows.length}) {showSelection ? "▲" : "▼"}
-          </button>
-          {showSelection && (
-            <div className="mt-2 p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
-              {selectionRows.length === 0 ? (
-                <p className="text-sm text-center" style={{ color: C.steel }}>עדיין לא סימנת מוצרים להזמנה.</p>
-              ) : (
-                <div className="flex flex-col gap-1">
-                  {selectionRows.map((r, idx) => (
-                    <div key={r.product.id || idx} className="flex justify-between items-center text-sm py-1" style={{ borderBottom: idx < selectionRows.length - 1 ? `1px solid ${C.kraft}` : "none" }}>
-                      <span style={{ color: C.ink, fontWeight: 600 }}>{r.product.name}</span>
-                      <span style={{ color: C.accent, fontWeight: 700 }}>{r.qty} {r.product.unit || ""}</span>
-                    </div>
-                  ))}
-                  <div className="flex justify-between items-center text-sm pt-2 mt-1" style={{ borderTop: `2px solid ${C.kraftDark}`, color: C.ink, fontWeight: 800 }}>
-                    <span>סה"כ פריטים</span>
-                    <span>{selectionRows.length}</span>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
       {orderMode !== "history" && (selectedForOrder.length > 0 || pickedIds.length > 0 || Object.keys(orderExtras).length > 0 || adHocItems.length > 0) && (
         <button
           onClick={() => { if (window.confirm("לאפס את כל ההזמנה? כל הסימונים והכמויות יימחקו.")) { clearOrderDraft(); setSentSuppliers([]); showToast("ההזמנה אופסה"); } }}
@@ -7050,12 +7010,19 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                   >
                     בטל סימון
                   </button>
+                  <button
+                    onClick={() => setShowOnlyMarked((v) => !v)}
+                    className="text-xs font-bold px-3 py-1 rounded-full"
+                    style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? C.paper : C.ink, border: `1px solid ${C.kraftDark}` }}
+                  >
+                    {showOnlyMarked ? "הצג הכל" : `מה מסומן (${selectedForOrder.length})`}
+                  </button>
                   <span className="text-xs self-center" style={{ color: C.steel }}>
                     {selectedForOrder.length} מסומנים
                   </span>
                 </div>
                 <div className="flex flex-col gap-3 mb-4">
-                  {filteredLowStock.map((p) => {
+                  {filteredLowStock.filter((p) => !showOnlyMarked || selectedForOrder.includes(p.id)).map((p) => {
                     const isLow = Number(p.quantity) <= Number(p.threshold);
                     const checked = selectedForOrder.includes(p.id);
                     return (
@@ -7176,13 +7143,20 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                     >
                       נקה
                     </button>
+                    <button
+                      onClick={() => setShowOnlyMarked((v) => !v)}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? C.paper : C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      {showOnlyMarked ? "הצג הכל" : "מה מסומן"}
+                    </button>
                   </div>
                 </div>
                 <p className="text-xs mb-2" style={{ color: C.steel }}>
                   סמן ✔ מה נכנס להזמנה. {pickedIds.filter((id) => menuNeeds.some((n) => n.product.id === id)).length} מסומנים.
                 </p>
                 <div className="flex flex-col gap-2 mb-4">
-                  {menuNeeds.map((n) => {
+                  {menuNeeds.filter((n) => !showOnlyMarked || pickedIds.includes(n.product.id)).map((n) => {
                     const supplierName = n.product.supplierId
                       ? suppliers.find((s) => s.id === n.product.supplierId)?.name
                       : null;
@@ -7537,13 +7511,20 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                     >
                       נקה
                     </button>
+                    <button
+                      onClick={() => setShowOnlyMarked((v) => !v)}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? C.paper : C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      {showOnlyMarked ? "הצג הכל" : "מה מסומן"}
+                    </button>
                   </div>
                 </div>
                 <p className="text-xs mb-2" style={{ color: C.steel }}>
                   סמן ✔ מה נכנס להזמנה. {pickedIds.filter((id) => weekNeeds.rows.some((n) => n.product.id === id)).length} מסומנים.
                 </p>
                 <div className="flex flex-col gap-2 mb-4">
-                  {weekNeeds.rows.map((n) => {
+                  {weekNeeds.rows.filter((n) => !showOnlyMarked || pickedIds.includes(n.product.id)).map((n) => {
                     const supplierName = n.product.supplierId
                       ? suppliers.find((s) => s.id === n.product.supplierId)?.name
                       : null;
