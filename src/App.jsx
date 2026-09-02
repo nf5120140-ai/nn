@@ -5432,6 +5432,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
   // Menu-time reminders: "order product X on day Y" — created as tasks so the existing
   // reminder engine fires them at the set time.
   const [remOpen, setRemOpen] = useState(false);
+  const [showSelection, setShowSelection] = useState(false);
   const [remProduct, setRemProduct] = useState("");
   const [remDate, setRemDate] = useState("");
   const [remTime, setRemTime] = useState("08:00");
@@ -5760,6 +5761,15 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
     });
     return groups;
   }
+
+  // Everything currently marked for the order in the active mode (for the "what's marked" view).
+  const selectionRows = orderMode === "stock"
+    ? products.filter((p) => selectedForOrder.includes(p.id)).map((p) => ({ product: p, qty: qtys[p.id] ?? 1 })).filter(({ qty }) => Number(qty) > 0)
+    : orderMode === "menu"
+      ? buildOrderRows(menuNeeds, menuQtys)
+      : orderMode === "week"
+        ? buildOrderRows(weekNeeds.rows, weekQtys)
+        : [];
 
   function buildStockMessage() {
     const lines = products
@@ -6740,6 +6750,38 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
           📜 היסטוריה
         </button>
       </div>
+
+      {orderMode !== "history" && (
+        <div className="mb-4">
+          <button
+            onClick={() => setShowSelection((v) => !v)}
+            className="w-full py-2 rounded-2xl text-sm font-bold flex items-center justify-center gap-2"
+            style={{ background: showSelection ? C.ink : C.mustard, color: showSelection ? C.paper : C.ink }}
+          >
+            👁️ מה מסומן להזמנה ({selectionRows.length}) {showSelection ? "▲" : "▼"}
+          </button>
+          {showSelection && (
+            <div className="mt-2 p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+              {selectionRows.length === 0 ? (
+                <p className="text-sm text-center" style={{ color: C.steel }}>עדיין לא סימנת מוצרים להזמנה.</p>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  {selectionRows.map((r, idx) => (
+                    <div key={r.product.id || idx} className="flex justify-between items-center text-sm py-1" style={{ borderBottom: idx < selectionRows.length - 1 ? `1px solid ${C.kraft}` : "none" }}>
+                      <span style={{ color: C.ink, fontWeight: 600 }}>{r.product.name}</span>
+                      <span style={{ color: C.accent, fontWeight: 700 }}>{r.qty} {r.product.unit || ""}</span>
+                    </div>
+                  ))}
+                  <div className="flex justify-between items-center text-sm pt-2 mt-1" style={{ borderTop: `2px solid ${C.kraftDark}`, color: C.ink, fontWeight: 800 }}>
+                    <span>סה"כ פריטים</span>
+                    <span>{selectionRows.length}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
 
       {orderMode !== "history" && (selectedForOrder.length > 0 || pickedIds.length > 0 || Object.keys(orderExtras).length > 0 || adHocItems.length > 0) && (
         <button
