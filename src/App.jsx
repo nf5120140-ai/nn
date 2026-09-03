@@ -197,6 +197,7 @@ const ADMIN_SECTIONS = [
   { id: "personal", label: "קניות פרטיות" },
   { id: "orderrequests", label: "בקשות הזמנה" },
   { id: "unitrequests", label: "בקשות מהמחסן" },
+  { id: "reqhistory", label: "היסטוריית בקשות" },
   { id: "users", label: "עובדים" },
   { id: "settings", label: "הגדרות" },
 ];
@@ -9604,6 +9605,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
   const allSections = [
     ["orderrequests", "בקשות הזמנה"],
     ["unitrequests", "בקשות מהמחסן"],
+    ["reqhistory", "היסטוריית בקשות"],
     ["products", "מוצרים"],
     ["users", "עובדים"],
     ["menu", "תפריט"],
@@ -9709,6 +9711,9 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
           users={users}
           settings={settings}
         />
+      )}
+      {section === "reqhistory" && (
+        <RequestsHistory orderRequests={orderRequests} unitRequests={unitRequests} settings={settings} />
       )}
       {section === "taskcats" && (
         <TaskCategoriesAdmin taskCategories={taskCategories} persistTaskCategories={persistTaskCategories} showToast={showToast} />
@@ -11847,6 +11852,92 @@ function UnitTemplatesManager({ unitTemplates, persistUnitTemplates, users, prod
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+function RequestsHistory({ orderRequests, unitRequests, settings }) {
+  const [filter, setFilter] = useState("all"); // all | order | unit
+  const suppliers = settings?.suppliers || [];
+
+  const orderStatusLabel = { pending: "ממתינה", approved: "אושרה ונשלחה", rejected: "נדחתה" };
+  const unitStatusLabel = { open: "טיוטה", submitted: "ממתינה", fulfilled: "נופקה", rejected: "נדחתה" };
+
+  const rows = [];
+  (orderRequests || []).forEach((r) => {
+    rows.push({
+      id: "o-" + r.id,
+      kind: "order",
+      when: r.decidedAt || r.createdAt || 0,
+      who: r.createdByName || "מנהל מטבח",
+      status: orderStatusLabel[r.status] || r.status,
+      items: r.items || [],
+      extra: r.approvedSupplierId ? (suppliers.find((s) => s.id === r.approvedSupplierId)?.name || "") : "",
+    });
+  });
+  (unitRequests || []).forEach((r) => {
+    if (r.status === "open") return; // skip unsent drafts
+    rows.push({
+      id: "u-" + r.id,
+      kind: "unit",
+      when: r.fulfilledAt || r.submittedAt || r.createdAt || 0,
+      who: r.unitName || "יחידה",
+      status: unitStatusLabel[r.status] || r.status,
+      items: (r.status === "fulfilled" && Array.isArray(r.issuedItems) && r.issuedItems.length) ? r.issuedItems : (r.items || []),
+    });
+  });
+
+  const shown = rows
+    .filter((r) => filter === "all" || r.kind === filter)
+    .sort((a, b) => b.when - a.when);
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-3">
+        {[["all", "הכל"], ["order", "📤 בקשות הזמנה"], ["unit", "🧺 בקשות מחסן"]].map(([val, label]) => (
+          <button
+            key={val}
+            onClick={() => setFilter(val)}
+            className="px-3 py-1.5 rounded-full text-xs font-bold"
+            style={{ background: filter === val ? C.ink : C.kraft, color: filter === val ? C.paper : C.ink, border: `1px solid ${C.kraftDark}` }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {shown.length === 0 ? (
+        <ShelfTag accent={C.steel}>
+          <p className="text-sm text-center" style={{ color: C.steel }}>אין עדיין היסטוריית בקשות.</p>
+        </ShelfTag>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {shown.map((r) => (
+            <ShelfTag key={r.id} accent={r.kind === "order" ? C.accent : C.sage}>
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: r.kind === "order" ? C.accent : C.sage, color: "#fff" }}>
+                  {r.kind === "order" ? "📤 בקשת הזמנה" : "🧺 בקשת מחסן"}
+                </span>
+                <span className="text-xs" style={{ color: C.steel }}>{r.when ? new Date(r.when).toLocaleDateString("he-IL") : ""}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="font-bold text-sm" style={{ color: C.ink }}>{r.who}</span>
+                <span className="text-xs font-bold" style={{ color: C.steel }}>{r.status}{r.extra ? ` · ${r.extra}` : ""}</span>
+              </div>
+              {r.items.length > 0 && (
+                <div className="mt-2 flex flex-col gap-0.5">
+                  {r.items.map((i, idx) => (
+                    <div key={idx} className="flex justify-between text-xs" style={{ color: C.ink }}>
+                      <span>{i.name}</span>
+                      <span className="font-bold">{i.qty} {i.unit || ""}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ShelfTag>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
