@@ -9096,7 +9096,96 @@ function resizeImageToDataUrl(file, maxDim = 900, quality = 0.7) {
   });
 }
 
-/* Searchable location picker: a button that opens a bottom sheet with a search box,
+/* Draw/annotate on an image: opens the photo on a canvas and lets you mark it with a
+   finger/pen, then flattens the drawing onto the image and returns a new data URL. */
+function ImageAnnotator({ src, onSave, onCancel }) {
+  const canvasRef = useRef(null);
+  const imgRef = useRef(null);
+  const drawing = useRef(false);
+  const [color, setColor] = useState("#E4572E");
+  const COLORS = ["#E4572E", "#2660A4", "#2E8B57", "#111111", "#F4C542"];
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const img = new Image();
+    img.onload = () => {
+      const maxDim = 1000;
+      let { width, height } = img;
+      if (width > height && width > maxDim) { height = Math.round((height * maxDim) / width); width = maxDim; }
+      else if (height > maxDim) { width = Math.round((width * maxDim) / height); height = maxDim; }
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(img, 0, 0, width, height);
+      imgRef.current = img;
+    };
+    img.src = src;
+  }, [src]);
+
+  function posOf(e) {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const p = e.touches ? e.touches[0] : e;
+    return {
+      x: (p.clientX - rect.left) * (canvas.width / rect.width),
+      y: (p.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  }
+  function start(e) {
+    e.preventDefault();
+    drawing.current = true;
+    const ctx = canvasRef.current.getContext("2d");
+    const { x, y } = posOf(e);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(3, Math.round(canvasRef.current.width / 130));
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+  }
+  function move(e) {
+    if (!drawing.current) return;
+    e.preventDefault();
+    const ctx = canvasRef.current.getContext("2d");
+    const { x, y } = posOf(e);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  }
+  function end() { drawing.current = false; }
+  function clearDrawing() {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (imgRef.current) ctx.drawImage(imgRef.current, 0, 0, canvas.width, canvas.height);
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col" style={{ background: "rgba(0,0,0,0.9)", padding: 12 }}>
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        {COLORS.map((c) => (
+          <button key={c} onClick={() => setColor(c)} style={{ width: 30, height: 30, borderRadius: "50%", background: c, border: color === c ? "3px solid #fff" : "2px solid rgba(255,255,255,0.5)" }} />
+        ))}
+        <button onClick={clearDrawing} className="px-3 py-1.5 rounded-xl text-sm font-bold" style={{ background: "#fff", color: "#111", marginRight: "auto" }}>נקה ציור</button>
+      </div>
+      <div className="flex-1 flex items-center justify-center overflow-auto">
+        <canvas
+          ref={canvasRef}
+          onPointerDown={start}
+          onPointerMove={move}
+          onPointerUp={end}
+          onPointerLeave={end}
+          style={{ maxWidth: "100%", maxHeight: "70vh", touchAction: "none", borderRadius: 8, background: "#fff" }}
+        />
+      </div>
+      <div className="flex gap-2 mt-2">
+        <button onClick={() => onSave(canvasRef.current.toDataURL("image/jpeg", 0.7))} className="flex-1 py-3 rounded-2xl font-bold" style={{ background: "#2E8B57", color: "#fff" }}>✓ שמור סימון</button>
+        <button onClick={onCancel} className="px-6 py-3 rounded-2xl font-bold" style={{ background: "#fff", color: "#111" }}>ביטול</button>
+      </div>
+    </div>
+  );
+}
+
+/* Searchable location picker: a button that opens a bottom sheet with a search box and
    grouped results. Replaces the long native <select> when there are many rooms. */
 function LocationPicker({ locations, value, onChange }) {
   const [open, setOpen] = useState(false);
@@ -9198,6 +9287,7 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
   const [categoryId, setCategoryId] = useState(task.categoryId || "");
   const [locationId, setLocationId] = useState(task.locationId || "");
   const [imageData, setImageData] = useState(task.imageData || null);
+  const [annotating, setAnnotating] = useState(false);
 
   const locationGroups = Object.entries(
     (locations || []).reduce((acc, loc) => {
@@ -9294,21 +9384,33 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
         {imageData ? (
           <div className="flex flex-col gap-2">
             <img src={imageData} alt="" className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%", objectFit: "cover" }} />
-            <div className="flex gap-2">
+            <div className="flex gap-2 flex-wrap">
+              <button onClick={() => setAnnotating(true)} className="flex-1 text-center py-2 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
+                ✏️ סמן / צייר
+              </button>
               <label className="flex-1 text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
-                🔄 החלף תמונה
+                🖼️ החלף מהגלריה
                 <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
               </label>
               <button onClick={() => setImageData(null)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>🗑️ הסר</button>
             </div>
           </div>
         ) : (
-          <label className="block text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px dashed ${C.kraftDark}` }}>
-            📷 הוסף תמונה
-            <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
-          </label>
+          <div className="flex gap-2">
+            <label className="flex-1 block text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px dashed ${C.kraftDark}` }}>
+              🖼️ מהגלריה
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
+            </label>
+            <label className="flex-1 block text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px dashed ${C.kraftDark}` }}>
+              📷 מצלמה
+              <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
+            </label>
+          </div>
         )}
       </div>
+      {annotating && imageData && (
+        <ImageAnnotator src={imageData} onSave={(d) => { setImageData(d); setAnnotating(false); }} onCancel={() => setAnnotating(false)} />
+      )}
 
       <div className="flex gap-2">
         <button onClick={submit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
@@ -9330,6 +9432,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
   const [categoryId, setCategoryId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [imageData, setImageData] = useState(null);
+  const [annotating, setAnnotating] = useState(false);
   const [imageBusy, setImageBusy] = useState(false);
   const [remindDate, setRemindDate] = useState("");
   const [remindTime, setRemindTime] = useState("09:00");
@@ -9384,10 +9487,22 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
       </select>
 
       <div>
-        <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
-          {imageBusy ? "טוען תמונה..." : imageData ? "📷 החלף תמונה" : "📷 צרף תמונה"}
-          <input type="file" accept="image/*" capture="environment" onChange={handleImage} className="hidden" />
-        </label>
+        <div className="flex gap-2 flex-wrap">
+          <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
+            🖼️ {imageData ? "החלף מהגלריה" : "מהגלריה"}
+            <input type="file" accept="image/*" onChange={handleImage} className="hidden" />
+          </label>
+          <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
+            📷 מצלמה
+            <input type="file" accept="image/*" capture="environment" onChange={handleImage} className="hidden" />
+          </label>
+          {imageData && (
+            <button onClick={() => setAnnotating(true)} className="inline-block px-3 py-2 rounded-full text-sm font-bold" style={{ background: C.accent, color: "#fff" }}>
+              ✏️ סמן / צייר
+            </button>
+          )}
+        </div>
+        {imageBusy && <p className="text-xs mt-1" style={{ color: C.steel }}>טוען תמונה...</p>}
         {imageData && (
           <div className="mt-2 relative inline-block">
             <img src={imageData} alt="" className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%" }} />
@@ -9399,6 +9514,9 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
               ✕
             </button>
           </div>
+        )}
+        {annotating && imageData && (
+          <ImageAnnotator src={imageData} onSave={(d) => { setImageData(d); setAnnotating(false); }} onCancel={() => setAnnotating(false)} />
         )}
       </div>
 
