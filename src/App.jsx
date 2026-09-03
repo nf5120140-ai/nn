@@ -2184,6 +2184,15 @@ function UnitRequestTab({
                 </button>
               </div>
             )}
+            {totalItems > 0 && (
+              <button
+                onClick={() => printRequest()}
+                className="w-full mt-2 py-2.5 rounded-2xl font-bold text-sm"
+                style={{ background: C.accent, color: "#fff" }}
+              >
+                🖨️ הדפס טבלה עכשיו (בלי צורך באישור מנהל)
+              </button>
+            )}
           </ShelfTag>
 
           {totalItems > 0 && (
@@ -2206,13 +2215,6 @@ function UnitRequestTab({
                 className="w-full mt-3 p-2 rounded-2xl border text-sm"
                 style={{ borderColor: C.kraftDark, minHeight: 56, resize: "vertical", background: locked ? C.kraft : "#fff" }}
               />
-              <button
-                onClick={printRequest}
-                className="w-full mt-3 py-2 rounded-2xl font-bold text-sm"
-                style={{ background: C.accent, color: "#fff" }}
-              >
-                🖨️ הדפס / שמור PDF
-              </button>
               {!isSubmitted && (
                 <div className="flex gap-2 mt-3">
                   <button onClick={submit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
