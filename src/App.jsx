@@ -1742,7 +1742,7 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
                 <th
                   style={{
                     background: rowBg,
-                    color: C.ink,
+                    color: "#14213D",
                     padding: "8px 6px",
                     border: `1px solid ${C.kraftDark}`,
                     textAlign: "right",
@@ -1780,7 +1780,7 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
                         fontSize: 13,
                         cursor: "pointer",
                         background: rowBg,
-                        color: val ? C.ink : C.steel,
+                        color: val ? "#14213D" : "#5B6B85",
                         fontWeight: val ? 700 : 400,
                         opacity: val ? 1 : 0.7,
                         minWidth: 96,
