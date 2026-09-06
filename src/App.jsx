@@ -3,16 +3,16 @@ import * as XLSX from "xlsx";
 
 /* ---------- Design tokens ---------- */
 const C = {
-  ink: "#14213D",        // deep navy from the logo, used for text/header
-  paper: "#F3F6FB",      // soft cool-blue white page background
-  kraft: "#FFFFFF",      // card background
-  kraftDark: "#DCE4F0",  // card border / subtle divider
-  stamp: "#FF5A5F",      // coral-red for shortage/urgent
-  mustard: "#FFB347",    // warm orange for tasks/warning
-  sage: "#5CB85C",       // logo green for ok/success
-  steel: "#5B6B85",      // secondary text, muted navy-grey
-  accent: "#2E86C4",     // logo blue accent
-  accent2: "#5CB85C",    // logo green accent (gradient end)
+  ink: "var(--c-ink)",
+  paper: "var(--c-paper)",
+  kraft: "var(--c-kraft)",
+  kraftDark: "var(--c-kraftDark)",
+  stamp: "var(--c-stamp)",
+  mustard: "var(--c-mustard)",
+  sage: "var(--c-sage)",
+  steel: "var(--c-steel)",
+  accent: "var(--c-accent)",
+  accent2: "var(--c-accent2)",
 };
 const RADIUS = "20px";
 
@@ -29,8 +29,17 @@ const FONTS = `
 @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@500;700;900&family=Heebo:wght@300;400;500;700&display=swap');
 .wh-display { font-family: 'Rubik', sans-serif; }
 .wh-body { font-family: 'Heebo', sans-serif; }
-/* Dark mode is done by inverting the whole page; re-invert real photos/media so they look normal. */
-html.dark-mode img, html.dark-mode video, html.dark-mode canvas { filter: invert(1) hue-rotate(180deg); }
+:root {
+  --c-ink:#14213D; --c-paper:#F3F6FB; --c-kraft:#FFFFFF; --c-kraftDark:#DCE4F0;
+  --c-stamp:#FF5A5F; --c-mustard:#FFB347; --c-sage:#5CB85C; --c-steel:#5B6B85;
+  --c-accent:#2E86C4; --c-accent2:#5CB85C;
+}
+html.dark-mode {
+  --c-ink:#E7ECF5; --c-paper:#0E1424; --c-kraft:#182031; --c-kraftDark:#2C3648;
+  --c-stamp:#FF6B6F; --c-mustard:#E8A84D; --c-sage:#57B45E; --c-steel:#9BA8C2;
+  --c-accent:#4A9FE0; --c-accent2:#57B45E;
+}
+html.dark-mode, html.dark-mode body { background: #0E1424; }
 `;
 
 /* ---------- Storage helpers ---------- */
@@ -1302,7 +1311,7 @@ function AuthGate({ onAuthed }) {
         {mode === "join" && (
           <ShelfTag accent={C.sage} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {invitedOrgId ? (
-              <div className="p-2 rounded-xl text-center" style={{ background: "#E8F6E8", border: `1px solid ${C.sage}` }}>
+              <div className="p-2 rounded-xl text-center" style={{ background: "rgba(87,180,94,0.15)", border: `1px solid ${C.sage}` }}>
                 <div className="text-sm font-bold" style={{ color: C.sage }}>✓ הוזמנת לארגון</div>
                 <div className="text-xs" style={{ color: C.steel }}>קוד הארגון כבר מולא. רק מלא את הפרטים שלך למטה.</div>
               </div>
@@ -1605,7 +1614,7 @@ function SplashScreen() {
           style={{
             width: 132,
             height: 132,
-            background: "#fff",
+            background: C.kraft,
             boxShadow: "0 18px 44px rgba(20,33,61,0.28)",
           }}
         >
@@ -1634,7 +1643,7 @@ function SplashScreen() {
         className="mt-9 rounded-full overflow-hidden"
         style={{ width: 132, height: 3, background: "rgba(255,255,255,0.28)" }}
       >
-        <div className="wh-splash-bar h-full rounded-full" style={{ background: "#fff" }} />
+        <div className="wh-splash-bar h-full rounded-full" style={{ background: C.kraft }} />
       </div>
     </div>
   );
@@ -1851,7 +1860,7 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
                 setCell(null);
               }}
               className="w-full p-3 rounded-2xl text-sm font-bold mb-2 text-right"
-              style={{ background: "#fff", color: C.steel, border: `1px solid ${C.kraftDark}` }}
+              style={{ background: C.kraft, color: C.steel, border: `1px solid ${C.kraftDark}` }}
             >
               — רוקן תא —
             </button>
@@ -2179,7 +2188,7 @@ function UnitRequestTab({
             )}
             {addingMore && (
               <div className="mt-2">
-                <div className="text-xs mb-2 p-2 rounded-xl" style={{ background: "#FFF6E9", color: C.ink }}>
+                <div className="text-xs mb-2 p-2 rounded-xl" style={{ background: "rgba(232,168,77,0.15)", color: C.ink }}>
                   מצב הוספה: הוסף פריטים למטה (חיפוש / מוצר חדש), והם יתווספו לבקשה שכבר נשלחה.
                 </div>
                 <button onClick={finishAddMore} className="w-full py-2 rounded-2xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>
@@ -2236,7 +2245,7 @@ function UnitRequestTab({
             onChange={(e) => setSearch(e.target.value)}
             placeholder="חיפוש מוצר..."
             className="w-full p-3 rounded-2xl border mb-3"
-            style={{ borderColor: C.kraftDark, background: "#fff" }}
+            style={{ borderColor: C.kraftDark, background: C.kraft }}
           />
 
           {!locked && (
@@ -2247,7 +2256,7 @@ function UnitRequestTab({
                 onKeyDown={(e) => { if (e.key === "Enter") addCustomItem(); }}
                 placeholder="מוצר שלא ברשימה..."
                 className="flex-1 p-3 rounded-2xl border"
-                style={{ borderColor: C.kraftDark, background: "#fff" }}
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
               />
               <button onClick={addCustomItem} className="px-4 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
                 הוסף
@@ -2266,7 +2275,7 @@ function UnitRequestTab({
                       <button onClick={() => updateCustomQty(i.productId, i.qty - 1)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}>−</button>
                       <input type="number" value={i.qty === 0 ? "" : i.qty} onChange={(e) => updateCustomQty(i.productId, e.target.value)} disabled={locked} className="w-12 text-center p-1.5 rounded-xl border" style={{ borderColor: C.kraftDark }} />
                       <button onClick={() => updateCustomQty(i.productId, i.qty + 1)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.ink, color: "#fff", opacity: locked ? 0.4 : 1 }}>+</button>
-                      <button onClick={() => removeItem(i.productId)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: "#fff", color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
+                      <button onClick={() => removeItem(i.productId)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
                     </div>
                   </div>
                 ))}
@@ -2472,7 +2481,7 @@ class ErrorBoundary extends React.Component {
                 window.location.reload();
               }}
               className="w-full p-3 rounded-2xl font-bold"
-              style={{ background: "#fff", color: "#14213D", border: "1px solid #DCE4F0" }}
+              style={{ background: C.kraft, color: "#14213D", border: "1px solid #DCE4F0" }}
             >
               פתח במסך המשימות
             </button>
@@ -2935,7 +2944,7 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
                   <button
                     key={threadId}
                     onClick={() => { setActiveThread(threadId); markRead(); }}
-                    style={{ width: "100%", textAlign: "right", background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 14, padding: 12, marginBottom: 8, cursor: "pointer" }}
+                    style={{ width: "100%", textAlign: "right", background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 14, padding: 12, marginBottom: 8, cursor: "pointer" }}
                   >
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <span style={{ fontWeight: 800, color: C.ink }}>{userName(threadId)}</span>
@@ -2972,7 +2981,7 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
           )}
 
           {inThread && (
-            <div style={{ display: "flex", gap: 8, padding: 10, borderTop: `1px solid ${C.kraftDark}`, background: "#fff" }}>
+            <div style={{ display: "flex", gap: 8, padding: 10, borderTop: `1px solid ${C.kraftDark}`, background: C.kraft }}>
               <input
                 value={text}
                 onChange={(e) => setText(e.target.value)}
@@ -3031,7 +3040,7 @@ function NotifItem({ n, onOpen, onDelete, onSnooze }) {
           position: "relative",
           transform: `translateX(${dx}px)`,
           transition: startX.current == null ? "transform 0.2s" : "none",
-          background: n.read ? C.paper : "#EFEAFF",
+          background: n.read ? C.paper : "rgba(124,92,252,0.15)",
           color: C.ink,
           border: `1px solid ${n.read ? C.kraftDark : "#D8CEFF"}`,
         }}
@@ -3092,7 +3101,7 @@ function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyMan
     .filter((l) => locQuery.trim() && (l.name.includes(locQuery.trim()) || (l.group || "").includes(locQuery.trim())) && l.name !== locQuery.trim())
     .slice(0, 8);
 
-  const field = { padding: "12px 14px", borderRadius: 14, border: `1px solid ${C.kraftDark}`, width: "100%", fontSize: 16, background: "#fff" };
+  const field = { padding: "12px 14px", borderRadius: 14, border: `1px solid ${C.kraftDark}`, width: "100%", fontSize: 16, background: C.kraft };
 
   return (
     <div dir="rtl" style={{ position: "fixed", inset: 0, zIndex: 60, background: C.paper, overflowY: "auto", fontFamily: "'Heebo', sans-serif" }}>
@@ -3134,12 +3143,12 @@ function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyMan
               style={field}
             />
             {showSug && locSuggestions.length > 0 && (
-              <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 5, background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 14, marginTop: 4, overflow: "hidden", boxShadow: "0 6px 18px rgba(35,31,61,0.15)" }}>
+              <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 5, background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 14, marginTop: 4, overflow: "hidden", boxShadow: "0 6px 18px rgba(35,31,61,0.15)" }}>
                 {locSuggestions.map((l) => (
                   <button
                     key={l.id}
                     onClick={() => { setLocQuery(l.name); setLocationId(l.id); setShowSug(false); }}
-                    style={{ display: "block", width: "100%", textAlign: "right", padding: "10px 14px", border: "none", borderBottom: `1px solid ${C.kraft}`, background: "#fff", cursor: "pointer", fontSize: 15, color: C.ink }}
+                    style={{ display: "block", width: "100%", textAlign: "right", padding: "10px 14px", border: "none", borderBottom: `1px solid ${C.kraft}`, background: C.kraft, cursor: "pointer", fontSize: 15, color: C.ink }}
                   >
                     📍 {l.name}{l.group ? <span style={{ color: C.steel, fontSize: 13 }}>{" · " + l.group}</span> : null}
                   </button>
@@ -3223,7 +3232,6 @@ function AccessibilityWidget() {
     const html = document.documentElement;
     try { html.style.zoom = s.fontScale && s.fontScale !== 1 ? String(s.fontScale) : ""; } catch (e) {}
     const f = [];
-    if (effectiveDark) f.push("invert(1) hue-rotate(180deg)");
     if (s.contrast) f.push("contrast(1.35)");
     if (s.grayscale) f.push("grayscale(1)");
     if (s.invert) f.push("invert(1) hue-rotate(180deg)");
@@ -3245,7 +3253,7 @@ function AccessibilityWidget() {
       style={{
         display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%",
         padding: "11px 12px", borderRadius: 12, marginBottom: 8, cursor: "pointer",
-        border: `1.5px solid ${s[k] ? C.accent : C.kraftDark}`, background: s[k] ? "#E8F1FB" : "#fff",
+        border: `1.5px solid ${s[k] ? C.accent : C.kraftDark}`, background: s[k] ? "rgba(74,159,224,0.15)" : "#fff",
         color: C.ink, fontWeight: 700, fontSize: 14,
       }}
     >
@@ -3279,7 +3287,7 @@ function AccessibilityWidget() {
           <div
             dir="rtl"
             onClick={(e) => e.stopPropagation()}
-            style={{ background: "#fff", width: "100%", maxWidth: 480, maxHeight: "85vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, fontFamily: "'Heebo', sans-serif" }}
+            style={{ background: C.kraft, width: "100%", maxWidth: 480, maxHeight: "85vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, fontFamily: "'Heebo', sans-serif" }}
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <div style={{ fontWeight: 800, fontSize: 18, color: C.ink }}>♿ הגדרות נגישות</div>
@@ -3298,7 +3306,7 @@ function AccessibilityWidget() {
                     style={{
                       flex: 1, padding: "11px 4px", borderRadius: 12, cursor: "pointer", fontWeight: 800, fontSize: 14,
                       border: `2px solid ${s.darkMode === val ? C.accent : C.kraftDark}`,
-                      background: s.darkMode === val ? "#E8F1FB" : "#fff", color: C.ink,
+                      background: s.darkMode === val ? "rgba(74,159,224,0.15)" : "#fff", color: C.ink,
                     }}
                   >
                     {label}
@@ -3312,12 +3320,12 @@ function AccessibilityWidget() {
               <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                 <button
                   onClick={() => setKey("fontScale", Math.max(0.8, Math.round(((s.fontScale || 1) - 0.1) * 10) / 10))}
-                  style={{ flex: 1, padding: 10, borderRadius: 12, border: `1px solid ${C.kraftDark}`, background: "#fff", fontWeight: 800, fontSize: 18, cursor: "pointer" }}
+                  style={{ flex: 1, padding: 10, borderRadius: 12, border: `1px solid ${C.kraftDark}`, background: C.kraft, fontWeight: 800, fontSize: 18, cursor: "pointer" }}
                 >א−</button>
                 <div style={{ minWidth: 54, textAlign: "center", fontWeight: 800, color: C.ink }}>{Math.round((s.fontScale || 1) * 100)}%</div>
                 <button
                   onClick={() => setKey("fontScale", Math.min(1.6, Math.round(((s.fontScale || 1) + 0.1) * 10) / 10))}
-                  style={{ flex: 1, padding: 10, borderRadius: 12, border: `1px solid ${C.kraftDark}`, background: "#fff", fontWeight: 800, fontSize: 18, cursor: "pointer" }}
+                  style={{ flex: 1, padding: 10, borderRadius: 12, border: `1px solid ${C.kraftDark}`, background: C.kraft, fontWeight: 800, fontSize: 18, cursor: "pointer" }}
                 >א+</button>
               </div>
             </div>
@@ -4310,7 +4318,7 @@ function App() {
       {showNotifications && (
         <div
           className="fixed top-16 left-4 right-4 z-40 rounded-2xl p-3 wh-body"
-          style={{ background: "#fff", boxShadow: "0 8px 24px rgba(35,31,61,0.2)", maxHeight: "60vh", overflowY: "auto" }}
+          style={{ background: C.kraft, boxShadow: "0 8px 24px rgba(35,31,61,0.2)", maxHeight: "60vh", overflowY: "auto" }}
         >
           <div className="flex justify-between items-center mb-2">
             <span className="wh-display font-bold" style={{ color: C.ink }}>התראות</span>
@@ -4340,7 +4348,7 @@ function App() {
       {snoozeTarget && (
         <>
           <div className="fixed inset-0 z-50" style={{ background: "rgba(35,31,61,0.4)" }} onClick={() => { setSnoozeTarget(null); setSnoozeTime(""); }} />
-          <div className="fixed left-4 right-4 z-50 rounded-2xl p-4 wh-body" style={{ top: "28%", background: "#fff", boxShadow: "0 8px 24px rgba(35,31,61,0.25)" }} dir="rtl">
+          <div className="fixed left-4 right-4 z-50 rounded-2xl p-4 wh-body" style={{ top: "28%", background: C.kraft, boxShadow: "0 8px 24px rgba(35,31,61,0.25)" }} dir="rtl">
             <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>⏰ הזכר לי אחר כך</div>
             <div className="text-xs mb-3" style={{ color: C.steel }}>{snoozeTarget.message}</div>
             <div className="flex flex-col gap-2">
@@ -4759,13 +4767,13 @@ function App() {
 
             <label
               className="block w-full text-center py-3 rounded-2xl font-bold cursor-pointer"
-              style={{ background: "#fff", color: C.stamp, border: `1.5px dashed ${C.stamp}` }}
+              style={{ background: C.kraft, color: C.stamp, border: `1.5px dashed ${C.stamp}` }}
             >
               ⬆️ שחזר מקובץ גיבוי
               <input type="file" accept=".json,application/json" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; importBackup(f); }} style={{ display: "none" }} disabled={backupBusy} />
             </label>
 
-            <p className="text-xs mt-3 p-2 rounded-xl" style={{ background: "#FFF6E9", color: C.ink }}>
+            <p className="text-xs mt-3 p-2 rounded-xl" style={{ background: "rgba(232,168,77,0.15)", color: C.ink }}>
               ⚠️ שחזור דורס את הנתונים הנוכחיים בנתונים מהקובץ. תמיד הורד גיבוי עדכני לפני שחזור. מומלץ להוריד גיבוי אחת לשבוע.
             </p>
           </div>
@@ -4921,19 +4929,19 @@ function Dashboard({ tasks, products, orderHistory, users, currentUser, unitRequ
       {(urgent.length > 0 || overdueFollowups.length > 0 || pendingUnit.length > 0) && (
         <div className="flex flex-col gap-2 mb-4">
           {urgent.length > 0 && (
-            <button onClick={() => onGoTo("tasks")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "#FDECEC", border: `1px solid ${C.stamp}` }}>
+            <button onClick={() => onGoTo("tasks")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "rgba(255,90,95,0.15)", border: `1px solid ${C.stamp}` }}>
               <span className="text-xl">⚠️</span>
               <span className="text-sm font-bold" style={{ color: C.stamp }}>{urgent.length} משימות דחופות פתוחות</span>
             </button>
           )}
           {overdueFollowups.length > 0 && (
-            <button onClick={() => onGoTo("tasks")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "#FFF4E5", border: `1px solid ${C.mustard}` }}>
+            <button onClick={() => onGoTo("tasks")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "rgba(232,168,77,0.15)", border: `1px solid ${C.mustard}` }}>
               <span className="text-xl">⏰</span>
               <span className="text-sm font-bold" style={{ color: C.ink }}>{overdueFollowups.length} תזכורות המשך באיחור</span>
             </button>
           )}
           {pendingUnit.length > 0 && currentUser.role === "manager" && (
-            <button onClick={() => onGoTo("admin", "unitrequests")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "#EFEAFF", border: `1px solid ${C.accent}` }}>
+            <button onClick={() => onGoTo("admin", "unitrequests")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "rgba(124,92,252,0.15)", border: `1px solid ${C.accent}` }}>
               <span className="text-xl">🧺</span>
               <span className="text-sm font-bold" style={{ color: C.ink }}>{pendingUnit.length} בקשות מהמחסן ממתינות</span>
             </button>
@@ -5009,7 +5017,7 @@ function Dashboard({ tasks, products, orderHistory, users, currentUser, unitRequ
 
 function DashCard({ icon, label, value, sub, color }) {
   return (
-    <div className="rounded-2xl p-3" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${color}`, boxShadow: "0 2px 8px rgba(20,33,61,0.05)" }}>
+    <div className="rounded-2xl p-3" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${color}`, boxShadow: "0 2px 8px rgba(20,33,61,0.05)" }}>
       <div className="flex items-center justify-between mb-1">
         <span className="text-xs" style={{ color: C.steel }}>{label}</span>
         <span className="text-lg">{icon}</span>
@@ -5127,7 +5135,7 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
           onChange={(e) => setSearch(e.target.value)}
           placeholder="חיפוש מוצר..."
           className="flex-1 p-3 rounded-2xl border"
-          style={{ borderColor: C.kraftDark, background: "#fff" }}
+          style={{ borderColor: C.kraftDark, background: C.kraft }}
         />
         <button
           onClick={openScanner}
@@ -5164,7 +5172,7 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
             }}
             placeholder="ממתין לסריקה..."
             className="w-full p-3 rounded-2xl border wh-display"
-            style={{ borderColor: C.stamp, background: "#fff", direction: "ltr", fontSize: 18 }}
+            style={{ borderColor: C.stamp, background: C.kraft, direction: "ltr", fontSize: 18 }}
             autoFocus
           />
           {hwLog.length > 0 && (
@@ -5978,7 +5986,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                       onChange={(e) => setSupplierOverrides((o) => ({ ...o, [product.id]: e.target.value }))}
                       onClick={(e) => e.stopPropagation()}
                       className="text-xs mt-1 p-1 rounded-lg border"
-                      style={{ borderColor: C.kraftDark, background: "#fff", color: C.ink, maxWidth: 170 }}
+                      style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink, maxWidth: 170 }}
                     >
                       <option value="__unassigned__">ספק כללי</option>
                       {suppliers.map((s) => (
@@ -6029,7 +6037,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                       value={it.supplierId || "__unassigned__"}
                       onChange={(e) => setAdHocItems((cur) => cur.map((x) => (x.id === it.id ? { ...x, supplierId: e.target.value } : x)))}
                       className="text-xs mt-1 p-1 rounded-lg border"
-                      style={{ borderColor: C.kraftDark, background: "#fff", color: C.ink, maxWidth: 170 }}
+                      style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink, maxWidth: 170 }}
                     >
                       <option value="__unassigned__">ספק כללי</option>
                       {suppliers.map((s) => (
@@ -6090,7 +6098,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
         <button
           onClick={() => setExtrasOpen(true)}
           className="w-full py-2 rounded-2xl font-bold text-sm"
-          style={{ background: "#fff", color: C.mustard, border: `1.5px dashed ${C.mustard}` }}
+          style={{ background: C.kraft, color: C.mustard, border: `1.5px dashed ${C.mustard}` }}
         >
           ➕ הוסף מוצר קיים שלא בתפריט
         </button>
@@ -6127,7 +6135,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                 onChange={(e) => setExtraSearch(e.target.value)}
                 placeholder="חיפוש מוצר..."
                 className="w-full p-3 rounded-2xl border mb-3"
-                style={{ borderColor: C.kraftDark, background: "#fff" }}
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
                 autoFocus
               />
 
@@ -6146,7 +6154,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                           setExtraSearch("");
                         }}
                         className="flex justify-between items-center p-3 rounded-2xl text-right"
-                        style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}
+                        style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}
                       >
                         <div>
                           <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
@@ -6295,7 +6303,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                     value={Number(qty) === 0 ? "" : qty}
                     onChange={(e) => updatePendingQty(product.id, e.target.value)}
                     className="rounded-xl text-center font-bold"
-                    style={{ width: 40, height: 28, border: `1px solid ${C.kraftDark}`, color: C.ink, background: "#fff" }}
+                    style={{ width: 40, height: 28, border: `1px solid ${C.kraftDark}`, color: C.ink, background: C.kraft }}
                   />
                   <button
                     onClick={() => updatePendingQty(product.id, Number(qty) + 1)}
@@ -6312,7 +6320,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                   onClick={() => removePendingItem(product.id)}
                   title="הסר מההזמנה"
                   className="rounded-full flex items-center justify-center"
-                  style={{ width: 24, height: 24, background: "#fff", color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                  style={{ width: 24, height: 24, background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
                 >
                   ✕
                 </button>
@@ -6323,7 +6331,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                 ההזמנה ריקה - הוסף מוצר או העלה כמות
               </div>
             )}
-            <div className="flex px-3 py-2 text-sm font-bold" style={{ background: "#EFEAFF", borderTop: `2px solid ${C.ink}` }}>
+            <div className="flex px-3 py-2 text-sm font-bold" style={{ background: "rgba(124,92,252,0.15)", borderTop: `2px solid ${C.ink}` }}>
               <span className="flex-1" style={{ color: C.ink }}>סה"כ {liveItems.length} מוצרים</span>
               <span style={{ color: C.ink }}>₪{total.toFixed(0)}</span>
             </div>
@@ -6336,7 +6344,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
               onChange={(e) => setSheetAddSearch(e.target.value)}
               placeholder="➕ הוסף מוצר להזמנה..."
               className="w-full p-2 rounded-2xl border text-sm"
-              style={{ borderColor: C.mustard, background: "#fff" }}
+              style={{ borderColor: C.mustard, background: C.kraft }}
             />
             {(() => {
               const term = sheetAddSearch.trim();
@@ -6345,9 +6353,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
               const matches = products.filter((p) => (p.name || "").trim().startsWith(term) && !inOrder.has(p.id)).slice(0, 6);
               if (matches.length === 0) return null;
               return (
-                <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 30, background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 200, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
+                <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 30, background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 200, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
                   {matches.map((p) => (
-                    <button key={p.id} onClick={() => addProductToPending(p)} className="w-full text-right px-3 py-2 text-sm" style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: "#fff" }}>
+                    <button key={p.id} onClick={() => addProductToPending(p)} className="w-full text-right px-3 py-2 text-sm" style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: C.kraft }}>
                       {p.name}
                     </button>
                   ))}
@@ -6365,7 +6373,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                 rows={2}
                 placeholder="למשל: שלום, הזמנה לשבוע:"
                 className="w-full p-2 rounded-2xl border text-sm"
-                style={{ borderColor: C.kraftDark, background: "#fff" }}
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
               />
             </div>
           )}
@@ -6377,7 +6385,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
               </summary>
               <pre
                 className="text-xs mt-2 p-3 rounded-2xl"
-                style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, color: C.ink, whiteSpace: "pre-wrap", fontFamily: "inherit" }}
+                style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, color: C.ink, whiteSpace: "pre-wrap", fontFamily: "inherit" }}
               >
                 {messageText}
               </pre>
@@ -6402,7 +6410,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
           ) : (
             <>
               {/* Choose where it goes, right above the send icons. */}
-              <div className="mb-3 p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+              <div className="mb-3 p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
                 <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>איש קשר / יעד</label>
                 <select
                   value={supplierId === "__unassigned__" ? "__manual__" : supplierId}
@@ -6417,7 +6425,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                     }
                   }}
                   className="p-2 rounded-2xl border w-full"
-                  style={{ borderColor: C.kraftDark, background: "#fff" }}
+                  style={{ borderColor: C.kraftDark, background: C.kraft }}
                 >
                   {suppliers.map((s) => (
                     <option key={s.id} value={s.id}>{s.name}</option>
@@ -6796,7 +6804,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
           <summary className="text-sm font-bold cursor-pointer" style={{ color: C.accent }}>💾 טיוטות שמורות ({drafts.length})</summary>
           <div className="mt-2 flex flex-col gap-2">
             {drafts.map((d) => (
-              <div key={d.id} className="flex items-center gap-2 p-2 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+              <div key={d.id} className="flex items-center gap-2 p-2 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
                 <div className="flex-1">
                   <div className="text-sm font-bold" style={{ color: C.ink }}>{d.items.length} מוצרים · {new Date(d.updatedAt || d.createdAt).toLocaleDateString("he-IL")}</div>
                   <div className="text-xs" style={{ color: C.steel }}>{d.by}{d.updatedAt ? " · עודכן" : ""}</div>
@@ -6843,14 +6851,14 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
         <button
           onClick={() => { if (window.confirm("לאפס את כל ההזמנה? כל הסימונים והכמויות יימחקו.")) { clearOrderDraft(); setSentSuppliers([]); showToast("ההזמנה אופסה"); } }}
           className="w-full py-2 mb-4 rounded-2xl text-sm font-bold"
-          style={{ background: "#fff", color: C.stamp, border: `1.5px solid ${C.stamp}` }}
+          style={{ background: C.kraft, color: C.stamp, border: `1.5px solid ${C.stamp}` }}
         >
           🗑️ אפס הזמנה (מחק הכל)
         </button>
       )}
 
       {orderMode !== "history" && (
-        <div className="rounded-2xl p-3 mb-4" style={{ background: "#fff", border: `1px dashed ${C.kraftDark}` }}>
+        <div className="rounded-2xl p-3 mb-4" style={{ background: C.kraft, border: `1px dashed ${C.kraftDark}` }}>
           <button onClick={() => setRemOpen((v) => !v)} className="w-full flex justify-between items-center text-sm font-bold" style={{ color: C.ink }}>
             <span>🔔 תזכורת הזמנה / מוצר ליום מסוים</span>
             <span>{remOpen ? "▲" : "▼"}</span>
@@ -6863,7 +6871,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                   onChange={(e) => setRemProduct(e.target.value)}
                   placeholder="מוצר ספציפי (אופציונלי) — ריק = תזכורת הזמנה כללית"
                   className="w-full p-2 rounded-2xl border text-sm"
-                  style={{ borderColor: C.kraftDark, background: "#fff" }}
+                  style={{ borderColor: C.kraftDark, background: C.kraft }}
                 />
                 {(() => {
                   const term = remProduct.trim();
@@ -6872,9 +6880,9 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                   const matches = products.filter((p) => (p.name || "").trim().startsWith(term)).slice(0, 6);
                   if (matches.length === 0) return null;
                   return (
-                    <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 20, background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 180, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
+                    <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 20, background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 180, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
                       {matches.map((p) => (
-                        <button key={p.id} onClick={() => setRemProduct(p.name)} className="w-full text-right px-3 py-2 text-sm" style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: "#fff" }}>
+                        <button key={p.id} onClick={() => setRemProduct(p.name)} className="w-full text-right px-3 py-2 text-sm" style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: C.kraft }}>
                           {p.name}
                         </button>
                       ))}
@@ -6945,7 +6953,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                       }}
                       title="מחק מההיסטוריה"
                       className="rounded-full flex items-center justify-center"
-                      style={{ width: 26, height: 26, background: "#fff", color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                      style={{ width: 26, height: 26, background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
                     >
                       🗑️
                     </button>
@@ -7272,7 +7280,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                                 onChange={(e) => setSupplierOverrides((o) => ({ ...o, [n.product.id]: e.target.value }))}
                                 onClick={(e) => e.stopPropagation()}
                                 className="text-xs mt-1 p-1 rounded-lg border"
-                                style={{ borderColor: C.kraftDark, background: "#fff", color: C.ink, maxWidth: 170 }}
+                                style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink, maxWidth: 170 }}
                               >
                                 <option value="__unassigned__">ספק כללי</option>
                                 {suppliers.map((s) => (
@@ -7299,7 +7307,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                 {ExtrasPanel()}
 
                 {sentSuppliers.length > 0 && (
-                  <div className="text-xs text-center mb-2 p-2 rounded-xl" style={{ background: "#E7F3EA", color: C.sage }}>
+                  <div className="text-xs text-center mb-2 p-2 rounded-xl" style={{ background: "rgba(87,180,94,0.15)", color: C.sage }}>
                     ✓ כבר נשלח ({sentSuppliers.length}) — <button onClick={() => setSentSuppliers([])} style={{ textDecoration: "underline", color: C.accent, fontWeight: 700 }}>הצג שוב לשליחה חוזרת</button>
                   </div>
                 )}
@@ -7347,7 +7355,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                 className="w-24 p-2 rounded-2xl border text-center mb-2"
                 style={{ borderColor: C.kraftDark }}
               />
-              <div className="p-3 rounded-2xl mb-2" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+              <div className="p-3 rounded-2xl mb-2" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
                 <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
                   התפריט הוא עבור
                 </label>
@@ -7426,7 +7434,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
               <button
                 onClick={sendWeeklyMenuWhatsApp}
                 className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
-                style={{ background: "#fff", color: "#128C7E", border: "1px solid #128C7E" }}
+                style={{ background: C.kraft, color: "#128C7E", border: "1px solid #128C7E" }}
               >
                 💬 שלח כטקסט במקום
               </button>
@@ -7508,7 +7516,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                           key={slotKey}
                           onClick={() => setOpenPicker({ dayKey, dayLabel, slotKey, slotLabel })}
                           className="text-right p-3 rounded-2xl"
-                          style={{ background: "#fff", border: `1.5px solid ${C.kraftDark}` }}
+                          style={{ background: C.kraft, border: `1.5px solid ${C.kraftDark}` }}
                         >
                           <div className="text-xs font-bold mb-1" style={{ color: C.accent }}>{slotLabel}</div>
                           <div className="text-sm" style={{ color: C.ink }}>
@@ -7640,7 +7648,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                                 onChange={(e) => setSupplierOverrides((o) => ({ ...o, [n.product.id]: e.target.value }))}
                                 onClick={(e) => e.stopPropagation()}
                                 className="text-xs mt-1 p-1 rounded-lg border"
-                                style={{ borderColor: C.kraftDark, background: "#fff", color: C.ink, maxWidth: 170 }}
+                                style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink, maxWidth: 170 }}
                               >
                                 <option value="__unassigned__">ספק כללי</option>
                                 {suppliers.map((s) => (
@@ -7667,7 +7675,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                 {ExtrasPanel()}
 
                 {sentSuppliers.length > 0 && (
-                  <div className="text-xs text-center mb-2 p-2 rounded-xl" style={{ background: "#E7F3EA", color: C.sage }}>
+                  <div className="text-xs text-center mb-2 p-2 rounded-xl" style={{ background: "rgba(87,180,94,0.15)", color: C.sage }}>
                     ✓ כבר נשלח ({sentSuppliers.length}) — <button onClick={() => setSentSuppliers([])} style={{ textDecoration: "underline", color: C.accent, fontWeight: 700 }}>הצג שוב לשליחה חוזרת</button>
                   </div>
                 )}
@@ -7715,7 +7723,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
             ) : (
               <div className="flex flex-col gap-3">
                 {savedMenus.map((snap) => (
-                  <div key={snap.id} className="rounded-2xl p-3" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+                  <div key={snap.id} className="rounded-2xl p-3" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
                     <div className="flex justify-between items-center mb-1">
                       <div className="font-bold text-sm" style={{ color: C.ink }}>
                         {snap.parsha ? `תפריט ${snap.parsha}` : "תפריט"} · {snap.weekLabel}
@@ -7724,7 +7732,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                         onClick={() => { if (typeof window !== "undefined" && !window.confirm("למחוק את התפריט השמור?")) return; deleteSavedMenu(snap.id); }}
                         title="מחק"
                         className="rounded-full flex items-center justify-center"
-                        style={{ width: 26, height: 26, background: "#fff", color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                        style={{ width: 26, height: 26, background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
                       >🗑️</button>
                     </div>
                     <div className="text-xs mb-2" style={{ color: C.steel }}>נשמר: {new Date(snap.savedAt).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>
@@ -7879,7 +7887,7 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
         </div>
 
         {task.description && (
-          <p className="text-sm mb-4 p-3 rounded-2xl" style={{ background: "#fff", color: C.steel }}>
+          <p className="text-sm mb-4 p-3 rounded-2xl" style={{ background: C.kraft, color: C.steel }}>
             {task.description}
           </p>
         )}
@@ -7914,7 +7922,7 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
                     key={label}
                     onClick={() => setFollowUp(daysFromNow(days))}
                     className="px-3 py-1.5 rounded-full text-xs font-bold"
-                    style={{ background: "#fff", color: C.mustard, border: `1.5px solid ${C.mustard}` }}
+                    style={{ background: C.kraft, color: C.mustard, border: `1.5px solid ${C.mustard}` }}
                   >
                     {label}
                   </button>
@@ -7969,7 +7977,7 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
                 key={c.id}
                 className="p-3 rounded-2xl"
                 style={{
-                  background: mine ? "#EFEAFF" : "#fff",
+                  background: mine ? "rgba(124,92,252,0.15)" : "#fff",
                   border: `1px solid ${C.kraftDark}`,
                 }}
               >
@@ -8359,7 +8367,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
                 value={buildingChoice}
                 onChange={(e) => setBuildingChoice(e.target.value)}
                 className="w-full p-3 rounded-2xl border mb-3 mt-1"
-                style={{ borderColor: C.kraftDark, background: "#fff" }}
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
               >
                 {buildingOrder.map((b) => <option key={b} value={b}>{b}</option>)}
                 <option value="__new__">➕ בניין חדש…</option>
@@ -8372,7 +8380,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
                 placeholder="שם/מספר בניין חדש"
                 autoFocus
                 className="w-full p-3 rounded-2xl border mb-3 mt-1"
-                style={{ borderColor: C.kraftDark, background: "#fff" }}
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
               />
             )}
             <label className="text-xs font-bold" style={{ color: C.steel }}>מספר / שם חדר</label>
@@ -8382,7 +8390,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
               onKeyDown={(e) => { if (e.key === "Enter") addRoom(); }}
               placeholder="למשל 509"
               className="w-full p-3 rounded-2xl border mb-3 mt-1"
-              style={{ borderColor: C.kraftDark, background: "#fff" }}
+              style={{ borderColor: C.kraftDark, background: C.kraft }}
             />
             <div className="flex gap-2">
               <button onClick={addRoom} className="flex-1 py-3 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>הוסף חדר</button>
@@ -8475,13 +8483,13 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
                     משימות פתוחות על החדר {openTasks.length > 0 ? `(${openTasks.length})` : ""}
                   </div>
                   {openTasks.length === 0 ? (
-                    <p className="text-sm py-2 px-3 rounded-xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, color: C.steel }}>
+                    <p className="text-sm py-2 px-3 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, color: C.steel }}>
                       אין משימות פתוחות על החדר.
                     </p>
                   ) : (
                     <div className="flex flex-col gap-2">
                       {openTasks.map((t) => (
-                        <div key={t.id} className="flex items-center gap-2 p-2 rounded-xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+                        <div key={t.id} className="flex items-center gap-2 p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
                           <button
                             onClick={() => { setSheetRoom(null); onOpenTask && onOpenTask(t.id); }}
                             className="flex-1 text-right"
@@ -8511,7 +8519,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
             <button onClick={() => createTaskForRoom(sheetRoom)} className="w-full py-2 rounded-2xl font-bold text-sm mb-2" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
               🧹 ניקיון מהיר
             </button>
-            <button onClick={() => { if (typeof window !== "undefined" && !window.confirm("למחוק את החדר מהמפה?")) return; deleteRoom(sheetRoom.id); }} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: "#fff", color: C.stamp, border: `1px solid ${C.kraftDark}` }}>
+            <button onClick={() => { if (typeof window !== "undefined" && !window.confirm("למחוק את החדר מהמפה?")) return; deleteRoom(sheetRoom.id); }} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>
               🗑️ מחק חדר
             </button>
           </div>
@@ -8751,7 +8759,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
             value={employeeFilter}
             onChange={(e) => setEmployeeFilter(e.target.value)}
             className="px-2 py-1 rounded-2xl text-sm border"
-            style={{ borderColor: C.kraftDark, background: "#fff", color: C.ink }}
+            style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}
           >
             <option value="all">כל העובדים</option>
             {users.map((u) => (
@@ -9308,7 +9316,7 @@ function LocationPicker({ locations, value, onChange }) {
       <button
         onClick={() => { setOpen(true); setQ(""); }}
         className="p-2 rounded-2xl border w-full text-right flex justify-between items-center"
-        style={{ borderColor: C.kraftDark, background: "#fff", color: selected ? C.ink : C.steel }}
+        style={{ borderColor: C.kraftDark, background: C.kraft, color: selected ? C.ink : C.steel }}
       >
         <span>{selected ? `📍 ${selected.name}` : "בחר מקום (אופציונלי)"}</span>
         <span style={{ color: C.steel }}>▾</span>
@@ -9334,14 +9342,14 @@ function LocationPicker({ locations, value, onChange }) {
               onChange={(e) => setQ(e.target.value)}
               placeholder="חיפוש מקום או חדר... (למשל: 207, מטבח)"
               className="w-full p-3 rounded-2xl border mb-3"
-              style={{ borderColor: C.kraftDark, background: "#fff" }}
+              style={{ borderColor: C.kraftDark, background: C.kraft }}
               autoFocus
             />
 
             <button
               onClick={() => { onChange(""); setOpen(false); }}
               className="w-full p-2.5 rounded-2xl text-sm font-bold mb-2 text-right"
-              style={{ background: "#fff", color: C.steel, border: `1px solid ${C.kraftDark}` }}
+              style={{ background: C.kraft, color: C.steel, border: `1px solid ${C.kraftDark}` }}
             >
               — ללא מקום —
             </button>
@@ -10206,11 +10214,11 @@ function PersonalPurchasesAdmin({ products, personalPurchases, persistPersonalPu
 
       {/* Totals */}
       <div className="grid grid-cols-2 gap-3 mb-4">
-        <div className="rounded-2xl p-3 text-center" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${C.stamp}` }}>
+        <div className="rounded-2xl p-3 text-center" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${C.stamp}` }}>
           <div className="wh-display font-black" style={{ color: C.stamp, fontSize: 26 }}>₪{unpaidTotal.toFixed(0)}</div>
           <div className="text-xs" style={{ color: C.steel }}>חוב פתוח ({unpaid.length})</div>
         </div>
-        <div className="rounded-2xl p-3 text-center" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${C.sage}` }}>
+        <div className="rounded-2xl p-3 text-center" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${C.sage}` }}>
           <div className="wh-display font-black" style={{ color: C.sage, fontSize: 26 }}>₪{paidTotal.toFixed(0)}</div>
           <div className="text-xs" style={{ color: C.steel }}>שולם</div>
         </div>
@@ -10240,7 +10248,7 @@ function PersonalPurchasesAdmin({ products, personalPurchases, persistPersonalPu
                 key={p.id}
                 onClick={() => addItem(p)}
                 className="flex justify-between items-center p-2.5 rounded-2xl text-right"
-                style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}
+                style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}
               >
                 <div>
                   <div className="text-sm font-bold" style={{ color: C.ink }}>{p.name}</div>
@@ -10508,7 +10516,7 @@ function AnalyticsAdmin({ products, stockLog, tasks = [], orderHistory = [], uni
 
 function StatCard({ label, value, color, small }) {
   return (
-    <div className="rounded-2xl p-3 text-center" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${color}` }}>
+    <div className="rounded-2xl p-3 text-center" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${color}` }}>
       <div className="wh-display font-black" style={{ color, fontSize: small ? 22 : 28 }}>{value}</div>
       <div className="text-xs" style={{ color: C.steel }}>{label}</div>
     </div>
@@ -10856,7 +10864,7 @@ function LocationsAdmin({ locations, persistLocations, showToast }) {
         onChange={(e) => setSearch(e.target.value)}
         placeholder="חיפוש מקום..."
         className="p-2 rounded-2xl border w-full mb-3"
-        style={{ borderColor: C.kraftDark, background: "#fff" }}
+        style={{ borderColor: C.kraftDark, background: C.kraft }}
       />
 
       <div className="flex flex-col gap-4">
@@ -10868,7 +10876,7 @@ function LocationsAdmin({ locations, persistLocations, showToast }) {
             <div className="wh-display font-bold text-sm mb-2" style={{ color: C.steel }}>{g} ({items.length})</div>
             <div className="flex flex-col gap-2">
               {items.map((l) => (
-                <div key={l.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+                <div key={l.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
                   <div className="flex items-center gap-2">
                     {l.imageData && <img src={l.imageData} alt="" className="rounded-xl" style={{ width: 40, height: 40, objectFit: "cover" }} />}
                     <div className="font-bold text-sm" style={{ color: C.ink }}>{l.name}</div>
@@ -10995,7 +11003,7 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
           const product = products.find((p) => p.id === r.productId);
           const assignee = users.find((u) => u.id === r.assignedToId);
           return (
-            <div key={r.id} className="p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, opacity: r.active ? 1 : 0.5 }}>
+            <div key={r.id} className="p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, opacity: r.active ? 1 : 0.5 }}>
               <div className="flex justify-between items-center">
                 <div>
                   <div className="font-bold text-sm" style={{ color: C.ink }}>{product ? `בדוק ${product.name}` : r.categoryId ? `הזמנה: ${r.categoryId}` : r.title}</div>
@@ -11179,7 +11187,7 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
           <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין ספקים עדיין - הוסף למעלה</p>
         )}
         {suppliers.map((s) => (
-          <div key={s.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+          <div key={s.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
             <div>
               <div className="font-bold text-sm" style={{ color: C.ink }}>{s.name}</div>
               <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>
@@ -11528,7 +11536,7 @@ function UnitRequestsAdmin({
 
         <div className="flex flex-col gap-2 mb-4">
           {editing.reopened && (
-            <div className="text-xs p-2 rounded-xl" style={{ background: "#FFF3E0", color: C.ink, border: `1px solid ${C.mustard}` }}>
+            <div className="text-xs p-2 rounded-xl" style={{ background: "rgba(232,168,77,0.15)", color: C.ink, border: `1px solid ${C.mustard}` }}>
               הבקשה כבר נופקה קודם. הכמויות מתחילות מ-0 — הזן כמות רק למה שאתה <b>מוסיף עכשio</b>. מה שכבר ניפקת נשמר ולא יורד מהמלאי שוב.
             </div>
           )}
@@ -11582,7 +11590,7 @@ function UnitRequestsAdmin({
           })}
         </div>
 
-        <div className="rounded-2xl p-3 mb-3" style={{ background: "#fff", border: `1px dashed ${C.kraftDark}` }}>
+        <div className="rounded-2xl p-3 mb-3" style={{ background: C.kraft, border: `1px dashed ${C.kraftDark}` }}>
           <div className="text-sm font-bold mb-2" style={{ color: C.ink }}>➕ הוסף פריט לרשימה</div>
           <div className="flex gap-2">
             <div style={{ position: "relative", flex: 1 }}>
@@ -11592,7 +11600,7 @@ function UnitRequestsAdmin({
                 onKeyDown={(e) => { if (e.key === "Enter") addItemToReview(); }}
                 placeholder="הקלד שם מוצר..."
                 className="w-full p-2 rounded-xl border text-sm"
-                style={{ borderColor: C.kraftDark, background: "#fff" }}
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
               />
               {(() => {
                 const term = addSearch.trim();
@@ -11600,13 +11608,13 @@ function UnitRequestsAdmin({
                 const matches = products.filter((p) => (p.name || "").trim().startsWith(term)).slice(0, 8);
                 if (matches.length === 0) return null;
                 return (
-                  <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 20, background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 220, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
+                  <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 20, background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 220, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
                     {matches.map((p) => (
                       <button
                         key={p.id}
                         onClick={() => { setAddSearch(p.name); setAddSelectedId(p.id); }}
                         className="w-full text-right px-3 py-2 text-sm"
-                        style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: "#fff" }}
+                        style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: C.kraft }}
                       >
                         {p.name}
                       </button>
@@ -11678,7 +11686,7 @@ function UnitRequestsAdmin({
           <button
             onClick={() => deleteRequest(editing.requestId, editing.unitName)}
             className="flex-1 py-2 rounded-2xl font-bold text-sm"
-            style={{ background: "#fff", color: C.stamp, border: `1.5px solid ${C.stamp}` }}
+            style={{ background: C.kraft, color: C.stamp, border: `1.5px solid ${C.stamp}` }}
           >
             🗑️ מחק בקשה
           </button>
@@ -11729,7 +11737,7 @@ function UnitRequestsAdmin({
       )}
 
       {tab === "done" && done.length > 0 && (
-        <button onClick={clearHistory} className="w-full py-2 rounded-2xl font-bold text-sm mb-3" style={{ background: "#fff", color: C.stamp, border: `1.5px solid ${C.stamp}` }}>
+        <button onClick={clearHistory} className="w-full py-2 rounded-2xl font-bold text-sm mb-3" style={{ background: C.kraft, color: C.stamp, border: `1.5px solid ${C.stamp}` }}>
           🗑️ נקה את כל ההיסטוריה
         </button>
       )}
@@ -11942,7 +11950,7 @@ function UnitTemplatesManager({ unitTemplates, persistUnitTemplates, users, prod
             key={p.id}
             onClick={() => { setQty(p.id, 1); setAddSearch(""); }}
             className="flex justify-between items-center p-2.5 rounded-2xl text-right"
-            style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}
+            style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}
           >
             <span className="text-sm font-bold" style={{ color: C.ink }}>{p.name}</span>
             <span className="text-lg font-bold" style={{ color: C.sage }}>+</span>
@@ -12477,7 +12485,7 @@ function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
           <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין עדיין קטגוריות - הוסף למעלה</p>
         )}
         {dishTypes.map((d, idx) => (
-          <div key={d.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+          <div key={d.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
             {editingId === d.id ? (
               <input
                 value={editName}
@@ -12837,7 +12845,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, persistProducts, sho
           <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין מנות בתפריט עדיין</p>
         )}
         {menuItems.map((m) => (
-          <div key={m.id} className="p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+          <div key={m.id} className="p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
             <div className="flex justify-between items-center">
               <div>
                 <div className="font-bold text-sm" style={{ color: C.ink }}>
@@ -12935,13 +12943,13 @@ function ProductAutocomplete({ products, value, onChange, onPick, onCreateProduc
         }, 150)}
         placeholder={placeholder}
         className={`p-2 rounded-xl border w-full text-sm ${bold ? "font-bold" : ""}`}
-        style={{ borderColor: C.kraftDark, background: "#fff", fontSize: bold ? "1rem" : undefined }}
+        style={{ borderColor: C.kraftDark, background: C.kraft, fontSize: bold ? "1rem" : undefined }}
       />
       {open && (
         <div
           style={{
             position: "absolute", top: "100%", right: 0, left: 0, zIndex: 40,
-            background: "#fff", border: `1px solid ${C.kraftDark}`, borderRadius: 12,
+            background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 12,
             marginTop: 4, maxHeight: 200, overflowY: "auto",
             boxShadow: "0 6px 18px rgba(20,33,61,0.15)",
           }}
@@ -12954,7 +12962,7 @@ function ProductAutocomplete({ products, value, onChange, onPick, onCreateProduc
               key={p.id}
               onMouseDown={(e) => { e.preventDefault(); pick(p); }}
               className="w-full text-right p-2.5 text-sm"
-              style={{ background: "#fff", color: C.ink, borderBottom: `1px solid ${C.paper}` }}
+              style={{ background: C.kraft, color: C.ink, borderBottom: `1px solid ${C.paper}` }}
             >
               {p.name}
               {p.unit && <span style={{ color: C.steel }}> · {p.unit}</span>}
@@ -12986,7 +12994,7 @@ function RowIngredientPicker({ products, ingredients, onAdd, onUpdate, onRemove,
         {ingredients.map((ing) => {
           const key = ing.ingId || ing.productId;
           return (
-            <div key={key} className="p-2 rounded-xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+            <div key={key} className="p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
               <div className="flex gap-2">
                 <div className="flex-1">
                   <ProductAutocomplete
@@ -13141,14 +13149,14 @@ function InvoiceScanner({ products, persistProducts, showToast, onClose }) {
             </p>
             <div className="flex flex-col gap-2 mb-3">
               {rows.map((r, i) => (
-                <div key={i} className="p-2 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+                <div key={i} className="p-2 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
                   <div className="text-sm font-bold mb-1" style={{ color: C.ink }}>{r.name}{r.unit ? ` · ${r.unit}` : ""}</div>
                   <div className="flex items-center gap-2">
                     <select
                       value={r.productId}
                       onChange={(e) => updateRow(i, { productId: e.target.value })}
                       className="flex-1 p-2 rounded-xl border text-sm"
-                      style={{ borderColor: C.kraftDark, background: r.productId ? "#fff" : "#FFF6E9" }}
+                      style={{ borderColor: C.kraftDark, background: r.productId ? "#fff" : "rgba(232,168,77,0.15)" }}
                     >
                       <option value="">— דלג (לא לעדכן) —</option>
                       {products.map((p) => (
@@ -13671,7 +13679,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
                   onKeyDown={(e) => e.key === "Enter" && addCategory()}
                   placeholder="שם קטגוריה חדשה"
                   className="flex-1 p-2 rounded-xl border text-sm"
-                  style={{ borderColor: C.kraftDark, background: "#fff" }}
+                  style={{ borderColor: C.kraftDark, background: C.kraft }}
                 />
                 <button onClick={addCategory} className="px-4 rounded-xl font-bold text-sm" style={{ background: C.ink, color: C.paper }}>
                   הוסף
@@ -13683,7 +13691,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
                   const count = products.filter((p) => p.category === c).length;
                   const col = categoryColor(c);
                   return (
-                    <div key={c} className="flex items-center gap-1.5 p-2 rounded-xl" style={{ background: "#fff", borderRight: `4px solid ${col}` }}>
+                    <div key={c} className="flex items-center gap-1.5 p-2 rounded-xl" style={{ background: C.kraft, borderRight: `4px solid ${col}` }}>
                       {renamingCat === c ? (
                         <>
                           <input
@@ -13774,7 +13782,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
         onChange={(e) => setAdminSearch(e.target.value)}
         placeholder="חיפוש מוצר..."
         className="p-2 rounded-2xl border w-full mb-3"
-        style={{ borderColor: C.kraftDark, background: "#fff" }}
+        style={{ borderColor: C.kraftDark, background: C.kraft }}
       />
 
       <div className="flex gap-2 mb-3">
@@ -13879,7 +13887,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
               {items.map((p) => {
                 const openToUnits = p.unitVisible !== false;
                 return (
-                <div key={p.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}`, borderRight: `5px solid ${openToUnits ? C.sage : C.steel}` }}>
+                <div key={p.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRight: `5px solid ${openToUnits ? C.sage : C.steel}` }}>
                   <div className="flex items-center gap-2">
                     <input
                       type="checkbox"
@@ -14333,7 +14341,7 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
 
       <div className="flex flex-col gap-2">
         {users.map((u) => (
-          <div key={u.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
+          <div key={u.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
             <div>
               <div className="font-bold text-sm" style={{ color: C.ink }}>{u.name} {u.role === "manager" ? "👑" : u.role === "supervisor" ? "🧑\u200d🍳" : ""}</div>
               <div className="text-xs font-bold" style={{ color: C.accent }}>{roleLabel(u.role)}</div>
