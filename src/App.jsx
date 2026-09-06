@@ -13,6 +13,7 @@ const C = {
   steel: "var(--c-steel)",
   accent: "var(--c-accent)",
   accent2: "var(--c-accent2)",
+  brand: "var(--c-brand)",   // dark surface for primary buttons/headers (stays dark in both themes)
 };
 const RADIUS = "20px";
 
@@ -33,11 +34,12 @@ const FONTS = `
   --c-ink:#14213D; --c-paper:#F3F6FB; --c-kraft:#FFFFFF; --c-kraftDark:#DCE4F0;
   --c-stamp:#FF5A5F; --c-mustard:#FFB347; --c-sage:#5CB85C; --c-steel:#5B6B85;
   --c-accent:#2E86C4; --c-accent2:#5CB85C;
+  --c-brand:#14213D;
 }
 html.dark-mode {
   --c-ink:#E7ECF5; --c-paper:#0E1424; --c-kraft:#182031; --c-kraftDark:#2C3648;
   --c-stamp:#FF6B6F; --c-mustard:#E8A84D; --c-sage:#57B45E; --c-steel:#9BA8C2;
-  --c-accent:#4A9FE0; --c-accent2:#57B45E;
+  --c-accent:#4A9FE0; --c-accent2:#57B45E; --c-brand:#2F5A8C;
 }
 html.dark-mode, html.dark-mode body { background: #0E1424; }
 `;
@@ -481,7 +483,7 @@ function ChannelPicker({ value, onChange, label = "שלח דרך" }) {
               onClick={() => onChange(c.id)}
               className="flex-1 py-2 rounded-2xl text-sm font-bold"
               style={{
-                background: active ? c.color : "#fff",
+                background: active ? c.color : C.kraft,
                 color: active ? "#fff" : c.color,
                 border: `1.5px solid ${c.color}`,
               }}
@@ -1065,7 +1067,7 @@ function LockScreen({ onUnlock, onUseLogout }) {
           onClick={tryUnlock}
           disabled={busy}
           className="w-full p-3 rounded-2xl font-bold wh-display mb-3"
-          style={{ background: C.ink, color: C.paper }}
+          style={{ background: C.brand, color: "#fff" }}
         >
           {busy ? "מאמת..." : "👆 אמת עם טביעת אצבע"}
         </button>
@@ -1115,7 +1117,7 @@ function SetNewPasswordScreen({ onDone }) {
         {done ? (
           <ShelfTag accent={C.sage} style={{ textAlign: "center" }}>
             <p className="text-sm mb-3" style={{ color: C.ink }}>הסיסמה עודכנה בהצלחה!</p>
-            <button onClick={onDone} className="w-full p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
+            <button onClick={onDone} className="w-full p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
               עבור להתחברות
             </button>
           </ShelfTag>
@@ -1124,7 +1126,7 @@ function SetNewPasswordScreen({ onDone }) {
             <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה חדשה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} autoFocus />
             <input value={confirm} onChange={(e) => setConfirm(e.target.value)} type="password" placeholder="אימות סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
             {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
-            <button onClick={save} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
+            <button onClick={save} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
               {busy ? "מעדכן..." : "שמור סיסמה חדשה"}
             </button>
           </ShelfTag>
@@ -1301,7 +1303,7 @@ function AuthGate({ onAuthed }) {
             <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
             <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
             {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
-            <button onClick={doCreate} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
+            <button onClick={doCreate} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
               {busy ? "יוצר..." : "צור ארגון והירשם"}
             </button>
             <button onClick={() => setMode("choose")} className="text-xs" style={{ color: C.steel }}>חזרה</button>
@@ -1326,7 +1328,7 @@ function AuthGate({ onAuthed }) {
               style={{
                 borderColor: invitedOrgId ? C.sage : C.kraftDark,
                 direction: "ltr",
-                background: invitedOrgId ? "#F4FBF4" : "#fff",
+                background: invitedOrgId ? "#F4FBF4" : C.kraft,
               }}
               autoFocus={!invitedOrgId}
             />
@@ -1335,7 +1337,7 @@ function AuthGate({ onAuthed }) {
             <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
             <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
             {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
-            <button onClick={doJoin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
+            <button onClick={doJoin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
               {busy ? "מצטרף..." : "הצטרף והירשם"}
             </button>
             <button onClick={() => setMode("login")} className="text-xs underline" style={{ color: C.accent }}>
@@ -1351,7 +1353,7 @@ function AuthGate({ onAuthed }) {
             <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
             {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
             {resetSent && <p style={{ color: C.sage }} className="text-sm">נשלח מייל לאיפוס הסיסמה - בדוק את תיבת הדואר שלך.</p>}
-            <button onClick={doLogin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.ink, color: C.paper }}>
+            <button onClick={doLogin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
               {busy ? "מתחבר..." : "התחבר"}
             </button>
             <button onClick={doResetPassword} disabled={resetBusy} className="text-xs underline" style={{ color: C.accent }}>
@@ -1458,7 +1460,7 @@ function Login({ users, onLogin, onFirstRun, onDisconnect }) {
             <button
               type="submit"
               className="p-3 rounded-2xl font-bold wh-display"
-              style={{ background: C.ink, color: C.paper, cursor: "pointer" }}
+              style={{ background: C.brand, color: "#fff", cursor: "pointer" }}
             >
               כניסה
             </button>
@@ -1849,7 +1851,7 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
                 <div className="wh-display font-bold" style={{ color: C.ink }}>{cell.dishTypeName}</div>
                 <div className="text-xs" style={{ color: C.steel }}>{cell.dayLabel} · ארוחת {slotLabel}</div>
               </div>
-              <button onClick={() => setCell(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>
+              <button onClick={() => setCell(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
                 סגור
               </button>
             </div>
@@ -1884,7 +1886,7 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
                         }}
                         className="p-3 rounded-2xl text-right font-bold"
                         style={{
-                          background: selected ? C.sage : "#fff",
+                          background: selected ? C.sage : C.kraft,
                           color: selected ? "#fff" : C.ink,
                           border: `1.5px solid ${selected ? C.sage : C.kraftDark}`,
                         }}
@@ -2151,7 +2153,7 @@ function UnitRequestTab({
             key={id}
             onClick={() => setView(id)}
             className="flex-1 py-2 rounded-2xl text-sm font-bold"
-            style={{ background: view === id ? C.ink : C.kraft, color: view === id ? C.paper : C.ink }}
+            style={{ background: view === id ? C.brand : C.kraft, color: view === id ? "#fff" : C.ink }}
           >
             {label}
           </button>
@@ -2225,7 +2227,7 @@ function UnitRequestTab({
                 disabled={locked}
                 placeholder="הערה למחסן (לא חובה)..."
                 className="w-full mt-3 p-2 rounded-2xl border text-sm"
-                style={{ borderColor: C.kraftDark, minHeight: 56, resize: "vertical", background: locked ? C.kraft : "#fff" }}
+                style={{ borderColor: C.kraftDark, minHeight: 56, resize: "vertical", background: locked ? C.kraft : C.kraft }}
               />
               {!isSubmitted && (
                 <div className="flex gap-2 mt-3">
@@ -2274,7 +2276,7 @@ function UnitRequestTab({
                     <div className="flex items-center gap-1">
                       <button onClick={() => updateCustomQty(i.productId, i.qty - 1)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}>−</button>
                       <input type="number" value={i.qty === 0 ? "" : i.qty} onChange={(e) => updateCustomQty(i.productId, e.target.value)} disabled={locked} className="w-12 text-center p-1.5 rounded-xl border" style={{ borderColor: C.kraftDark }} />
-                      <button onClick={() => updateCustomQty(i.productId, i.qty + 1)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.ink, color: "#fff", opacity: locked ? 0.4 : 1 }}>+</button>
+                      <button onClick={() => updateCustomQty(i.productId, i.qty + 1)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.brand, color: "#fff", opacity: locked ? 0.4 : 1 }}>+</button>
                       <button onClick={() => removeItem(i.productId)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
                     </div>
                   </div>
@@ -2287,7 +2289,7 @@ function UnitRequestTab({
             <button
               onClick={() => setCatFilter("all")}
               className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
-              style={{ background: catFilter === "all" ? C.ink : "#fff", color: catFilter === "all" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+              style={{ background: catFilter === "all" ? C.brand : C.kraft, color: catFilter === "all" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
             >
               הכל
             </button>
@@ -2299,7 +2301,7 @@ function UnitRequestTab({
                   key={c}
                   onClick={() => setCatFilter(c)}
                   className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
-                  style={{ background: active ? col : "#fff", color: active ? "#fff" : col, border: `1.5px solid ${col}` }}
+                  style={{ background: active ? col : C.kraft, color: active ? "#fff" : col, border: `1.5px solid ${col}` }}
                 >
                   {c}
                 </button>
@@ -2427,7 +2429,7 @@ function UnitRequestTab({
                   </div>
                 )}
                 <div className="flex gap-2 mt-2">
-                  <button onClick={() => reuseRequest(r)} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.ink, color: "#fff" }}>
+                  <button onClick={() => reuseRequest(r)} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.brand, color: "#fff" }}>
                     📋 פתח וערוך מחדש
                   </button>
                   <button onClick={() => printRequest(r)} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
@@ -2901,7 +2903,7 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
     <>
       {open && (
         <div dir="rtl" style={{ position: "fixed", inset: 0, zIndex: 70, background: C.paper, display: "flex", flexDirection: "column", fontFamily: "'Heebo', sans-serif" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 14, background: C.ink, color: "#fff" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 14, background: C.brand, color: "#fff" }}>
             {isManager && activeThread && (
               <button onClick={() => setActiveThread(null)} style={{ background: "transparent", border: "none", color: "#fff", fontSize: 20, cursor: "pointer" }}>›</button>
             )}
@@ -2915,7 +2917,7 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
             <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
               <button
                 onClick={() => setPicking((v) => !v)}
-                style={{ width: "100%", background: C.ink, color: "#fff", border: "none", borderRadius: 14, padding: 12, marginBottom: 10, fontWeight: 700, cursor: "pointer" }}
+                style={{ width: "100%", background: C.brand, color: "#fff", border: "none", borderRadius: 14, padding: 12, marginBottom: 10, fontWeight: 700, cursor: "pointer" }}
               >
                 ✏️ הודעה חדשה לעובד
               </button>
@@ -2970,7 +2972,7 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
               {threadMessages.map((m) => {
                 const mine = m.fromId === myId;
                 return (
-                  <div key={m.id} style={{ alignSelf: mine ? "flex-start" : "flex-end", maxWidth: "78%", background: mine ? C.ink : "#fff", color: mine ? "#fff" : C.ink, border: mine ? "none" : `1px solid ${C.kraftDark}`, borderRadius: 14, padding: "8px 12px" }}>
+                  <div key={m.id} style={{ alignSelf: mine ? "flex-start" : "flex-end", maxWidth: "78%", background: mine ? C.brand : C.kraft, color: mine ? "#fff" : C.ink, border: mine ? "none" : `1px solid ${C.kraftDark}`, borderRadius: 14, padding: "8px 12px" }}>
                     {!mine && <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, marginBottom: 2 }}>{m.fromRole === "manager" ? "ההנהלה" : m.fromName}</div>}
                     <div style={{ fontSize: 15, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.text}</div>
                     <div style={{ fontSize: 10, opacity: 0.6, marginTop: 3, textAlign: "left" }}>{fmtTime(m.ts)}</div>
@@ -2989,7 +2991,7 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
                 placeholder="הקלד הודעה..."
                 style={{ flex: 1, padding: "10px 14px", borderRadius: 20, border: `1px solid ${C.kraftDark}`, fontSize: 15 }}
               />
-              <button onClick={send} style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 20, padding: "0 20px", fontWeight: 700, cursor: "pointer" }}>שלח</button>
+              <button onClick={send} style={{ background: C.brand, color: "#fff", border: "none", borderRadius: 20, padding: "0 20px", fontWeight: 700, cursor: "pointer" }}>שלח</button>
             </div>
           )}
         </div>
@@ -3105,7 +3107,7 @@ function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyMan
 
   return (
     <div dir="rtl" style={{ position: "fixed", inset: 0, zIndex: 60, background: C.paper, overflowY: "auto", fontFamily: "'Heebo', sans-serif" }}>
-      <div style={{ background: C.ink, color: "#fff", padding: 16, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+      <div style={{ background: C.brand, color: "#fff", padding: 16, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ fontWeight: 800, fontSize: 18 }}>🛠️ דיווח תקלה / בקשה</div>
         <button onClick={() => { if (window.confirm("לצאת ממסך הדיווח?")) onExit(); }} style={{ background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", borderRadius: 14, padding: "6px 14px", fontSize: 13 }}>יציאה</button>
       </div>
@@ -3164,7 +3166,7 @@ function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyMan
 
           <button
             onClick={() => setUrgent((v) => !v)}
-            style={{ ...field, textAlign: "right", fontWeight: 700, color: urgent ? "#fff" : C.ink, background: urgent ? C.stamp : "#fff", cursor: "pointer" }}
+            style={{ ...field, textAlign: "right", fontWeight: 700, color: urgent ? "#fff" : C.ink, background: urgent ? C.stamp : C.kraft, cursor: "pointer" }}
           >
             {urgent ? "🔴 סומן כדחוף" : "סמן כדחוף (אופציונלי)"}
           </button>
@@ -3253,7 +3255,7 @@ function AccessibilityWidget() {
       style={{
         display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%",
         padding: "11px 12px", borderRadius: 12, marginBottom: 8, cursor: "pointer",
-        border: `1.5px solid ${s[k] ? C.accent : C.kraftDark}`, background: s[k] ? "rgba(74,159,224,0.15)" : "#fff",
+        border: `1.5px solid ${s[k] ? C.accent : C.kraftDark}`, background: s[k] ? "rgba(74,159,224,0.15)" : C.kraft,
         color: C.ink, fontWeight: 700, fontSize: 14,
       }}
     >
@@ -3291,7 +3293,7 @@ function AccessibilityWidget() {
           >
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <div style={{ fontWeight: 800, fontSize: 18, color: C.ink }}>♿ הגדרות נגישות</div>
-              <button onClick={() => setOpen(false)} style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 999, padding: "5px 14px", fontWeight: 700, cursor: "pointer" }}>סגור</button>
+              <button onClick={() => setOpen(false)} style={{ background: C.brand, color: "#fff", border: "none", borderRadius: 999, padding: "5px 14px", fontWeight: 700, cursor: "pointer" }}>סגור</button>
             </div>
 
             <div style={{ marginBottom: 12 }}>
@@ -3306,7 +3308,7 @@ function AccessibilityWidget() {
                     style={{
                       flex: 1, padding: "11px 4px", borderRadius: 12, cursor: "pointer", fontWeight: 800, fontSize: 14,
                       border: `2px solid ${s.darkMode === val ? C.accent : C.kraftDark}`,
-                      background: s.darkMode === val ? "rgba(74,159,224,0.15)" : "#fff", color: C.ink,
+                      background: s.darkMode === val ? "rgba(74,159,224,0.15)" : C.kraft, color: C.ink,
                     }}
                   >
                     {label}
@@ -4357,7 +4359,7 @@ function App() {
               <button onClick={() => snoozeNotification(snoozeTarget, tomorrowAt(8, 0))} className="py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>מחר בבוקר (08:00)</button>
               <div className="flex gap-2 items-center mt-1">
                 <input type="time" value={snoozeTime} onChange={(e) => setSnoozeTime(e.target.value)} className="p-2 rounded-2xl border flex-1" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
-                <button onClick={() => { if (snoozeTime) snoozeNotification(snoozeTarget, timeToTs(snoozeTime)); }} className="px-4 py-2 rounded-2xl font-bold text-sm whitespace-nowrap" style={{ background: C.ink, color: "#fff" }}>בשעה שבחרת</button>
+                <button onClick={() => { if (snoozeTime) snoozeNotification(snoozeTarget, timeToTs(snoozeTime)); }} className="px-4 py-2 rounded-2xl font-bold text-sm whitespace-nowrap" style={{ background: C.brand, color: "#fff" }}>בשעה שבחרת</button>
               </div>
             </div>
             <button onClick={() => { setSnoozeTarget(null); setSnoozeTime(""); }} className="w-full mt-3 py-2 rounded-2xl font-bold text-sm" style={{ background: "transparent", color: C.steel }}>ביטול</button>
@@ -4369,7 +4371,7 @@ function App() {
       {toast && (
         <div
           className="fixed top-3 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-2xl wh-body text-sm font-medium"
-          style={{ background: C.ink, color: C.paper }}
+          style={{ background: C.brand, color: "#fff" }}
         >
           {toast}
         </div>
@@ -4401,7 +4403,7 @@ function App() {
                       }
                     }}
                     className="px-4 py-2 rounded-2xl font-bold text-sm"
-                    style={{ background: C.ink, color: C.paper }}
+                    style={{ background: C.brand, color: "#fff" }}
                   >
                     הפעל
                   </button>
@@ -4726,7 +4728,7 @@ function App() {
                   setBiometricPrompt(false);
                 }}
                 className="p-3 rounded-2xl font-bold wh-display"
-                style={{ background: C.ink, color: C.paper }}
+                style={{ background: C.brand, color: "#fff" }}
               >
                 כן, הפעל
               </button>
@@ -4760,7 +4762,7 @@ function App() {
               onClick={exportBackup}
               disabled={backupBusy}
               className="w-full py-3 rounded-2xl font-bold mb-2"
-              style={{ background: C.ink, color: C.paper, opacity: backupBusy ? 0.6 : 1 }}
+              style={{ background: C.brand, color: "#fff", opacity: backupBusy ? 0.6 : 1 }}
             >
               {backupBusy ? "עובד…" : "⬇️ הורד גיבוי עכשיו"}
             </button>
@@ -5094,7 +5096,7 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
       <button
         onClick={() => setShowSummary((v) => !v)}
         className="w-full py-2 mb-4 rounded-2xl font-bold text-sm wh-display"
-        style={{ background: C.ink, color: C.paper }}
+        style={{ background: C.brand, color: "#fff" }}
       >
         {showSummary ? "▲ הסתר סיכום מלאי" : "📊 הצג סיכום מלאי"}
       </button>
@@ -5140,7 +5142,7 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
         <button
           onClick={openScanner}
           className="px-4 rounded-2xl wh-display font-bold"
-          style={{ background: C.ink, color: C.paper }}
+          style={{ background: C.brand, color: "#fff" }}
         >
           📷 סרוק
         </button>
@@ -5200,14 +5202,14 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
           <button
             onClick={() => setViewMode("category")}
             className="flex-1 py-2 rounded-2xl text-sm font-bold"
-            style={{ background: viewMode === "category" ? C.ink : C.kraft, color: viewMode === "category" ? C.paper : C.ink }}
+            style={{ background: viewMode === "category" ? C.brand : C.kraft, color: viewMode === "category" ? "#fff" : C.ink }}
           >
             לפי קטגוריה
           </button>
           <button
             onClick={() => setViewMode("name")}
             className="flex-1 py-2 rounded-2xl text-sm font-bold"
-            style={{ background: viewMode === "name" ? C.ink : C.kraft, color: viewMode === "name" ? C.paper : C.ink }}
+            style={{ background: viewMode === "name" ? C.brand : C.kraft, color: viewMode === "name" ? "#fff" : C.ink }}
           >
             לפי שם (רשימה)
           </button>
@@ -5218,7 +5220,7 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
         <button
           onClick={() => setActiveCategory("all")}
           className="px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap"
-          style={{ background: activeCategory === "all" ? C.ink : C.kraft, color: activeCategory === "all" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+          style={{ background: activeCategory === "all" ? C.brand : C.kraft, color: activeCategory === "all" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
         >
           הכל
         </button>
@@ -5231,7 +5233,7 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
               onClick={() => setActiveCategory(cat)}
               className="px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap"
               style={{
-                background: active ? col : "#fff",
+                background: active ? col : C.kraft,
                 color: active ? "#fff" : col,
                 border: `1.5px solid ${col}`,
               }}
@@ -5352,7 +5354,7 @@ function ScanResultCard({ scanResult, onAdjust, onClose, isManager }) {
             אפשר להוסיף מוצר חדש עם הברקוד הזה במסך ניהול.
           </p>
         )}
-        <button onClick={onClose} className="w-full py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
+        <button onClick={onClose} className="w-full py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
           סגור
         </button>
       </ShelfTag>
@@ -6125,7 +6127,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
             >
               <div className="flex justify-between items-center mb-3">
                 <div className="wh-display font-bold" style={{ color: C.ink }}>הוסף מוצר להזמנה</div>
-                <button onClick={() => setExtrasOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>
+                <button onClick={() => setExtrasOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
                   סיימתי
                 </button>
               </div>
@@ -6258,7 +6260,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
 
           {/* Line by line - editable: change quantity or remove a product before sending/saving */}
           <div className="rounded-2xl overflow-hidden mb-3" style={{ border: `1px solid ${C.kraftDark}` }}>
-            <div className="flex items-center text-xs font-bold px-3 py-2" style={{ background: C.ink, color: "#fff" }}>
+            <div className="flex items-center text-xs font-bold px-3 py-2" style={{ background: C.brand, color: "#fff" }}>
               <span className="flex-1">מוצר</span>
               <span style={{ width: 118, textAlign: "center" }}>כמות</span>
               <span style={{ width: 56, textAlign: "left" }}>מחיר</span>
@@ -6268,7 +6270,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
               <div
                 key={product.id}
                 className="flex items-center px-2 py-2 text-sm"
-                style={{ background: i % 2 ? "#F7FAFD" : "#fff", borderTop: `1px solid ${C.kraftDark}`, opacity: Number(qty) > 0 ? 1 : 0.45 }}
+                style={{ background: i % 2 ? "rgba(0,0,0,0.03)" : C.kraft, borderTop: `1px solid ${C.kraftDark}`, opacity: Number(qty) > 0 ? 1 : 0.45 }}
               >
                 <div className="flex flex-col" style={{ marginLeft: 2 }}>
                   <button
@@ -6308,7 +6310,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                   <button
                     onClick={() => updatePendingQty(product.id, Number(qty) + 1)}
                     className="rounded-full font-bold flex items-center justify-center"
-                    style={{ width: 26, height: 26, background: C.ink, color: "#fff", flexShrink: 0 }}
+                    style={{ width: 26, height: 26, background: C.brand, color: "#fff", flexShrink: 0 }}
                   >
                     +
                   </button>
@@ -6465,7 +6467,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                       title={label}
                       style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, opacity: isEmpty ? 0.5 : 1, background: "transparent", border: "none", cursor: "pointer" }}
                     >
-                      <span style={{ width: 50, height: 50, borderRadius: "50%", background: bg, color: dark ? C.ink : "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, boxShadow: "0 2px 8px rgba(0,0,0,0.22)" }}>{emoji}</span>
+                      <span style={{ width: 50, height: 50, borderRadius: "50%", background: bg, color: dark ? C.brand : C.kraft, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, boxShadow: "0 2px 8px rgba(0,0,0,0.22)" }}>{emoji}</span>
                       <span style={{ fontSize: 11, color: C.steel, fontWeight: 700 }}>{label}</span>
                     </button>
                   );
@@ -6809,7 +6811,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                   <div className="text-sm font-bold" style={{ color: C.ink }}>{d.items.length} מוצרים · {new Date(d.updatedAt || d.createdAt).toLocaleDateString("he-IL")}</div>
                   <div className="text-xs" style={{ color: C.steel }}>{d.by}{d.updatedAt ? " · עודכן" : ""}</div>
                 </div>
-                <button onClick={() => loadDraft(d)} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>ערוך</button>
+                <button onClick={() => loadDraft(d)} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>ערוך</button>
                 <button onClick={() => deleteDraft(d.id)} className="px-3 py-1 rounded-2xl text-sm" style={{ background: C.kraft, color: C.ink }}>מחק</button>
               </div>
             ))}
@@ -6820,28 +6822,21 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
         <button
           onClick={() => setOrderMode("stock")}
           className="px-3 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
-          style={{ background: orderMode === "stock" ? C.ink : C.kraft, color: orderMode === "stock" ? C.paper : C.ink }}
+          style={{ background: orderMode === "stock" ? C.brand : C.kraft, color: orderMode === "stock" ? "#fff" : C.ink }}
         >
           לפי סף מלאי
         </button>
         <button
-          onClick={() => setOrderMode("menu")}
-          className="px-3 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
-          style={{ background: orderMode === "menu" ? C.ink : C.kraft, color: orderMode === "menu" ? C.paper : C.ink }}
-        >
-          לפי מנות בודדות
-        </button>
-        <button
           onClick={() => setOrderMode("week")}
           className="px-3 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
-          style={{ background: orderMode === "week" ? C.ink : C.kraft, color: orderMode === "week" ? C.paper : C.ink }}
+          style={{ background: orderMode === "week" ? C.brand : C.kraft, color: orderMode === "week" ? "#fff" : C.ink }}
         >
           לפי תפריט שבועי
         </button>
         <button
           onClick={() => setOrderMode("history")}
           className="px-3 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
-          style={{ background: orderMode === "history" ? C.ink : C.kraft, color: orderMode === "history" ? C.paper : C.ink }}
+          style={{ background: orderMode === "history" ? C.brand : C.kraft, color: orderMode === "history" ? "#fff" : C.ink }}
         >
           📜 היסטוריה
         </button>
@@ -7117,7 +7112,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                   <button
                     onClick={() => setShowOnlyMarked((v) => !v)}
                     className="text-xs font-bold px-3 py-1 rounded-full"
-                    style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? C.paper : C.ink, border: `1px solid ${C.kraftDark}` }}
+                    style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
                   >
                     {showOnlyMarked ? "הצג הכל" : `מה מסומן (${selectedForOrder.length})`}
                   </button>
@@ -7219,7 +7214,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                     key={m.id}
                     onClick={() => toggleMenuItem(m.id)}
                     className="text-right p-3 rounded-2xl"
-                    style={{ background: active ? col : "#fff", color: active ? "#fff" : C.ink, border: `1.5px solid ${col}` }}
+                    style={{ background: active ? col : C.kraft, color: active ? "#fff" : C.ink, border: `1.5px solid ${col}` }}
                   >
                     <div className="font-bold">{m.name}</div>
                     <div className="text-xs opacity-80">{m.category}</div>
@@ -7250,7 +7245,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                     <button
                       onClick={() => setShowOnlyMarked((v) => !v)}
                       className="text-xs font-bold px-2 py-1 rounded-full"
-                      style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? C.paper : C.ink, border: `1px solid ${C.kraftDark}` }}
+                      style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
                     >
                       {showOnlyMarked ? "הצג הכל" : "מה מסומן"}
                     </button>
@@ -7363,14 +7358,14 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                   <button
                     onClick={() => setMenuWeek("next")}
                     className="flex-1 py-1.5 rounded-xl text-xs font-bold"
-                    style={{ background: menuWeek === "next" ? C.ink : C.paper, color: menuWeek === "next" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+                    style={{ background: menuWeek === "next" ? C.brand : C.paper, color: menuWeek === "next" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
                   >
                     שבוע הבא
                   </button>
                   <button
                     onClick={() => setMenuWeek("this")}
                     className="flex-1 py-1.5 rounded-xl text-xs font-bold"
-                    style={{ background: menuWeek === "this" ? C.ink : C.paper, color: menuWeek === "this" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+                    style={{ background: menuWeek === "this" ? C.brand : C.paper, color: menuWeek === "this" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
                   >
                     השבוע הזה
                   </button>
@@ -7454,14 +7449,14 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
               <button
                 onClick={() => setWeekView("grid")}
                 className="flex-1 py-2 rounded-2xl text-sm font-bold"
-                style={{ background: weekView === "grid" ? C.ink : C.kraft, color: weekView === "grid" ? C.paper : C.ink }}
+                style={{ background: weekView === "grid" ? C.brand : C.kraft, color: weekView === "grid" ? "#fff" : C.ink }}
               >
                 📊 טבלה
               </button>
               <button
                 onClick={() => setWeekView("days")}
                 className="flex-1 py-2 rounded-2xl text-sm font-bold"
-                style={{ background: weekView === "days" ? C.ink : C.kraft, color: weekView === "days" ? C.paper : C.ink }}
+                style={{ background: weekView === "days" ? C.brand : C.kraft, color: weekView === "days" ? "#fff" : C.ink }}
               >
                 📅 יום-יום
               </button>
@@ -7543,7 +7538,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                     <div className="wh-display font-bold" style={{ color: C.ink }}>
                       {openPicker.dayLabel} · {openPicker.slotLabel}
                     </div>
-                    <button onClick={() => setOpenPicker(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>
+                    <button onClick={() => setOpenPicker(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
                       סיימתי
                     </button>
                   </div>
@@ -7566,7 +7561,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                               onClick={() => setWeekSlot(openPicker.dayKey, openPicker.slotKey, dt.id, "")}
                               className="text-right p-2 rounded-2xl text-sm"
                               style={{
-                                background: currentId === "" ? C.ink : "#fff",
+                                background: currentId === "" ? C.brand : C.kraft,
                                 color: currentId === "" ? "#fff" : C.steel,
                                 border: `1px solid ${C.kraftDark}`,
                               }}
@@ -7579,7 +7574,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                                 onClick={() => setWeekSlot(openPicker.dayKey, openPicker.slotKey, dt.id, m.id)}
                                 className="text-right p-2 rounded-2xl text-sm font-bold"
                                 style={{
-                                  background: currentId === m.id ? categoryColor(m.category) : "#fff",
+                                  background: currentId === m.id ? categoryColor(m.category) : C.kraft,
                                   color: currentId === m.id ? "#fff" : C.ink,
                                   border: `1.5px solid ${categoryColor(m.category)}`,
                                 }}
@@ -7618,7 +7613,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                     <button
                       onClick={() => setShowOnlyMarked((v) => !v)}
                       className="text-xs font-bold px-2 py-1 rounded-full"
-                      style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? C.paper : C.ink, border: `1px solid ${C.kraftDark}` }}
+                      style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
                     >
                       {showOnlyMarked ? "הצג הכל" : "מה מסומן"}
                     </button>
@@ -7881,7 +7876,7 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
               {task.location && ` · 📍 ${task.location}`}
             </div>
           </div>
-          <button onClick={onClose} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>
+          <button onClick={onClose} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
             סגור
           </button>
         </div>
@@ -7977,7 +7972,7 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
                 key={c.id}
                 className="p-3 rounded-2xl"
                 style={{
-                  background: mine ? "rgba(124,92,252,0.15)" : "#fff",
+                  background: mine ? "rgba(124,92,252,0.15)" : C.kraft,
                   border: `1px solid ${C.kraftDark}`,
                 }}
               >
@@ -8265,7 +8260,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
           <button onClick={() => setImportOpen(true)} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
             📍 מהמקומות
           </button>
-          <button onClick={() => { setBuildingChoice(buildingOrder[0] || "__new__"); setNewBuilding(""); setAddOpen(true); }} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.ink, color: C.paper }}>
+          <button onClick={() => { setBuildingChoice(buildingOrder[0] || "__new__"); setNewBuilding(""); setAddOpen(true); }} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
             ➕ הוסף חדר
           </button>
         </div>
@@ -8442,7 +8437,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
                               onClick={() => setSelectedLocs((cur) => sel ? cur.filter((id) => id !== l.id) : [...cur, l.id])}
                               className="px-3 py-1.5 rounded-full text-sm font-bold"
                               style={{
-                                background: already ? "#E5E7EB" : sel ? C.sage : "#fff",
+                                background: already ? "#E5E7EB" : sel ? C.sage : C.kraft,
                                 color: already ? C.steel : sel ? "#fff" : C.ink,
                                 border: `1px solid ${C.kraftDark}`,
                                 opacity: already ? 0.6 : 1,
@@ -8734,7 +8729,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
         <button
           onClick={() => setShowNew(true)}
           className="px-3 py-2 rounded-2xl text-sm font-bold"
-          style={{ background: C.ink, color: C.paper }}
+          style={{ background: C.brand, color: "#fff" }}
         >
           + משימה חדשה
         </button>
@@ -8747,8 +8742,8 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
             onClick={() => setFilter(val)}
             className="px-3 py-1 rounded-2xl text-sm font-bold"
             style={{
-              background: filter === val ? C.ink : C.kraft,
-              color: filter === val ? C.paper : C.ink,
+              background: filter === val ? C.brand : C.kraft,
+              color: filter === val ? "#fff" : C.ink,
             }}
           >
             {label}
@@ -8783,7 +8778,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
             onClick={() => setCategoryFilter("all")}
             className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
             style={{
-              background: categoryFilter === "all" ? C.ink : "#fff",
+              background: categoryFilter === "all" ? C.brand : C.kraft,
               color: categoryFilter === "all" ? "#fff" : C.ink,
               border: `1px solid ${C.kraftDark}`,
             }}
@@ -8802,7 +8797,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
                 onClick={() => setCategoryFilter(c.id)}
                 className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
                 style={{
-                  background: active ? col : "#fff",
+                  background: active ? col : C.kraft,
                   color: active ? "#fff" : col,
                   border: `1.5px solid ${col}`,
                 }}
@@ -9332,7 +9327,7 @@ function LocationPicker({ locations, value, onChange }) {
           >
             <div className="flex justify-between items-center mb-3">
               <div className="wh-display font-bold" style={{ color: C.ink }}>בחר מקום</div>
-              <button onClick={() => setOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.ink, color: "#fff" }}>
+              <button onClick={() => setOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
                 סגור
               </button>
             </div>
@@ -9368,7 +9363,7 @@ function LocationPicker({ locations, value, onChange }) {
                       onClick={() => { onChange(loc.id); setOpen(false); }}
                       className="p-2.5 rounded-2xl text-right font-bold text-sm flex items-center gap-2"
                       style={{
-                        background: value === loc.id ? C.sage : "#fff",
+                        background: value === loc.id ? C.sage : C.kraft,
                         color: value === loc.id ? "#fff" : C.ink,
                         border: `1px solid ${value === loc.id ? C.sage : C.kraftDark}`,
                       }}
@@ -9678,7 +9673,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
             onSubmit({ title, description, assignedToId, priority, categoryId, location: locationLabel, locationId, imageData, followUpAt: combineDateTime(remindDate, remindTime), notifyNow });
           }}
           className="flex-1 py-2 rounded-2xl font-bold"
-          style={{ background: C.ink, color: C.paper }}
+          style={{ background: C.brand, color: "#fff" }}
         >
           צור משימה
         </button>
@@ -9742,7 +9737,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
       <button
         onClick={() => setShowNav(true)}
         className="flex items-center gap-2 mb-4 px-3 py-2 rounded-2xl font-bold text-sm"
-        style={{ background: C.ink, color: C.paper }}
+        style={{ background: C.brand, color: "#fff" }}
       >
         ☰ {sections.find(([v]) => v === section)?.[1]}
       </button>
@@ -10227,7 +10222,7 @@ function PersonalPurchasesAdmin({ products, personalPurchases, persistPersonalPu
       <button
         onClick={() => setAdding((v) => !v)}
         className="w-full py-3 rounded-2xl font-bold mb-3"
-        style={{ background: adding ? C.kraft : C.ink, color: adding ? C.ink : C.paper, border: adding ? `1px solid ${C.kraftDark}` : "none" }}
+        style={{ background: adding ? C.kraft : C.ink, color: adding ? C.brand : C.paper, border: adding ? `1px solid ${C.kraftDark}` : "none" }}
       >
         {adding ? "סגור" : "➕ הוסף מוצר שלקחתי"}
       </button>
@@ -10300,7 +10295,7 @@ function PersonalPurchasesAdmin({ products, personalPurchases, persistPersonalPu
             <button
               onClick={() => togglePaid(e.id)}
               className="w-full mt-2 py-1.5 rounded-xl font-bold text-xs"
-              style={{ background: e.paid ? C.kraft : C.sage, color: e.paid ? C.ink : "#fff", border: e.paid ? `1px solid ${C.kraftDark}` : "none" }}
+              style={{ background: e.paid ? C.kraft : C.sage, color: e.paid ? C.brand : C.kraft, border: e.paid ? `1px solid ${C.kraftDark}` : "none" }}
             >
               {e.paid ? "בטל סימון תשלום" : "✓ סמן כשולם"}
             </button>
@@ -10355,7 +10350,7 @@ function AnalyticsAdmin({ products, stockLog, tasks = [], orderHistory = [], uni
             key={id}
             onClick={() => setView(id)}
             className="px-4 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
-            style={{ background: view === id ? C.ink : C.kraft, color: view === id ? C.paper : C.ink }}
+            style={{ background: view === id ? C.brand : C.kraft, color: view === id ? "#fff" : C.ink }}
           >
             {label}
           </button>
@@ -10368,7 +10363,7 @@ function AnalyticsAdmin({ products, stockLog, tasks = [], orderHistory = [], uni
             key={d}
             onClick={() => setRange(d)}
             className="flex-1 py-1.5 rounded-xl text-xs font-bold"
-            style={{ background: range === d ? C.accent : "#fff", color: range === d ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+            style={{ background: range === d ? C.accent : C.kraft, color: range === d ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
           >
             {d} ימים
           </button>
@@ -10621,7 +10616,7 @@ function OldAnalyticsAdmin({ products, stockLog }) {
             key={d}
             onClick={() => setRange(d)}
             className="px-3 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
-            style={{ background: range === d ? C.ink : C.kraft, color: range === d ? C.paper : C.ink }}
+            style={{ background: range === d ? C.brand : C.kraft, color: range === d ? "#fff" : C.ink }}
           >
             {d} ימים אחרונים
           </button>
@@ -10850,7 +10845,7 @@ function LocationsAdmin({ locations, persistLocations, showToast }) {
           )}
         </div>
         <div className="flex gap-2">
-          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
+          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
             {editingId ? "שמור שינויים" : "הוסף מקום"}
           </button>
           {editingId && (
@@ -10981,7 +10976,7 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
           </select>
         </div>
         <div className="flex gap-2">
-          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
+          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
             {editingId ? "שמור שינויים" : "צור תזכורת"}
           </button>
           {editingId && (
@@ -11171,7 +11166,7 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
           <input value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} type="email" placeholder="supplier@example.com" className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
         </div>
         <div className="flex gap-2">
-          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
+          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
             {editingId ? "שמור שינויים" : "הוסף ספק"}
           </button>
           {editingId && (
@@ -11651,7 +11646,7 @@ function UnitRequestsAdmin({
           {(() => {
             const ic = (bg, emoji, label, onClick, dark) => (
               <button onClick={onClick} title={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: "transparent", border: "none", cursor: "pointer" }}>
-                <span style={{ width: 46, height: 46, borderRadius: "50%", background: bg, color: dark ? C.ink : "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, boxShadow: "0 2px 8px rgba(0,0,0,0.22)" }}>{emoji}</span>
+                <span style={{ width: 46, height: 46, borderRadius: "50%", background: bg, color: dark ? C.brand : C.kraft, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, boxShadow: "0 2px 8px rgba(0,0,0,0.22)" }}>{emoji}</span>
                 <span style={{ fontSize: 11, color: C.steel, fontWeight: 700 }}>{label}</span>
               </button>
             );
@@ -11706,21 +11701,21 @@ function UnitRequestsAdmin({
         <button
           onClick={() => setTab("pending")}
           className="flex-1 py-2 rounded-2xl text-sm font-bold"
-          style={{ background: tab === "pending" ? C.ink : C.kraft, color: tab === "pending" ? C.paper : C.ink }}
+          style={{ background: tab === "pending" ? C.brand : C.kraft, color: tab === "pending" ? "#fff" : C.ink }}
         >
           ממתינות {pending.length > 0 && `(${pending.length})`}
         </button>
         <button
           onClick={() => setTab("done")}
           className="flex-1 py-2 rounded-2xl text-sm font-bold"
-          style={{ background: tab === "done" ? C.ink : C.kraft, color: tab === "done" ? C.paper : C.ink }}
+          style={{ background: tab === "done" ? C.brand : C.kraft, color: tab === "done" ? "#fff" : C.ink }}
         >
           טופלו
         </button>
         <button
           onClick={() => setTab("templates")}
           className="flex-1 py-2 rounded-2xl text-sm font-bold"
-          style={{ background: tab === "templates" ? C.ink : C.kraft, color: tab === "templates" ? C.paper : C.ink }}
+          style={{ background: tab === "templates" ? C.brand : C.kraft, color: tab === "templates" ? "#fff" : C.ink }}
         >
           רשימות קבועות
         </button>
@@ -11772,7 +11767,7 @@ function UnitRequestsAdmin({
                 </div>
                 {r.status === "submitted" ? (
                   <div className="flex flex-col gap-1.5">
-                    <button onClick={() => openReview(r)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.ink, color: C.paper }}>
+                    <button onClick={() => openReview(r)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.brand, color: "#fff" }}>
                       בדוק ונפק
                     </button>
                     <button
@@ -12004,7 +11999,7 @@ function RequestsHistory({ orderRequests, unitRequests, settings }) {
             key={val}
             onClick={() => setFilter(val)}
             className="px-3 py-1.5 rounded-full text-xs font-bold"
-            style={{ background: filter === val ? C.ink : C.kraft, color: filter === val ? C.paper : C.ink, border: `1px solid ${C.kraftDark}` }}
+            style={{ background: filter === val ? C.brand : C.kraft, color: filter === val ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
           >
             {label}
           </button>
@@ -12147,14 +12142,14 @@ function OrderRequestsAdmin({ orderRequests, persistOrderRequests, settings, pro
         <button
           onClick={() => { setTab("pending"); setEditing(null); }}
           className="flex-1 py-2 rounded-2xl text-sm font-bold"
-          style={{ background: tab === "pending" ? C.ink : C.kraft, color: tab === "pending" ? C.paper : C.ink }}
+          style={{ background: tab === "pending" ? C.brand : C.kraft, color: tab === "pending" ? "#fff" : C.ink }}
         >
           ממתינות{pendingCount > 0 ? ` (${pendingCount})` : ""}
         </button>
         <button
           onClick={() => { setTab("history"); setEditing(null); }}
           className="flex-1 py-2 rounded-2xl text-sm font-bold"
-          style={{ background: tab === "history" ? C.ink : C.kraft, color: tab === "history" ? C.paper : C.ink }}
+          style={{ background: tab === "history" ? C.brand : C.kraft, color: tab === "history" ? "#fff" : C.ink }}
         >
           היסטוריה
         </button>
@@ -12259,7 +12254,7 @@ function OrderRequestsAdmin({ orderRequests, persistOrderRequests, settings, pro
                     </>
                   ) : (
                     <>
-                      <button onClick={() => openReview(r)} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.ink, color: C.paper }}>
+                      <button onClick={() => openReview(r)} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.brand, color: "#fff" }}>
                         בדוק ואשר
                       </button>
                       <button onClick={() => reject(r)} className="px-3 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>
@@ -12347,8 +12342,8 @@ function TaskCategoriesAdmin({ taskCategories, persistTaskCategories, showToast 
                 style={{
                   width: 38,
                   height: 38,
-                  background: icon === ic ? C.ink : "#fff",
-                  border: `1.5px solid ${icon === ic ? C.ink : C.kraftDark}`,
+                  background: icon === ic ? C.brand : C.kraft,
+                  border: `1.5px solid ${icon === ic ? C.brand : C.kraftDark}`,
                 }}
               >
                 {ic}
@@ -12356,7 +12351,7 @@ function TaskCategoriesAdmin({ taskCategories, persistTaskCategories, showToast 
             ))}
           </div>
         </div>
-        <button onClick={add} className="py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
+        <button onClick={add} className="py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
           הוסף
         </button>
       </ShelfTag>
@@ -12385,8 +12380,8 @@ function TaskCategoriesAdmin({ taskCategories, persistTaskCategories, showToast 
                       style={{
                         width: 34,
                         height: 34,
-                        background: editIcon === ic ? C.ink : "#fff",
-                        border: `1.5px solid ${editIcon === ic ? C.ink : C.kraftDark}`,
+                        background: editIcon === ic ? C.brand : C.kraft,
+                        border: `1.5px solid ${editIcon === ic ? C.brand : C.kraftDark}`,
                       }}
                     >
                       {ic}
@@ -12755,7 +12750,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, persistProducts, sho
           </div>
         </div>
 
-        <button onClick={createMeal} className="py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
+        <button onClick={createMeal} className="py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
           שמור ארוחה
         </button>
       </ShelfTag>
@@ -12834,7 +12829,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, persistProducts, sho
             + הוסף תוספת
           </button>
           <div className="flex gap-2">
-            <button onClick={saveEdit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>שמור שינויים</button>
+            <button onClick={saveEdit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>שמור שינויים</button>
             <button onClick={() => setEditingId(null)} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
           </div>
         </ShelfTag>
@@ -13132,7 +13127,7 @@ function InvoiceScanner({ products, persistProducts, showToast, onClose }) {
             </p>
             <label
               className="block w-full text-center py-3 rounded-2xl font-bold cursor-pointer"
-              style={{ background: C.ink, color: C.paper }}
+              style={{ background: C.brand, color: "#fff" }}
             >
               {busy ? "קורא את החשבונית…" : "📷 צלם / העלה חשבונית"}
               <input type="file" accept="image/*" onChange={handleFile} style={{ display: "none" }} disabled={busy} />
@@ -13681,7 +13676,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
                   className="flex-1 p-2 rounded-xl border text-sm"
                   style={{ borderColor: C.kraftDark, background: C.kraft }}
                 />
-                <button onClick={addCategory} className="px-4 rounded-xl font-bold text-sm" style={{ background: C.ink, color: C.paper }}>
+                <button onClick={addCategory} className="px-4 rounded-xl font-bold text-sm" style={{ background: C.brand, color: "#fff" }}>
                   הוסף
                 </button>
               </div>
@@ -13765,7 +13760,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
           )}
         </div>
         <div className="flex gap-2">
-          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>
+          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
             {editingId ? "שמור שינויים" : "הוסף מוצר"}
           </button>
           {editingId && (
@@ -13796,7 +13791,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
             onClick={() => setVisFilter(id)}
             className="flex-1 py-2 rounded-2xl text-xs font-bold"
             style={{
-              background: visFilter === id ? C.ink : "#fff",
+              background: visFilter === id ? C.brand : C.kraft,
               color: visFilter === id ? "#fff" : C.ink,
               border: `1px solid ${C.kraftDark}`,
             }}
@@ -14091,7 +14086,7 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
         <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.paper, color: C.steel, border: `1px solid ${C.kraftDark}` }}>
           ℹ️ עובד חדש שנרשם רואה <b>משימות בלבד</b> כברירת מחדל. פתח לו מסכים נוספים כאן למטה, בעריכת העובד.
         </div>
-        <p className="text-xs mb-1" style={{ color: C.steel }}>או שתף ידנית את מזהה הארגון:</p>        <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.ink, color: "#fff", direction: "ltr", wordBreak: "break-all", fontFamily: "monospace" }}>
+        <p className="text-xs mb-1" style={{ color: C.steel }}>או שתף ידנית את מזהה הארגון:</p>        <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.brand, color: "#fff", direction: "ltr", wordBreak: "break-all", fontFamily: "monospace" }}>
           {currentUser.orgId}
         </div>
         <button onClick={copyOrgId} className="w-full py-1.5 rounded-xl text-xs font-bold mb-2" style={{ background: C.paper, color: C.ink }}>
@@ -14124,7 +14119,7 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
             className="flex-1 p-2 rounded-xl border text-sm"
             style={{ borderColor: C.kraftDark, direction: "ltr" }}
           />
-          <button onClick={saveApkUrl} className="px-3 rounded-xl font-bold text-sm" style={{ background: C.ink, color: C.paper }}>
+          <button onClick={saveApkUrl} className="px-3 rounded-xl font-bold text-sm" style={{ background: C.brand, color: "#fff" }}>
             שמור
           </button>
         </div>
@@ -14284,7 +14279,7 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
                                 }
                                 className="px-3 py-1.5 rounded-full text-xs font-bold"
                                 style={{
-                                  background: on ? col : "#fff",
+                                  background: on ? col : C.kraft,
                                   color: on ? "#fff" : col,
                                   border: `1.5px solid ${col}`,
                                 }}
@@ -14333,7 +14328,7 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
             );
           })()}
           <div className="flex gap-2">
-            <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.ink, color: C.paper }}>שמור שינויים</button>
+            <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>שמור שינויים</button>
             <button onClick={() => { setForm(null); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
           </div>
         </ShelfTag>
