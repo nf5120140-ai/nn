@@ -3406,6 +3406,7 @@ function App() {
     try { window.history.pushState({ appTab: tab }, ""); } catch (e) {}
   }, [tab]);
   const [showMenu, setShowMenu] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
   const [locked, setLocked] = useState(() => isBiometricEnabled());
   const [biometricPrompt, setBiometricPrompt] = useState(false);
   const [notifBanner, setNotifBanner] = useState(false);
@@ -4436,6 +4437,7 @@ function App() {
             showToast={showToast}
             notifyManagers={notifyManagers}
             notifyUser={notifyUser}
+            onOpenTask={(taskId) => { setFocusTaskId(taskId); setTab("tasks"); }}
             users={users}
             taskCategories={taskCategories}
             locations={locations}
@@ -4582,6 +4584,11 @@ function App() {
             >
               יציאה
             </button>
+            <p className="text-center text-xs pb-1">
+              <button onClick={() => { setShowPrivacy(true); setShowMenu(false); }} className="underline" style={{ color: C.steel, background: "none", border: "none", cursor: "pointer" }}>
+                מדיניות פרטיות
+              </button>
+            </p>
             <p className="text-center text-xs" style={{ color: C.steel }}>
               © כל הזכויות שמורות לנפתלי קמפה · ת.ז. 313****31
             </p>
@@ -4602,6 +4609,45 @@ function App() {
 
       {scannerOpen && (
         <BarcodeScanner onDetected={handleScanDetected} onClose={() => setScannerOpen(false)} />
+      )}
+
+      {showPrivacy && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setShowPrivacy(false)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 560, maxHeight: "90vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 18, margin: "0 auto" }}>
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>מדיניות פרטיות</div>
+              <button onClick={() => setShowPrivacy(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+            <div className="text-sm leading-relaxed" style={{ color: C.ink }}>
+              <p className="mb-3" style={{ color: C.steel }}>עודכן לאחרונה: {new Date().toLocaleDateString("he-IL")}</p>
+
+              <p className="mb-3">אפליקציית "ניהול משק חכם" ("האפליקציה") נועדה לניהול פנימי של מלאי, משימות, תפריטים והזמנות במוסד. מסמך זה מסביר איזה מידע נאסף, כיצד נשמר ובמה נעשה בו שימוש.</p>
+
+              <div className="font-bold mt-3 mb-1">איזה מידע נאסף</div>
+              <p className="mb-3">מידע תפעולי שאתה מזין: מוצרים ומלאי, משימות ותמונות שמצורפות אליהן, תפריטים, בקשות והזמנות, מקומות/חדרים, והערות. בנוסף נשמרים פרטי חשבון בסיסיים (שם משתמש ושיוך לארגון) לצורך התחברות והרשאות.</p>
+
+              <div className="font-bold mt-3 mb-1">היכן נשמר המידע</div>
+              <p className="mb-3">המידע נשמר בשרתי הענן של ספק התשתית (Supabase) המשמש את האפליקציה, וכן במטמון מקומי במכשיר שלך כדי לאפשר עבודה גם בחיבור אינטרנט לא יציב. הגישה למידע מוגבלת למשתמשים המשויכים לאותו ארגון.</p>
+
+              <div className="font-bold mt-3 mb-1">התראות (Push)</div>
+              <p className="mb-3">אם תאשר קבלת התראות, יישמר מזהה מנוי טכני לצורך שליחת התראות למכשיר. אפשר לבטל זאת בכל עת דרך הגדרות המכשיר או האפליקציה.</p>
+
+              <div className="font-bold mt-3 mb-1">סריקת חשבוניות</div>
+              <p className="mb-3">אם תשתמש בתכונת סריקת החשבונית, תמונת החשבונית נשלחת לשירות עיבוד חיצוני (Anthropic) לצורך זיהוי הטקסט בלבד, ואינה נשמרת אצל אותו שירות מעבר לעיבוד הבקשה.</p>
+
+              <div className="font-bold mt-3 mb-1">שימוש במידע</div>
+              <p className="mb-3">המידע משמש אך ורק להפעלת האפליקציה עבורך ועבור הארגון שלך. איננו מוכרים מידע, ואין באפליקציה פרסומות.</p>
+
+              <div className="font-bold mt-3 mb-1">שמירה וגיבוי</div>
+              <p className="mb-3">המידע נשמר כל עוד החשבון/הארגון פעיל. מנהל יכול לייצא גיבוי ולשחזר מידע דרך מסך הגיבוי באפליקציה.</p>
+
+              <div className="font-bold mt-3 mb-1">מחיקה ופניות</div>
+              <p className="mb-3">לבקשת מחיקת מידע או לכל שאלה בנושא פרטיות, ניתן לפנות לאחראי האפליקציה בטלפון 0585120140.</p>
+
+              <p className="text-xs mt-4" style={{ color: C.steel }}>מסמך זה הוא תמצית לנוחות המשתמשים ואינו מהווה ייעוץ משפטי.</p>
+            </div>
+          </div>
+        </div>
       )}
 
       {biometricPrompt && (
@@ -7923,7 +7969,7 @@ const MAP_STATUS = {
   done: { label: "נוקה", color: "#22C55E", text: "#fff" },
 };
 
-function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, showToast, notifyManagers, notifyUser, users, taskCategories, locations }) {
+function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, showToast, notifyManagers, notifyUser, onOpenTask, users, taskCategories, locations }) {
   const [activeBuilding, setActiveBuilding] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -8389,10 +8435,14 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
                     <div className="flex flex-col gap-2">
                       {openTasks.map((t) => (
                         <div key={t.id} className="flex items-center gap-2 p-2 rounded-xl" style={{ background: "#fff", border: `1px solid ${C.kraftDark}` }}>
-                          <div className="flex-1">
-                            <div className="text-sm font-bold" style={{ color: C.ink }}>{t.title}</div>
+                          <button
+                            onClick={() => { setSheetRoom(null); onOpenTask && onOpenTask(t.id); }}
+                            className="flex-1 text-right"
+                            style={{ background: "none", border: "none", cursor: "pointer" }}
+                          >
+                            <div className="text-sm font-bold" style={{ color: C.accent, textDecoration: "underline" }}>{t.title}</div>
                             {t.assignedToId ? null : <div className="text-xs" style={{ color: C.steel }}>לא משויך</div>}
-                          </div>
+                          </button>
                           <button
                             onClick={() => markTaskDoneFromRoom(t.id)}
                             className="px-3 py-1.5 rounded-full text-xs font-bold"
