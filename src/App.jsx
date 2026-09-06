@@ -29,6 +29,8 @@ const FONTS = `
 @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@500;700;900&family=Heebo:wght@300;400;500;700&display=swap');
 .wh-display { font-family: 'Rubik', sans-serif; }
 .wh-body { font-family: 'Heebo', sans-serif; }
+/* Dark mode is done by inverting the whole page; re-invert real photos/media so they look normal. */
+html.dark-mode img, html.dark-mode video, html.dark-mode canvas { filter: invert(1) hue-rotate(180deg); }
 `;
 
 /* ---------- Storage helpers ---------- */
@@ -3173,12 +3175,34 @@ function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyMan
 
 function AccessibilityWidget() {
   const KEY = "kitchen-a11y";
-  const DEFAULTS = { fontScale: 1, contrast: false, grayscale: false, invert: false, readable: false, spacing: false, nomotion: false, focus: false };
+  const DEFAULTS = { fontScale: 1, darkMode: "auto", contrast: false, grayscale: false, invert: false, readable: false, spacing: false, nomotion: false, focus: false };
   const [open, setOpen] = useState(false);
   const [s, setS] = useState(() => {
-    try { return { ...DEFAULTS, ...(JSON.parse(localStorage.getItem(KEY) || "{}")) }; }
-    catch (e) { return { ...DEFAULTS }; }
+    try {
+      const saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+      // migrate the old boolean `dark` to the new tri-state
+      if (saved.darkMode === undefined && saved.dark !== undefined) saved.darkMode = saved.dark ? "on" : "auto";
+      delete saved.dark;
+      return { ...DEFAULTS, ...saved };
+    } catch (e) { return { ...DEFAULTS }; }
   });
+
+  // Follow the phone's system dark setting when darkMode is "auto".
+  const [sysDark, setSysDark] = useState(() => {
+    try { return window.matchMedia("(prefers-color-scheme: dark)").matches; } catch (e) { return false; }
+  });
+  useEffect(() => {
+    let mq;
+    try { mq = window.matchMedia("(prefers-color-scheme: dark)"); } catch (e) { return; }
+    const handler = (e) => setSysDark(e.matches);
+    if (mq.addEventListener) mq.addEventListener("change", handler);
+    else if (mq.addListener) mq.addListener(handler);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", handler);
+      else if (mq.removeListener) mq.removeListener(handler);
+    };
+  }, []);
+  const effectiveDark = s.darkMode === "on" ? true : s.darkMode === "off" ? false : sysDark;
 
   // One-time class-based rules (no filters/transforms here, so they never affect layout positioning).
   useEffect(() => {
@@ -3199,15 +3223,17 @@ function AccessibilityWidget() {
     const html = document.documentElement;
     try { html.style.zoom = s.fontScale && s.fontScale !== 1 ? String(s.fontScale) : ""; } catch (e) {}
     const f = [];
+    if (effectiveDark) f.push("invert(1) hue-rotate(180deg)");
     if (s.contrast) f.push("contrast(1.35)");
     if (s.grayscale) f.push("grayscale(1)");
     if (s.invert) f.push("invert(1) hue-rotate(180deg)");
     html.style.filter = f.join(" ");
+    html.classList.toggle("dark-mode", !!effectiveDark);
     html.classList.toggle("acc-readable", !!s.readable);
     html.classList.toggle("acc-spacing", !!s.spacing);
     html.classList.toggle("acc-nomotion", !!s.nomotion);
     html.classList.toggle("acc-focus", !!s.focus);
-  }, [s]);
+  }, [s, effectiveDark]);
 
   const setKey = (k, v) => setS((cur) => ({ ...cur, [k]: v }));
   const toggle = (k) => setS((cur) => ({ ...cur, [k]: !cur[k] }));
@@ -3258,6 +3284,27 @@ function AccessibilityWidget() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
               <div style={{ fontWeight: 800, fontSize: 18, color: C.ink }}>♿ הגדרות נגישות</div>
               <button onClick={() => setOpen(false)} style={{ background: C.ink, color: "#fff", border: "none", borderRadius: 999, padding: "5px 14px", fontWeight: 700, cursor: "pointer" }}>סגור</button>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.steel, marginBottom: 6 }}>
+                מצב תצוגה {s.darkMode === "auto" ? `(אוטומטי — כרגע ${sysDark ? "חשוך" : "בהיר"})` : ""}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {[["auto", "📱 אוטומטי"], ["off", "☀️ בהיר"], ["on", "🌙 חשוך"]].map(([val, label]) => (
+                  <button
+                    key={val}
+                    onClick={() => setKey("darkMode", val)}
+                    style={{
+                      flex: 1, padding: "11px 4px", borderRadius: 12, cursor: "pointer", fontWeight: 800, fontSize: 14,
+                      border: `2px solid ${s.darkMode === val ? C.accent : C.kraftDark}`,
+                      background: s.darkMode === val ? "#E8F1FB" : "#fff", color: C.ink,
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div style={{ marginBottom: 12 }}>
