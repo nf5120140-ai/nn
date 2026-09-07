@@ -13286,6 +13286,13 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
   const [importing, setImporting] = useState(false);
   const [pasteMode, setPasteMode] = useState(false);
   const [pasteText, setPasteText] = useState("");
+  const [namesMode, setNamesMode] = useState(false);
+  const [namesText, setNamesText] = useState("");
+  const [namesRows, setNamesRows] = useState(null); // null while typing; array once previewing
+  const [nDefUnit, setNDefUnit] = useState("יח׳");
+  const [nDefThreshold, setNDefThreshold] = useState(1);
+  const [nDefCategory, setNDefCategory] = useState("");
+  const [nDefSupplier, setNDefSupplier] = useState("");
   const [adminSearch, setAdminSearch] = useState("");
   const [visFilter, setVisFilter] = useState("all"); // all | open | hidden
   const [selectedIds, setSelectedIds] = useState([]);
@@ -13496,6 +13503,45 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
     }
   }
 
+  function parseNamesList() {
+    const lines = namesText.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) { showToast("הדבק שמות מוצרים - שם לכל שורה"); return; }
+    const rows = lines.map((l) => {
+      const parts = l.split(/[,\t]/).map((x) => x.trim());
+      const name = parts[0];
+      const qtyRaw = parts[1];
+      const qty = qtyRaw !== undefined && qtyRaw !== "" && !isNaN(Number(qtyRaw)) ? Number(qtyRaw) : 0;
+      return { name, qty };
+    }).filter((r) => r.name);
+    setNamesRows(rows);
+  }
+
+  async function addNamesList() {
+    const rows = namesRows || [];
+    const normName = (s) => String(s).trim().toLowerCase();
+    let next = [...products];
+    let added = 0, skipped = 0;
+    for (const r of rows) {
+      const nm = (r.name || "").trim();
+      if (!nm) continue;
+      if (next.some((p) => normName(p.name) === normName(nm))) { skipped++; continue; }
+      next.push({
+        ...empty,
+        id: genId(),
+        name: nm,
+        quantity: Number(r.qty) || 0,
+        threshold: Number(nDefThreshold) || 1,
+        unit: nDefUnit || "יח׳",
+        category: nDefCategory || "",
+        supplierId: nDefSupplier || "",
+      });
+      added++;
+    }
+    await persistProducts(next);
+    showToast(`נוספו ${added} מוצרים${skipped ? `, דילגתי על ${skipped} שכבר קיימים` : ""}`);
+    setNamesMode(false); setNamesText(""); setNamesRows(null);
+  }
+
   async function handlePasteImport() {
     if (!pasteText.trim()) return showToast("הדבק קודם נתונים בתיבה");
     setImporting(true);
@@ -13589,6 +13635,82 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
             📋 הדבקת נתונים
           </button>
         </div>
+        <button
+          onClick={() => { setNamesMode((v) => !v); setNamesRows(null); }}
+          className="w-full mt-2 py-2 rounded-2xl font-bold text-sm"
+          style={{ background: C.ink, color: C.paper }}
+        >
+          📝 הדבקת רשימת שמות (והגדרת כמויות)
+        </button>
+
+        {namesMode && (
+          <div className="mt-2 p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+            {!namesRows ? (
+              <>
+                <p className="text-xs mb-2" style={{ color: C.steel }}>
+                  הדבק שמות מוצרים - שם אחד לכל שורה. אפשר גם "שם, כמות" (למשל: אורז, 20).
+                </p>
+                <textarea
+                  value={namesText}
+                  onChange={(e) => setNamesText(e.target.value)}
+                  placeholder={"אורז\nסוכר\nשמן, 12\nקמח"}
+                  rows={7}
+                  className="w-full p-2 rounded-2xl border text-sm mb-2"
+                  style={{ borderColor: C.kraftDark }}
+                />
+                <button onClick={parseNamesList} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
+                  המשך להגדרת כמויות ←
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="text-xs font-bold mb-1" style={{ color: C.ink }}>הגדרות שיחולו על כל המוצרים:</div>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <input value={nDefUnit} onChange={(e) => setNDefUnit(e.target.value)} placeholder="יחידה (יח׳)" className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark }} />
+                  <input type="number" value={nDefThreshold} onChange={(e) => setNDefThreshold(e.target.value)} placeholder="סף מינימום" className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark }} />
+                  <select value={nDefCategory} onChange={(e) => setNDefCategory(e.target.value)} className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft }}>
+                    <option value="">בלי קטגוריה</option>
+                    {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <select value={nDefSupplier} onChange={(e) => setNDefSupplier(e.target.value)} className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft }}>
+                    <option value="">בלי ספק</option>
+                    {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+                <div className="text-xs font-bold mb-1" style={{ color: C.ink }}>{namesRows.length} מוצרים - קבע כמות לכל אחד:</div>
+                <div className="flex flex-col gap-1 mb-3" style={{ maxHeight: 260, overflowY: "auto" }}>
+                  {namesRows.map((r, i) => (
+                    <div key={i} className="flex items-center gap-2">
+                      <input
+                        value={r.name}
+                        onChange={(e) => setNamesRows((rows) => rows.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
+                        className="flex-1 p-1.5 rounded-lg border text-sm"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                      <input
+                        type="number"
+                        value={r.qty}
+                        onChange={(e) => setNamesRows((rows) => rows.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))}
+                        placeholder="כמות"
+                        className="w-16 p-1.5 text-center rounded-lg border text-sm"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                      <button onClick={() => setNamesRows((rows) => rows.filter((_, j) => j !== i))} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={addNamesList} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+                    ➕ הוסף {namesRows.length} מוצרים
+                  </button>
+                  <button onClick={() => setNamesRows(null)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                    חזור
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
         <p className="text-xs mt-1 text-center" style={{ color: C.steel }}>
           עמודות מזוהות: שם מוצר, ברקוד, כמות, סף מינימום, מחיר, יחידה. אם יש ברקוד - מתאים לפיו; אם אין ברקוד - מתאים לפי שם מדויק. במקרה של התאמה, המוצר מתעדכן ולא מתווסף כפול.
         </p>
