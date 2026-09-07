@@ -13531,7 +13531,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
         name: nm,
         quantity: Number(r.qty) || 0,
         threshold: Number(nDefThreshold) || 1,
-        unit: nDefUnit || "יח׳",
+        unit: r.unit || nDefUnit || "יח׳",
         category: nDefCategory || "",
         supplierId: nDefSupplier || "",
       });
@@ -13666,7 +13666,13 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
               <>
                 <div className="text-xs font-bold mb-1" style={{ color: C.ink }}>הגדרות שיחולו על כל המוצרים:</div>
                 <div className="grid grid-cols-2 gap-2 mb-3">
-                  <input value={nDefUnit} onChange={(e) => setNDefUnit(e.target.value)} placeholder="יחידה (יח׳)" className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark }} />
+                  <select value={nDefUnit} onChange={(e) => setNDefUnit(e.target.value)} className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}>
+                    <option value="יח׳">יחידה ברירת מחדל: יח׳</option>
+                    <option value="קרטון">ברירת מחדל: קרטון</option>
+                    <option value="ארגז">ברירת מחדל: ארגז</option>
+                    <option value="שק">ברירת מחדל: שק</option>
+                    <option value='ק"ג'>ברירת מחדל: ק"ג</option>
+                  </select>
                   <input type="number" value={nDefThreshold} onChange={(e) => setNDefThreshold(e.target.value)} placeholder="סף מינימום" className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark }} />
                   <select value={nDefCategory} onChange={(e) => setNDefCategory(e.target.value)} className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft }}>
                     <option value="">בלי קטגוריה</option>
@@ -13677,10 +13683,10 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
                     {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                   </select>
                 </div>
-                <div className="text-xs font-bold mb-1" style={{ color: C.ink }}>{namesRows.length} מוצרים - קבע כמות לכל אחד:</div>
+                <div className="text-xs font-bold mb-1" style={{ color: C.ink }}>{namesRows.length} מוצרים - קבע כמות ויחידה לכל אחד:</div>
                 <div className="flex flex-col gap-1 mb-3" style={{ maxHeight: 260, overflowY: "auto" }}>
                   {namesRows.map((r, i) => (
-                    <div key={i} className="flex items-center gap-2">
+                    <div key={i} className="flex items-center gap-1.5">
                       <input
                         value={r.name}
                         onChange={(e) => setNamesRows((rows) => rows.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
@@ -13692,9 +13698,23 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
                         value={r.qty}
                         onChange={(e) => setNamesRows((rows) => rows.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))}
                         placeholder="כמות"
-                        className="w-16 p-1.5 text-center rounded-lg border text-sm"
+                        className="w-14 p-1.5 text-center rounded-lg border text-sm"
                         style={{ borderColor: C.kraftDark }}
                       />
+                      <select
+                        value={r.unit ?? nDefUnit}
+                        onChange={(e) => setNamesRows((rows) => rows.map((x, j) => (j === i ? { ...x, unit: e.target.value } : x)))}
+                        className="p-1.5 rounded-lg border text-sm"
+                        style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}
+                      >
+                        <option value="יח׳">יח׳</option>
+                        <option value="קרטון">קרטון</option>
+                        <option value="ארגז">ארגז</option>
+                        <option value="שק">שק</option>
+                        <option value='ק"ג'>ק"ג</option>
+                        <option value="מארז">מארז</option>
+                        <option value="בקבוק">בקבוק</option>
+                      </select>
                       <button onClick={() => setNamesRows((rows) => rows.filter((_, j) => j !== i))} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
                     </div>
                   ))}
