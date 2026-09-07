@@ -3092,7 +3092,9 @@ function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyMan
       createdBy: name.trim() || "בחור",
       comments: [],
     };
-    await persistTasks([created, ...tasks]);
+    let baseTasks = tasks;
+    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
+    await persistTasks([created, ...baseTasks]);
     if (notifyManagers) notifyManagers(`🛠️ דיווח חדש מ${created.createdBy}: ${title}`, { tab: "tasks" });
     setSent(true);
     setName(""); setCategoryId(""); setLocQuery(""); setLocationId(""); setShowSug(false); setDesc(""); setUrgent(false);
@@ -3700,7 +3702,21 @@ function App() {
     let unsubscribe = () => {};
     const reloadMap = {
       [KEYS.products]: async () => setProducts((await loadKey(KEYS.products, [])) || []),
-      [KEYS.tasks]: async () => setTasks((await loadKey(KEYS.tasks, [])) || []),
+      [KEYS.tasks]: async () => {
+        const server = (await loadKey(KEYS.tasks, [])) || [];
+        // Never let an incoming sync reopen a task we just closed: if our local copy has a
+        // newer status change (bigger statusAt) than the server's, keep ours for that task.
+        setTasks((local) => {
+          const byId = new Map((local || []).map((t) => [t.id, t]));
+          return server.map((st) => {
+            const lt = byId.get(st.id);
+            if (lt && (lt.statusAt || 0) > (st.statusAt || 0)) {
+              return { ...st, status: lt.status, completedAt: lt.completedAt, statusAt: lt.statusAt };
+            }
+            return st;
+          });
+        });
+      },
       [KEYS.settings]: async () => setSettings((await loadKey(KEYS.settings, { supplierPhone: "" })) || { supplierPhone: "" }),
       [KEYS.notifications]: async () => setNotifications((await loadKey(KEYS.notifications, [])) || []),
       [KEYS.menuItems]: async () => setMenuItems((await loadKey(KEYS.menuItems, [])) || []),
@@ -3824,12 +3840,17 @@ function App() {
 
     async function checkFollowUps() {
       const now = Date.now();
-      const due = tasks.filter(
+      // Read the freshest list from the server first. This effect captures `tasks`
+      // once at mount, so without this the 5-min timer would re-save a stale list and
+      // silently reopen every task closed since mount.
+      let base = tasks;
+      try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) base = latest; } catch (e) {}
+      const due = base.filter(
         (t) => t.followUpAt && !t.followUpFiredAt && t.followUpAt <= now && t.status !== "done"
       );
       if (due.length === 0) return;
 
-      const next = tasks.map((t) =>
+      const next = base.map((t) =>
         due.some((d) => d.id === t.id) ? { ...t, followUpFiredAt: now } : t
       );
       await persistTasks(next);
@@ -8059,7 +8080,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
       const latest = await loadKey(KEYS.tasks, null);
       if (Array.isArray(latest)) base = latest;
     } catch (e) {}
-    await persistTasks(base.map((t) => (t.id === taskId ? { ...t, status: "done", completedAt: Date.now() } : t)));
+    await persistTasks(base.map((t) => (t.id === taskId ? { ...t, status: "done", completedAt: Date.now(), statusAt: Date.now() } : t)));
   }
 
   // Create a full task (any kind, not just cleaning) tied to a room.
@@ -8576,8 +8597,17 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusTaskId]);
 
+  // Every task mutation reads the freshest list from the server first, so a change made
+  // on another device (e.g. a worker closing a task) is never overwritten by this device's
+  // older in-memory copy. This is the main guard against "closed tasks reopening".
+  async function freshTasks() {
+    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) return latest; } catch (e) {}
+    return tasks;
+  }
+
   async function saveTask(updated) {
-    const next = tasks.map((t) => (t.id === updated.id ? updated : t));
+    const base = await freshTasks();
+    const next = base.map((t) => (t.id === updated.id ? updated : t));
     await persistTasks(next);
     setDetailTask(updated);
   }
@@ -8593,8 +8623,9 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
     .sort((a, b) => b.createdAt - a.createdAt);
 
   async function saveEdit(updated) {
-    const original = tasks.find((t) => t.id === updated.id);
-    const next = tasks.map((t) => (t.id === updated.id ? { ...t, ...updated } : t));
+    const base = await freshTasks();
+    const original = base.find((t) => t.id === updated.id);
+    const next = base.map((t) => (t.id === updated.id ? { ...t, ...updated } : t));
     await persistTasks(next);
     setEditingTask(null);
     showToast("המשימה עודכנה");
@@ -8614,14 +8645,15 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
     } catch (e) { /* offline - fall back to in-memory */ }
     const next = base.map((t) =>
       t.id === task.id
-        ? { ...t, status, completedAt: status === "done" ? Date.now() : null }
+        ? { ...t, status, completedAt: status === "done" ? Date.now() : null, statusAt: Date.now() }
         : t
     );
     await persistTasks(next);
   }
 
   async function reassign(task, assignedToId) {
-    const next = tasks.map((t) => (t.id === task.id ? { ...t, assignedToId } : t));
+    const base = await freshTasks();
+    const next = base.map((t) => (t.id === task.id ? { ...t, assignedToId } : t));
     await persistTasks(next);
     if (notifyUser && assignedToId !== task.assignedToId) {
       notifyUser(assignedToId, `שויכה אליך משימה: ${task.title}`, { tab: "tasks", taskId: task.id });
@@ -8629,7 +8661,8 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
   }
 
   async function deleteTask(task) {
-    const next = tasks.filter((t) => t.id !== task.id);
+    const base = await freshTasks();
+    const next = base.filter((t) => t.id !== task.id);
     await persistTasks(next);
     showToast("המשימה נמחקה");
   }
@@ -8637,7 +8670,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
   async function addTask(newTask) {
     const { notifyNow, ...rest } = newTask;
     const created = { ...rest, id: genId(), createdAt: Date.now(), createdBy: currentUser.name, createdById: currentUser.id, status: "open", comments: [] };
-    const next = [...tasks, created];
+    const next = [...(await freshTasks()), created];
     await persistTasks(next);
     setShowNew(false);
     showToast("המשימה נוצרה");
