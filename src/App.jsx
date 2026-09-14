@@ -6541,6 +6541,22 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
   }
 
   // Record a sent order into the history. Used by every send path (channel + WhatsApp).
+  // Duplicate a past order into the review sheet: edit, add products, and send again.
+  function reorderFromHistory(o) {
+    const items = (o.items || [])
+      .map((it) => {
+        const product = products.find((p) => p.name === it.name)
+          || { id: "hist-" + genId(), name: it.name, unit: it.unit || "", price: Number(it.price) || 0, quantity: 0 };
+        return { product, qty: Number(it.qty) || 1 };
+      })
+      .filter((r) => Number(r.qty) > 0);
+    if (items.length === 0) { showToast("אין פריטים לשכפול"); return; }
+    const supplierId = o.supplierId || "__unassigned__";
+    setSelectedSupplierId(supplierId !== "__unassigned__" && suppliers.some((s) => s.id === supplierId) ? supplierId : "__manual__");
+    setEditingDraftId(null);
+    setPendingOrder({ items, title: o.supplierName || "הזמנה", supplierId, isRequest: !mayApprove, sourceLabel: "שכפול מהיסטוריה" });
+  }
+
   function logOrderToHistory(items, title, supplierId, channelUsed) {
     if (!recordOrder) return;
     const supName = supplierId && supplierId !== "__unassigned__"
@@ -6988,6 +7004,13 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                     </div>
                   </details>
                 )}
+                <button
+                  onClick={() => reorderFromHistory(o)}
+                  className="w-full mt-2 py-2 rounded-2xl font-bold text-sm"
+                  style={{ background: C.accent, color: "#fff" }}
+                >
+                  🔁 שכפל, ערוך ושלח שוב
+                </button>
               </ShelfTag>
             ))
           )}
