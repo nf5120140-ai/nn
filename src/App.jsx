@@ -3466,6 +3466,33 @@ function App() {
   }, [tab]);
   const [showMenu, setShowMenu] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
+  const [kioskOn, setKioskOn] = useState(false);
+  const wakeLockRef = useRef(null);
+
+  async function acquireWakeLock() {
+    try {
+      if ("wakeLock" in navigator) wakeLockRef.current = await navigator.wakeLock.request("screen");
+    } catch (e) { /* not supported / denied */ }
+  }
+  async function toggleKiosk() {
+    if (!kioskOn) {
+      try { await (document.documentElement.requestFullscreen && document.documentElement.requestFullscreen()); } catch (e) {}
+      await acquireWakeLock();
+      setKioskOn(true);
+    } else {
+      try { if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen(); } catch (e) {}
+      try { if (wakeLockRef.current) { await wakeLockRef.current.release(); wakeLockRef.current = null; } } catch (e) {}
+      setKioskOn(false);
+    }
+  }
+  // Re-acquire the wake lock after the screen was off / app was backgrounded.
+  useEffect(() => {
+    function onVis() {
+      if (kioskOn && document.visibilityState === "visible" && !wakeLockRef.current) acquireWakeLock();
+    }
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [kioskOn]);
   const [locked, setLocked] = useState(() => isBiometricEnabled());
   const [biometricPrompt, setBiometricPrompt] = useState(false);
   const [notifBanner, setNotifBanner] = useState(false);
@@ -4646,6 +4673,13 @@ function App() {
             )}
             <NotificationsToggle showToast={showToast} />
             <BiometricToggle currentUser={currentUser} showToast={showToast} />
+            <button
+              onClick={() => { toggleKiosk(); setShowMenu(false); }}
+              className="mx-3 mb-2 py-2 rounded-2xl font-bold text-sm"
+              style={{ background: kioskOn ? C.brand : C.kraft, color: kioskOn ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              🖥️ {kioskOn ? "צא ממסך מלא" : "מסך מלא (קיוסק)"}
+            </button>
             {isManager(currentUser) && (
               <button
                 onClick={() => { setBackupOpen(true); setShowMenu(false); }}
