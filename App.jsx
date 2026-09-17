@@ -1,0 +1,14638 @@
+import React, { useState, useEffect, useRef, useCallback } from "react";
+import * as XLSX from "xlsx";
+
+/* ---------- Design tokens ---------- */
+const C = {
+  ink: "var(--c-ink)",
+  paper: "var(--c-paper)",
+  kraft: "var(--c-kraft)",
+  kraftDark: "var(--c-kraftDark)",
+  stamp: "var(--c-stamp)",
+  mustard: "var(--c-mustard)",
+  sage: "var(--c-sage)",
+  steel: "var(--c-steel)",
+  accent: "var(--c-accent)",
+  accent2: "var(--c-accent2)",
+  brand: "var(--c-brand)",   // dark surface for primary buttons/headers (stays dark in both themes)
+};
+const RADIUS = "20px";
+
+const CATEGORY_COLORS = [
+  "#7C5CFC", "#FF7EB6", "#2EC4B6", "#FFB347", "#FF5A5F", "#4F86F7", "#38C172", "#F7B733",
+];
+function categoryColor(name) {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) >>> 0;
+  return CATEGORY_COLORS[hash % CATEGORY_COLORS.length];
+}
+
+const FONTS = `
+@import url('https://fonts.googleapis.com/css2?family=Rubik:wght@500;700;900&family=Heebo:wght@300;400;500;700&display=swap');
+.wh-display { font-family: 'Rubik', sans-serif; }
+.wh-body { font-family: 'Heebo', sans-serif; }
+:root {
+  --c-ink:#14213D; --c-paper:#F3F6FB; --c-kraft:#FFFFFF; --c-kraftDark:#DCE4F0;
+  --c-stamp:#FF5A5F; --c-mustard:#FFB347; --c-sage:#5CB85C; --c-steel:#5B6B85;
+  --c-accent:#2E86C4; --c-accent2:#5CB85C;
+  --c-brand:#14213D;
+}
+html.dark-mode {
+  --c-ink:#E7ECF5; --c-paper:#0E1424; --c-kraft:#182031; --c-kraftDark:#2C3648;
+  --c-stamp:#FF6B6F; --c-mustard:#E8A84D; --c-sage:#57B45E; --c-steel:#9BA8C2;
+  --c-accent:#4A9FE0; --c-accent2:#57B45E; --c-brand:#2F5A8C;
+}
+html.dark-mode, html.dark-mode body { background: #0E1424; }
+`;
+
+/* ---------- Storage helpers ---------- */
+const KEYS = {
+  users: "kitchen-users",
+  products: "kitchen-products",
+  tasks: "kitchen-tasks",
+  settings: "kitchen-settings",
+  notifications: "kitchen-notifications",
+  menuItems: "kitchen-menu-items",
+  weeklyMenu: "kitchen-weekly-menu",
+  savedMenus: "kitchen-saved-menus",
+  mapRooms: "kitchen-map-rooms",
+  reminders: "kitchen-reminders",
+  stockLog: "kitchen-stock-log",
+  orderHistory: "kitchen-order-history",
+  locations: "kitchen-locations",
+  dishTypes: "kitchen-dish-types",
+  taskCategories: "kitchen-task-categories",
+  orderRequests: "kitchen-order-requests",
+  orderDrafts: "kitchen-order-drafts",
+  unitRequests: "kitchen-unit-requests",
+  unitTemplates: "kitchen-unit-templates",
+  personalPurchases: "kitchen-personal-purchases",
+  messages: "kitchen-messages",
+  chatReads: "kitchen-chat-reads",
+};
+
+const SETUP_SQL = `create table kv_store (
+  key text not null,
+  shared boolean not null default true,
+  value jsonb not null,
+  updated_at timestamptz default now(),
+  primary key (key, shared)
+);
+
+alter table kv_store enable row level security;
+
+create policy allow_all on kv_store for all using (true) with check (true);`;
+
+const WEEK_DAYS = [
+  ["sunday", "יום ראשון"],
+  ["monday", "יום שני"],
+  ["tuesday", "יום שלישי"],
+  ["wednesday", "יום רביעי"],
+  ["thursday", "יום חמישי"],
+  ["friday", "יום שישי"],
+  ["saturday", "שבת"],
+];
+function weekdayDateLabel(idx, weekStart) {
+  const d = weekStart ? parseIsoLocal(weekStart) : parseIsoLocal(weekStartIso());
+  d.setDate(d.getDate() + idx);
+  return d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+}
+const MEAL_SLOTS = [
+  ["lunch", "צהריים"],
+  ["dinner", "ערב"],
+];
+
+/* ---------- Offline layer ----------
+   Everything is mirrored into IndexedDB (not localStorage - photos would blow past
+   the 5MB quota). Writes go to the cache first and are queued when there's no
+   network, then flushed to Supabase automatically once we're back online.
+   Conflict policy: last-write-wins per key, and a key with unflushed local changes
+   is never overwritten by a remote read. */
+
+const IDB_NAME = "kitchen-offline";
+const IDB_STORE = "kv";
+const DIRTY_KEYS_LS = "kitchen-dirty-keys";
+// Counts writes currently in flight per namespaced key, so the dirty guard stays
+// on until the last concurrent write to that key commits (prevents a realtime
+// reload from reverting an optimistic update mid-write).
+const inFlightWrites = new Map();
+
+let idbPromise = null;
+function openIdb() {
+  if (idbPromise) return idbPromise;
+  idbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  return idbPromise;
+}
+
+async function cacheGet(key) {
+  try {
+    const db = await openIdb();
+    return await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readonly");
+      const req = tx.objectStore(IDB_STORE).get(key);
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error);
+    });
+  } catch (e) {
+    console.error("cacheGet failed", key, e);
+    return undefined;
+  }
+}
+
+async function cacheSet(key, value) {
+  try {
+    const db = await openIdb();
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(IDB_STORE, "readwrite");
+      tx.objectStore(IDB_STORE).put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch (e) {
+    console.error("cacheSet failed", key, e);
+  }
+}
+
+/* The dirty list is tiny, so plain localStorage is fine and lets us read it synchronously. */
+function getDirtyKeys() {
+  try {
+    return JSON.parse(localStorage.getItem(DIRTY_KEYS_LS) || "[]");
+  } catch (e) {
+    return [];
+  }
+}
+function setDirtyKeys(keys) {
+  try {
+    localStorage.setItem(DIRTY_KEYS_LS, JSON.stringify(keys));
+  } catch (e) {}
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new CustomEvent("kitchen-sync-changed", { detail: keys.length }));
+  }
+}
+function markDirty(key) {
+  const d = getDirtyKeys();
+  if (!d.includes(key)) setDirtyKeys([...d, key]);
+}
+function clearDirty(key) {
+  setDirtyKeys(getDirtyKeys().filter((k) => k !== key));
+}
+
+/* ---------- Roles & permissions ----------
+   manager    - full access, the only role that can send an order to a supplier
+   supervisor - "מנהל מטבח": sees exactly the tabs and admin screens the manager grants,
+                and submits order requests for approval instead of sending them out
+   worker     - tab-level permissions only */
+const ROLES = [
+  { id: "manager", label: "מנהל ראשי", desc: "גישה מלאה, מאשר הזמנות" },
+  { id: "supervisor", label: "מנהל מטבח", desc: "גישה חלקית, שולח בקשות הזמנה לאישור" },
+  { id: "staff", label: "עובד", desc: "גישה בסיסית לפי הרשאות" },
+];
+function roleLabel(role) {
+  return ROLES.find((r) => r.id === role)?.label || "עובד";
+}
+
+/* Admin screens a supervisor can be granted. Managers always get all of them. */
+const ADMIN_SECTIONS = [
+  { id: "products", label: "מוצרים" },
+  { id: "menu", label: "תפריט" },
+  { id: "dishtypes", label: "סוגי מנות" },
+  { id: "taskcats", label: "קטגוריות משימות" },
+  { id: "locations", label: "מקומות" },
+  { id: "reminders", label: "תזכורות" },
+  { id: "analytics", label: "אנליטיקה" },
+  { id: "personal", label: "קניות פרטיות" },
+  { id: "orderrequests", label: "בקשות הזמנה" },
+  { id: "unitrequests", label: "בקשות מהמחסן" },
+  { id: "reqhistory", label: "היסטוריית בקשות" },
+  { id: "users", label: "עובדים" },
+  { id: "settings", label: "הגדרות" },
+];
+
+/* New users start locked down: tasks only. The manager opens up whatever else they need
+   per-user in the employees screen. */
+const DEFAULT_PERMISSIONS = {
+  inventory: false,
+  order: false,
+  tasks: true,
+  unitRequest: false,
+  taskScope: "own",            // "own" | "categories" | "all"
+  visibleTaskCategories: [],   // used only when taskScope === "categories"
+  admin: {},
+};
+
+/**
+ * Which tasks may this user see? Managers see everything.
+ * "own"        - only what's assigned to them (the default for a new worker)
+ * "categories" - their own tasks, plus anything in the categories the manager opened
+ * "all"        - everything
+ */
+function visibleTasksFor(user, tasks) {
+  if (isManager(user)) return tasks;
+  const perms = { ...DEFAULT_PERMISSIONS, ...(user?.permissions || {}) };
+  const scope = perms.taskScope || "own";
+
+  if (scope === "all") return tasks;
+
+  if (scope === "categories") {
+    const allowed = perms.visibleTaskCategories || [];
+    return tasks.filter(
+      (t) => t.assignedToId === user.id || (t.categoryId && allowed.includes(t.categoryId))
+    );
+  }
+
+  return tasks.filter((t) => t.assignedToId === user.id);
+}
+
+/** A "unit" (e.g. the daycare) requests goods out of OUR stock, not from a supplier. */
+function canRequestFromStock(user) {
+  return isManager(user) || user?.permissions?.unitRequest === true;
+}
+
+const isManager = (u) => u?.role === "manager";
+const isSupervisor = (u) => u?.role === "supervisor";
+
+/** Can this user open a given admin screen? */
+function canSeeAdminSection(user, sectionId) {
+  if (isManager(user)) return true;
+  if (!isSupervisor(user)) return false;
+  return !!user?.permissions?.admin?.[sectionId];
+}
+/** Does this user have any admin screen at all (i.e. should the "ניהול" menu item show)? */
+function hasAnyAdminSection(user) {
+  if (isManager(user)) return true;
+  if (!isSupervisor(user)) return false;
+  return ADMIN_SECTIONS.some((s) => user?.permissions?.admin?.[s.id]);
+}
+/** Only a manager may push an order out to a supplier. Everyone else requests approval. */
+function canSendOrders(user) {
+  return isManager(user);
+}
+
+const isOnline = () => (typeof navigator === "undefined" ? true : navigator.onLine !== false);
+
+const PROFILE_CACHE_KEY = "kitchen-cached-profile";
+function cachedProfile() {
+  try {
+    const raw = localStorage.getItem(PROFILE_CACHE_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/* ---------- Per-organization data isolation ----------
+   Every stored key is namespaced by the logged-in user's org, so two institutions
+   never share the same row in kv_store. The base keys (KEYS.*) are used everywhere
+   in the app; the org prefix is added ONLY here, at the storage boundary, so all
+   call sites and the offline cache and the dirty queue are isolated automatically.
+   Legacy rows written before this change carry no prefix and are migrated per-org
+   from the backup screen. */
+let ACTIVE_ORG = null;
+const ACTIVE_ORG_LS = "kitchen-active-org";
+function getActiveOrg() {
+  if (ACTIVE_ORG) return ACTIVE_ORG;
+  try {
+    ACTIVE_ORG = localStorage.getItem(ACTIVE_ORG_LS) || null;
+  } catch (e) {}
+  return ACTIVE_ORG;
+}
+function setActiveOrg(orgId) {
+  ACTIVE_ORG = orgId || null;
+  try {
+    if (orgId) localStorage.setItem(ACTIVE_ORG_LS, orgId);
+    else localStorage.removeItem(ACTIVE_ORG_LS);
+  } catch (e) {}
+}
+const ORG_SEP = "::";
+/** Turn a base key (e.g. "kitchen-products") into an org-scoped key. */
+function nsKey(baseKey) {
+  const org = getActiveOrg();
+  return org ? `${org}${ORG_SEP}${baseKey}` : baseKey;
+}
+
+async function loadKey(baseKey, fallback) {
+  const key = nsKey(baseKey);
+  const cached = await cacheGet(key);
+
+  // Local changes that haven't reached the server yet must win over whatever the
+  // server still has, otherwise a refresh would silently discard the user's work.
+  if (getDirtyKeys().includes(key)) {
+    return cached !== undefined ? cached : fallback;
+  }
+
+  if (isOnline()) {
+    try {
+      const res = await window.storage.get(key, true);
+      if (res) {
+        const value = JSON.parse(res.value);
+        await cacheSet(key, value);
+        return value;
+      }
+      // Nothing on the server for this key.
+      return cached !== undefined ? cached : fallback;
+    } catch (e) {
+      console.error("remote load failed, using cache", key, e);
+    }
+  }
+
+  return cached !== undefined ? cached : fallback;
+}
+
+async function saveKey(baseKey, value) {
+  const key = nsKey(baseKey);
+  await cacheSet(key, value); // always land locally first, so nothing is ever lost
+
+  if (!isOnline()) {
+    markDirty(key);
+    return { synced: false };
+  }
+
+  // Protect the in-flight window: mark dirty BEFORE the network write so that any
+  // realtime reload firing mid-write (including the echo of our own change) returns
+  // the fresh local value from cache instead of stale server data. We only clear the
+  // guard once the LAST in-flight write to this key has committed, so rapid successive
+  // saves don't uncover the window prematurely.
+  markDirty(key);
+  inFlightWrites.set(key, (inFlightWrites.get(key) || 0) + 1);
+  try {
+    await window.storage.set(key, JSON.stringify(value), true);
+    const remaining = (inFlightWrites.get(key) || 1) - 1;
+    if (remaining <= 0) {
+      inFlightWrites.delete(key);
+      clearDirty(key);
+    } else {
+      inFlightWrites.set(key, remaining);
+    }
+    return { synced: true };
+  } catch (e) {
+    const remaining = (inFlightWrites.get(key) || 1) - 1;
+    inFlightWrites.set(key, Math.max(0, remaining));
+    console.error("storage save failed, queued for sync", key, e);
+    markDirty(key); // stays dirty for the retry queue
+    return { synced: false };
+  }
+}
+
+/** Read a legacy, un-namespaced row straight from the server (used only by the
+    one-time migration in the backup screen). Returns undefined if absent. */
+async function loadLegacyRaw(baseKey) {
+  try {
+    const res = await window.storage.get(baseKey, true);
+    return res ? JSON.parse(res.value) : undefined;
+  } catch (e) {
+    console.error("legacy read failed", baseKey, e);
+    return undefined;
+  }
+}
+
+/** Push every queued key to the server. Re-reads the cache so the latest value wins. */
+async function flushPendingWrites() {
+  if (!isOnline()) return { flushed: 0, remaining: getDirtyKeys().length };
+
+  const dirty = getDirtyKeys();
+  let flushed = 0;
+
+  for (const key of dirty) {
+    const value = await cacheGet(key);
+    if (value === undefined) {
+      clearDirty(key);
+      continue;
+    }
+    try {
+      await window.storage.set(key, JSON.stringify(value), true);
+      clearDirty(key);
+      flushed++;
+    } catch (e) {
+      console.error("flush failed", key, e);
+    }
+  }
+
+  return { flushed, remaining: getDirtyKeys().length };
+}
+
+const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const todayStr = () => new Date().toLocaleDateString("he-IL");
+
+/* ---------- Send channels (WhatsApp / SMS / Email) ---------- */
+const CHANNELS = [
+  { id: "whatsapp", label: "וואטסאפ", icon: "💬", color: "#25D366" },
+  { id: "sms", label: "SMS", icon: "✉️", color: "#4F86F7" },
+  { id: "email", label: "מייל", icon: "📧", color: "#EA4335" },
+];
+function channelMeta(id) {
+  return CHANNELS.find((c) => c.id === id) || CHANNELS[0];
+}
+
+/** Normalize an Israeli/any phone to bare international digits (0501234567 -> 972501234567). */
+function cleanPhoneDigits(raw) {
+  let d = String(raw || "").replace(/\D/g, "");
+  if (d.startsWith("0")) d = "972" + d.slice(1);
+  return d;
+}
+
+/**
+ * Open the given text in the chosen channel.
+ * Returns { ok } or { ok:false, error } so callers can showToast the reason.
+ */
+function sendViaChannel(channel, { phone, email, text, subject }) {
+  if (channel === "email") {
+    const to = String(email || "").trim();
+    if (!to) return { ok: false, error: "לא הוגדרה כתובת מייל ליעד הזה" };
+    window.location.href = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(
+      subject || ""
+    )}&body=${encodeURIComponent(text)}`;
+    return { ok: true };
+  }
+  if (channel === "sms") {
+    const digits = cleanPhoneDigits(phone);
+    if (!digits) return { ok: false, error: "לא הוגדר מספר טלפון ליעד הזה" };
+    // "?&body=" is the form that works on both iOS and Android
+    window.location.href = `sms:+${digits}?&body=${encodeURIComponent(text)}`;
+    return { ok: true };
+  }
+  const digits = cleanPhoneDigits(phone);
+  const url = digits
+    ? `https://wa.me/${digits}?text=${encodeURIComponent(text)}`
+    : `https://wa.me/?text=${encodeURIComponent(text)}`;
+  window.open(url, "_blank");
+  return { ok: true };
+}
+
+/** Small 3-way channel selector used in the order screen and the invite box. */
+function ChannelPicker({ value, onChange, label = "שלח דרך" }) {
+  return (
+    <div>
+      {label && (
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+          {label}
+        </label>
+      )}
+      <div className="flex gap-2">
+        {CHANNELS.map((c) => {
+          const active = value === c.id;
+          return (
+            <button
+              key={c.id}
+              onClick={() => onChange(c.id)}
+              className="flex-1 py-2 rounded-2xl text-sm font-bold"
+              style={{
+                background: active ? c.color : C.kraft,
+                color: active ? "#fff" : c.color,
+                border: `1.5px solid ${c.color}`,
+              }}
+            >
+              {c.icon} {c.label}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Building / room locations ---------- */
+function range(from, to) {
+  const arr = [];
+  for (let i = from; i <= to; i++) arr.push(String(i));
+  return arr;
+}
+function buildDefaultLocations() {
+  const groups = [
+    { group: "בניין ישן - קומה 1", rooms: [...range(101, 113), "שירותים קומה 1", "מקלחות קומה 1"] },
+    { group: "בניין ישן - קומה 2", rooms: [...range(201, 212), "שירותים קומה 2", "מקלחות קומה 2"] },
+    { group: "בניין ישן - קומה 3", rooms: [...range(301, 313), "שירותים קומה 3", "מקלחות קומה 3"] },
+    { group: "בניין ישן - קומה 4", rooms: [...range(401, 412), "שירותים קומה 4", "מקלחות קומה 4"] },
+    { group: "בניין חדש - קומה 1", rooms: range(501, 509) },
+    { group: "בניין חדש - קומה 2", rooms: range(601, 609) },
+    { group: "בניין חדש - קומה 3", rooms: ["מרפסת", "חדר כביסה"] },
+    { group: "דירות רבנים", rooms: ["דירת רבנים חדשה - ימין", "דירת רבנים חדשה - שמאל", "דירת רבנים ישנה"] },
+    {
+      group: "בית מדרש",
+      rooms: [
+        "בית מדרש",
+        ...range(1, 5).map((n) => `שירותים בית מדרש - ימין ${n}`),
+        ...range(1, 5).map((n) => `שירותים בית מדרש - שמאל ${n}`),
+      ],
+    },
+    { group: "מטבחים וחדרי אוכל", rooms: ["מטבח בשרי", "מטבח חלבי", "חדר אוכל גדול", "חדר אוכל רבנים", "חדר אוכל קטן"] },
+    {
+      group: "מעון ילדים",
+      rooms: [
+        "כיתת תינוקות - ימין (חדר כחול)",
+        "כיתת פעוטות - שמאל (חדר ורוד)",
+        "כיתת בוגרים - למעלה (חדר ירוק)",
+        "כיתת תינוקות - קומה מינוס (חדר סגול)",
+        "מטבח מעון",
+      ],
+    },
+  ];
+  const flat = [];
+  groups.forEach((g) => {
+    g.rooms.forEach((r) => flat.push({ id: genId(), name: r, group: g.group, imageData: null }));
+  });
+  return flat;
+}
+
+/* ---------- Shelf-tag card (signature element) ---------- */
+function ShelfTag({ children, accent = C.steel, style = {} }) {
+  return (
+    <div
+      className="relative wh-body"
+      style={{
+        background: C.kraft,
+        borderRadius: RADIUS,
+        border: `1px solid ${C.kraftDark}`,
+        boxShadow: "0 4px 16px rgba(124,92,252,0.08)",
+        padding: "16px 18px 16px 18px",
+        borderRight: `5px solid ${accent}`,
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+/* ---------- Barcode Scanner ---------- */
+const QUAGGA_SRC = "https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js";
+function loadScriptOnce(src) {
+  return new Promise((resolve, reject) => {
+    if (document.querySelector(`script[src="${src}"]`)) {
+      if (window.Quagga) return resolve();
+      // script tag exists but may still be loading
+      const check = setInterval(() => {
+        if (window.Quagga) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 100);
+      return;
+    }
+    const s = document.createElement("script");
+    s.src = src;
+    s.onload = () => resolve();
+    s.onerror = () => reject(new Error("script load failed"));
+    document.head.appendChild(s);
+  });
+}
+
+function BarcodeScanner({ onDetected, onClose }) {
+  const videoRef = useRef(null);
+  const quaggaTargetRef = useRef(null);
+  const streamRef = useRef(null);
+  const rafRef = useRef(null);
+  const [mode, setMode] = useState("loading"); // loading | native | quagga | manual
+  const [manual, setManual] = useState("");
+  const [error, setError] = useState("");
+  const detectedRef = useRef(false);
+
+  const finish = useCallback((code) => {
+    if (detectedRef.current) return;
+    detectedRef.current = true;
+    onDetected(code);
+  }, [onDetected]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    function stopStream() {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+    }
+
+    async function nativeDetectorAvailable() {
+      if (!("BarcodeDetector" in window)) return false;
+      try {
+        const supported = await window.BarcodeDetector.getSupportedFormats();
+        return supported && supported.length > 0 ? supported : false;
+      } catch (e) {
+        console.error("BarcodeDetector.getSupportedFormats failed:", e);
+        return false;
+      }
+    }
+
+    async function startNative(supportedFormats) {
+      const wanted = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "qr_code"];
+      const formats = wanted.filter((f) => supportedFormats.includes(f));
+      if (formats.length === 0) throw new Error("No overlapping supported barcode formats");
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+      if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+      streamRef.current = stream;
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+      }
+      const detector = new window.BarcodeDetector({ formats });
+      const scanLoop = async () => {
+        if (cancelled || !videoRef.current) return;
+        try {
+          const codes = await detector.detect(videoRef.current);
+          if (codes && codes.length > 0) { finish(codes[0].rawValue); return; }
+        } catch (e) { /* ignore per-frame errors */ }
+        rafRef.current = requestAnimationFrame(scanLoop);
+      };
+      scanLoop();
+    }
+
+    async function startQuagga() {
+      await loadScriptOnce(QUAGGA_SRC);
+      if (cancelled || !window.Quagga || !quaggaTargetRef.current) throw new Error("Quagga failed to load or mount point missing");
+      await new Promise((resolve, reject) => {
+        window.Quagga.init(
+          {
+            inputStream: {
+              type: "LiveStream",
+              target: quaggaTargetRef.current,
+              constraints: { facingMode: "environment", width: { min: 480 }, height: { min: 480 } },
+            },
+            locator: { patchSize: "medium", halfSample: true },
+            numOfWorkers: 2,
+            frequency: 10,
+            decoder: { readers: ["ean_reader", "ean_8_reader", "code_128_reader", "upc_reader", "codabar_reader"] },
+            locate: true,
+          },
+          (err) => {
+            if (cancelled) return resolve();
+            if (err) { reject(err); return; }
+            window.Quagga.start();
+            resolve();
+          }
+        );
+      });
+      window.Quagga.onDetected((result) => {
+        if (result && result.codeResult && result.codeResult.code) {
+          finish(result.codeResult.code);
+        }
+      });
+    }
+
+    async function start() {
+      const supportedFormats = await nativeDetectorAvailable();
+      if (supportedFormats) {
+        try {
+          await startNative(supportedFormats);
+          if (!cancelled) { setMode("native"); return; }
+        } catch (e) {
+          console.error("Native barcode scan failed:", e);
+          stopStream();
+        }
+      }
+      try {
+        setMode("quagga");
+        await startQuagga();
+      } catch (e) {
+        console.error("Quagga scan failed:", e);
+        setError("לא ניתן להפעיל סריקת מצלמה במכשיר/דפדפן הזה. הזן ברקוד ידנית. (פרטים טכניים בקונסול)");
+        setMode("manual");
+      }
+    }
+    start();
+
+    return () => {
+      cancelled = true;
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      stopStream();
+      if (window.Quagga && window.Quagga.stop) {
+        try { window.Quagga.stop(); } catch (e) {}
+      }
+    };
+  }, [finish]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col wh-body" style={{ background: "rgba(31,42,36,0.92)" }}>
+      <div className="flex items-center justify-between p-4">
+        <span className="wh-display text-lg font-bold" style={{ color: C.paper }}>
+          סריקת ברקוד
+        </span>
+        <button onClick={onClose} className="px-3 py-1 rounded-2xl" style={{ background: C.paper, color: C.ink }}>
+          סגור
+        </button>
+      </div>
+
+      {(mode === "loading" || mode === "native") && (
+        <div className="flex-1 flex flex-col items-center justify-center px-4 gap-3">
+          <video
+            ref={videoRef}
+            className="rounded-lg w-full max-w-sm"
+            style={{ background: "#000" }}
+            muted
+            playsInline
+            autoPlay
+          />
+          {mode === "loading" && (
+            <p style={{ color: C.paper }} className="text-sm">מפעיל מצלמה...</p>
+          )}
+        </div>
+      )}
+
+      <div
+        ref={quaggaTargetRef}
+        className="flex-1 flex items-center justify-center px-4"
+        style={{ display: mode === "quagga" ? "flex" : "none" }}
+      />
+
+      {mode === "manual" && (
+        <div className="flex-1 flex flex-col items-center justify-center gap-4 px-6">
+          {error && <p style={{ color: C.paper }} className="text-center text-sm">{error}</p>}
+          <input
+            value={manual}
+            onChange={(e) => setManual(e.target.value)}
+            placeholder="הזן מספר ברקוד"
+            className="w-full max-w-xs p-3 rounded-2xl text-lg text-center"
+            style={{ direction: "ltr" }}
+            autoFocus
+          />
+          <button
+            onClick={() => manual.trim() && finish(manual.trim())}
+            className="px-6 py-2 rounded-2xl font-bold wh-display"
+            style={{ background: C.mustard, color: C.ink }}
+          >
+            אישור
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Organization Gate ---------- */
+/* ---------- Biometric device lock (WebAuthn) ---------- */
+const BIOMETRIC_ENABLED_KEY = "warehouse-app-biometric-enabled";
+const BIOMETRIC_CRED_KEY = "warehouse-app-biometric-cred-id";
+
+function isBiometricEnabled() {
+  try {
+    return localStorage.getItem(BIOMETRIC_ENABLED_KEY) === "true";
+  } catch (e) {
+    return false;
+  }
+}
+
+async function isBiometricSupported() {
+  if (!window.PublicKeyCredential) return false;
+  try {
+    return await PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable();
+  } catch (e) {
+    return false;
+  }
+}
+
+async function registerBiometric(displayName) {
+  const challenge = crypto.getRandomValues(new Uint8Array(32));
+  const userId = crypto.getRandomValues(new Uint8Array(16));
+  const publicKey = {
+    challenge,
+    rp: { name: "ניהול משימות ומלאי מוסדי" },
+    user: { id: userId, name: displayName || "user", displayName: displayName || "user" },
+    pubKeyCredParams: [
+      { type: "public-key", alg: -7 },
+      { type: "public-key", alg: -257 },
+    ],
+    authenticatorSelection: { authenticatorAttachment: "platform", userVerification: "required" },
+    timeout: 60000,
+    attestation: "none",
+  };
+  const cred = await navigator.credentials.create({ publicKey });
+  const rawIdBytes = new Uint8Array(cred.rawId);
+  let binary = "";
+  rawIdBytes.forEach((b) => (binary += String.fromCharCode(b)));
+  const credId = btoa(binary);
+  localStorage.setItem(BIOMETRIC_CRED_KEY, credId);
+  localStorage.setItem(BIOMETRIC_ENABLED_KEY, "true");
+}
+
+async function verifyBiometric() {
+  const credId = localStorage.getItem(BIOMETRIC_CRED_KEY);
+  if (!credId) return false;
+  const binary = atob(credId);
+  const rawId = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) rawId[i] = binary.charCodeAt(i);
+  const publicKey = {
+    challenge: crypto.getRandomValues(new Uint8Array(32)),
+    allowCredentials: [{ id: rawId, type: "public-key" }],
+    userVerification: "required",
+    timeout: 60000,
+  };
+  try {
+    await navigator.credentials.get({ publicKey });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+function disableBiometric() {
+  localStorage.removeItem(BIOMETRIC_ENABLED_KEY);
+  localStorage.removeItem(BIOMETRIC_CRED_KEY);
+}
+
+/* ---------- OS-level notifications ---------- */
+const NOTIF_PROMPTED_KEY = "warehouse-app-notif-prompted";
+
+function notificationsSupported() {
+  return typeof window !== "undefined" && "Notification" in window;
+}
+function notificationPermission() {
+  if (!notificationsSupported()) return "unsupported";
+  return Notification.permission; // "default" | "granted" | "denied"
+}
+async function requestNotificationPermission() {
+  if (!notificationsSupported()) return "unsupported";
+  try {
+    return await Notification.requestPermission();
+  } catch (e) {
+    console.error("Notification.requestPermission failed", e);
+    return "denied";
+  }
+}
+function hasPromptedNotifications() {
+  try {
+    return localStorage.getItem(NOTIF_PROMPTED_KEY) === "true";
+  } catch (e) {
+    return true;
+  }
+}
+function markPromptedNotifications() {
+  try {
+    localStorage.setItem(NOTIF_PROMPTED_KEY, "true");
+  } catch (e) {}
+}
+
+/**
+ * Show a system notification.
+ * On Android Chrome `new Notification()` throws ("Illegal constructor"), so we must
+ * go through the service worker registration when one is available.
+ */
+async function showOsNotification(title, body, tag, extra) {
+  if (!notificationsSupported() || Notification.permission !== "granted") return;
+  const options = {
+    body,
+    icon: "/icon-192-v2.png",
+    badge: "/icon-192-v2.png",
+    tag: tag || undefined,
+    dir: "rtl",
+    lang: "he",
+    vibrate: [200, 100, 200],
+    data: { url: (extra && extra.url) || "/" },
+  };
+  // Optional action buttons (e.g. a "✓ בוצע" button that also mirrors to a Wear OS watch).
+  if (extra && Array.isArray(extra.actions) && extra.actions.length) options.actions = extra.actions;
+  try {
+    const reg = navigator.serviceWorker ? await navigator.serviceWorker.getRegistration() : null;
+    if (reg && typeof reg.showNotification === "function") {
+      await reg.showNotification(title, options);
+      return;
+    }
+    new Notification(title, options);
+  } catch (e) {
+    console.error("showOsNotification failed", e);
+  }
+}
+
+/** Ask for permission, then register this device with the push server.
+    Returns the permission result. */
+async function enablePushOnThisDevice() {
+  const result = await requestNotificationPermission();
+  markPromptedNotifications();
+  if (result !== "granted") return result;
+  try {
+    if (window.auth?.registerPush) await window.auth.registerPush();
+  } catch (e) {
+    // Permission is granted, so in-app + foreground notifications still work.
+    // Only true background push is unavailable (e.g. VAPID key not configured yet).
+    console.error("push registration failed", e);
+  }
+  return result;
+}
+
+function NotificationsToggle({ showToast }) {
+  const [perm, setPerm] = useState(() => notificationPermission());
+
+  if (perm === "unsupported") return null;
+
+  async function enable() {
+    const result = await enablePushOnThisDevice();
+    setPerm(result);
+    if (result === "granted") {
+      showToast("התראות הופעלו במכשיר הזה");
+      showOsNotification("ההתראות פעילות ✓", "לבדיקת השעון: לחץ על ✓ בוצע מהשעון", "test", { actions: [{ action: "done-test", title: "✓ בוצע (בדיקה)" }] });
+    } else if (result === "denied") {
+      showToast("ההתראות חסומות - יש לאפשר אותן בהגדרות הדפדפן/האפליקציה");
+    }
+  }
+
+  if (perm === "granted") {
+    return (
+      <div
+        className="mx-3 mb-2 py-2 rounded-2xl font-bold text-sm text-center"
+        style={{ background: C.sage, color: "#fff" }}
+      >
+        🔔 התראות פעילות במכשיר הזה
+      </div>
+    );
+  }
+
+  if (perm === "denied") {
+    return (
+      <div
+        className="mx-3 mb-2 py-2 px-3 rounded-2xl text-xs text-center"
+        style={{ background: C.kraft, color: C.steel, border: `1px solid ${C.kraftDark}` }}
+      >
+        🔕 ההתראות חסומות. כדי להפעיל: הגדרות הדפדפן ← הרשאות אתר ← התראות.
+      </div>
+    );
+  }
+
+  return (
+    <button
+      onClick={enable}
+      className="mx-3 mb-2 py-2 rounded-2xl font-bold text-sm text-center"
+      style={{ background: C.paper, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+    >
+      🔔 הפעל התראות למכשיר הזה
+    </button>
+  );
+}
+
+const BIOMETRIC_PROMPTED_KEY = "warehouse-app-biometric-prompted";function hasPromptedBiometric() {
+  try {
+    return localStorage.getItem(BIOMETRIC_PROMPTED_KEY) === "true";
+  } catch (e) {
+    return true;
+  }
+}
+function markPromptedBiometric() {
+  try {
+    localStorage.setItem(BIOMETRIC_PROMPTED_KEY, "true");
+  } catch (e) {}
+}
+
+const HAS_ACCOUNT_KEY = "warehouse-app-has-account";
+function hasExistingAccount() {
+  try {
+    return localStorage.getItem(HAS_ACCOUNT_KEY) === "true";
+  } catch (e) {
+    return false;
+  }
+}
+function markHasAccount() {
+  try {
+    localStorage.setItem(HAS_ACCOUNT_KEY, "true");
+  } catch (e) {}
+}
+
+function BiometricToggle({ currentUser, showToast }) {
+  const [enabled, setEnabled] = useState(() => isBiometricEnabled());
+  const [supported, setSupported] = useState(null); // null = checking
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    isBiometricSupported().then(setSupported);
+  }, []);
+
+  async function toggle() {
+    if (enabled) {
+      disableBiometric();
+      setEnabled(false);
+      showToast("נעילת טביעת אצבע בוטלה במכשיר הזה");
+      return;
+    }
+    setBusy(true);
+    try {
+      await registerBiometric(currentUser.name);
+      setEnabled(true);
+      showToast("נעילת טביעת אצבע הופעלה למכשיר הזה");
+    } catch (e) {
+      showToast("לא ניתן היה להפעיל טביעת אצבע במכשיר הזה");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (supported === false) return null;
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={busy || supported === null}
+      className="mx-3 mb-2 py-2 rounded-2xl font-bold text-sm text-center"
+      style={{ background: enabled ? C.sage : C.paper, color: enabled ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+    >
+      {busy ? "..." : enabled ? "✓ נעילת טביעת אצבע פעילה (לחץ לביטול)" : "👆 הפעל נעילת טביעת אצבע למכשיר הזה"}
+    </button>
+  );
+}
+
+function LockScreen({ onUnlock, onUseLogout }) {
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function tryUnlock() {
+    setErr("");
+    setBusy(true);
+    try {
+      const ok = await verifyBiometric();
+      if (ok) onUnlock();
+      else setErr("האימות נכשל, נסה שוב");
+    } catch (e) {
+      setErr("האימות נכשל, נסה שוב");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    tryUnlock();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  return (
+    <div className="min-h-screen flex items-center justify-center wh-body" style={{ background: C.paper }} dir="rtl">
+      <style>{FONTS}</style>
+      <div className="w-full max-w-xs text-center">
+        <div className="text-5xl mb-4">🔒</div>
+        <h1 className="wh-display text-xl font-black mb-2" style={{ color: C.ink }}>נעול</h1>
+        <p className="text-sm mb-6" style={{ color: C.steel }}>אמת עם טביעת אצבע כדי להיכנס</p>
+        {err && <p className="text-sm mb-3" style={{ color: C.stamp }}>{err}</p>}
+        <button
+          onClick={tryUnlock}
+          disabled={busy}
+          className="w-full p-3 rounded-2xl font-bold wh-display mb-3"
+          style={{ background: C.brand, color: "#fff" }}
+        >
+          {busy ? "מאמת..." : "👆 אמת עם טביעת אצבע"}
+        </button>
+        <button onClick={onUseLogout} className="text-xs underline" style={{ color: C.accent }}>
+          לא ניתן לאמת? התחבר מחדש עם מייל וסיסמה
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SetNewPasswordScreen({ onDone }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+
+  async function save() {
+    if (password.length < 6) {
+      setErr("הסיסמה חייבת להיות לפחות 6 תווים");
+      return;
+    }
+    if (password !== confirm) {
+      setErr("הסיסמאות לא תואמות");
+      return;
+    }
+    setErr("");
+    setBusy(true);
+    try {
+      await window.auth.updatePassword(password);
+      setDone(true);
+      window.location.hash = "";
+      await window.auth.signOut();
+    } catch (e) {
+      setErr(e?.message || "שגיאה בעדכון הסיסמה");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center wh-body" style={{ background: C.paper }} dir="rtl">
+      <style>{FONTS}</style>
+      <div className="w-full max-w-xs">
+        <h1 className="wh-display text-xl font-black mb-4 text-center" style={{ color: C.ink }}>קביעת סיסמה חדשה</h1>
+        {done ? (
+          <ShelfTag accent={C.sage} style={{ textAlign: "center" }}>
+            <p className="text-sm mb-3" style={{ color: C.ink }}>הסיסמה עודכנה בהצלחה!</p>
+            <button onClick={onDone} className="w-full p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
+              עבור להתחברות
+            </button>
+          </ShelfTag>
+        ) : (
+          <ShelfTag accent={C.ink} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה חדשה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} autoFocus />
+            <input value={confirm} onChange={(e) => setConfirm(e.target.value)} type="password" placeholder="אימות סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
+            <button onClick={save} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
+              {busy ? "מעדכן..." : "שמור סיסמה חדשה"}
+            </button>
+          </ShelfTag>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** An invite link looks like https://site/?join=<orgId> - pull the code out of it. */
+function orgIdFromUrl() {
+  try {
+    return new URLSearchParams(window.location.search).get("join") || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function AuthGate({ onAuthed }) {
+  const invitedOrgId = orgIdFromUrl();
+  const [mode, setMode] = useState(() => {
+    if (invitedOrgId) return "join"; // arrived via an invite link
+    return hasExistingAccount() ? "login" : "choose";
+  });
+  const [showTerms, setShowTerms] = useState(false);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [orgName, setOrgName] = useState("");
+  const [joinOrgId, setJoinOrgId] = useState(invitedOrgId);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirmNotice, setConfirmNotice] = useState(false);
+  const [resetSent, setResetSent] = useState(false);
+  const [resetBusy, setResetBusy] = useState(false);
+
+  async function doResetPassword() {
+    if (!email.trim()) {
+      setErr("הזן את המייל שלך למעלה קודם, ואז לחץ שוב על 'שכחת סיסמה'");
+      return;
+    }
+    setErr("");
+    setResetBusy(true);
+    try {
+      await window.auth.resetPasswordForEmail(email.trim());
+      setResetSent(true);
+    } catch (e) {
+      setErr(e?.message || "שגיאה בשליחת המייל");
+    } finally {
+      setResetBusy(false);
+    }
+  }
+
+  async function doCreate() {
+    if (!email.trim() || !password.trim() || !orgName.trim() || !displayName.trim()) {
+      setErr("יש למלא את כל השדות");
+      return;
+    }
+    setErr("");
+    setBusy(true);
+    try {
+      const data = await window.auth.signUpCreateOrg({ email: email.trim(), password, orgName: orgName.trim(), displayName: displayName.trim(), phone: phone.trim() });
+      markHasAccount();
+      if (data?.session) onAuthed();
+      else setConfirmNotice(true);
+    } catch (e) {
+      setErr(e?.message || "שגיאה בהרשמה");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doJoin() {
+    if (!email.trim() || !password.trim() || !joinOrgId.trim() || !displayName.trim()) {
+      setErr("יש למלא את כל השדות");
+      return;
+    }
+    setErr("");
+    setBusy(true);
+    try {
+      const data = await window.auth.signUpJoinOrg({ email: email.trim(), password, orgId: joinOrgId.trim(), displayName: displayName.trim(), phone: phone.trim() });
+      markHasAccount();
+      if (data?.session) onAuthed();
+      else setConfirmNotice(true);
+    } catch (e) {
+      setErr(e?.message || "שגיאה בהרשמה");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doLogin() {
+    if (!email.trim() || !password.trim()) {
+      setErr("יש להזין מייל וסיסמה");
+      return;
+    }
+    setErr("");
+    setBusy(true);
+    try {
+      await window.auth.signIn(email.trim(), password);
+      markHasAccount();
+      onAuthed();
+    } catch (e) {
+      setErr(e?.message || "מייל או סיסמה שגויים");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (confirmNotice) {
+    return (
+      <div className="min-h-screen flex items-center justify-center wh-body" style={{ background: C.paper }} dir="rtl">
+        <style>{FONTS}</style>
+        <div className="w-full max-w-xs text-center">
+          <ShelfTag accent={C.sage}>
+            <p className="font-bold mb-2" style={{ color: C.ink }}>נשלח מייל אימות</p>
+            <p className="text-sm" style={{ color: C.steel }}>
+              בדוק את תיבת הדואר שלך ({email}) ולחץ על הקישור לאימות, ואז חזור לכאן ותתחבר.
+            </p>
+          </ShelfTag>
+          <button onClick={() => { setMode("login"); setConfirmNotice(false); }} className="mt-3 text-sm underline" style={{ color: C.accent }}>
+            עבור להתחברות
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center wh-body py-8" style={{ background: C.paper, position: "relative" }} dir="rtl">
+      <style>{FONTS}</style>
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          backgroundImage: "url(/icon-512-v2.png)",
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center",
+          backgroundSize: "70vw",
+          opacity: 0.06,
+          pointerEvents: "none",
+        }}
+      />
+      <div className="w-full max-w-xs" style={{ position: "relative" }}>
+        <h1 className="wh-display text-2xl font-black mb-1 text-center" style={{ color: C.ink }}>
+          ניהול משימות ומלאי מוסדי
+        </h1>
+        <p className="text-center text-sm mb-6" style={{ color: C.steel }}>
+          כל ארגון מקבל מרחב נתונים נפרד ומאובטח משלו
+        </p>
+
+        {mode === "choose" && (
+          <div className="flex flex-col gap-3">
+            <button onClick={() => setMode("create")} className="p-4 rounded-2xl font-bold wh-display text-right" style={{ background: C.accent, color: "#fff" }}>
+              🏢 צור ארגון חדש
+              <div className="text-xs font-normal mt-1 opacity-90">אם זו הפעם הראשונה שלך כאן</div>
+            </button>
+            <button onClick={() => setMode("join")} className="p-4 rounded-2xl font-bold wh-display text-right" style={{ background: C.kraft, color: C.ink, border: `1.5px solid ${C.kraftDark}` }}>
+              🔑 הצטרף לארגון קיים
+              <div className="text-xs font-normal mt-1" style={{ color: C.steel }}>אם קיבלת קוד ארגון ממנהל</div>
+            </button>
+            <button onClick={() => setMode("login")} className="p-3 rounded-2xl font-bold text-sm text-center" style={{ background: "transparent", color: C.accent }}>
+              כבר יש לי חשבון - התחבר
+            </button>
+          </div>
+        )}
+
+        {mode === "create" && (
+          <ShelfTag accent={C.accent} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <input value={orgName} onChange={(e) => setOrgName(e.target.value)} placeholder="שם הארגון/המטבח" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} autoFocus />
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="השם שלך" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="טלפון (אופציונלי)" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+            <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
+            <button onClick={doCreate} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
+              {busy ? "יוצר..." : "צור ארגון והירשם"}
+            </button>
+            <button onClick={() => setMode("choose")} className="text-xs" style={{ color: C.steel }}>חזרה</button>
+          </ShelfTag>
+        )}
+
+        {mode === "join" && (
+          <ShelfTag accent={C.sage} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {invitedOrgId ? (
+              <div className="p-2 rounded-xl text-center" style={{ background: "rgba(87,180,94,0.15)", border: `1px solid ${C.sage}` }}>
+                <div className="text-sm font-bold" style={{ color: C.sage }}>✓ הוזמנת לארגון</div>
+                <div className="text-xs" style={{ color: C.steel }}>קוד הארגון כבר מולא. רק מלא את הפרטים שלך למטה.</div>
+              </div>
+            ) : (
+              <p className="text-xs" style={{ color: C.steel }}>בקש מהמנהל שלך את קוד/מזהה הארגון (Org ID) שיש לו במסך ניהול.</p>
+            )}
+            <input
+              value={joinOrgId}
+              onChange={(e) => setJoinOrgId(e.target.value)}
+              placeholder="Org ID"
+              className="p-3 rounded-2xl border"
+              style={{
+                borderColor: invitedOrgId ? C.sage : C.kraftDark,
+                direction: "ltr",
+                background: invitedOrgId ? "#F4FBF4" : C.kraft,
+              }}
+              autoFocus={!invitedOrgId}
+            />
+            <input value={displayName} onChange={(e) => setDisplayName(e.target.value)} placeholder="השם שלך" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} autoFocus={!!invitedOrgId} />
+            <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="טלפון (אופציונלי)" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+            <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
+            <button onClick={doJoin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
+              {busy ? "מצטרף..." : "הצטרף והירשם"}
+            </button>
+            <button onClick={() => setMode("login")} className="text-xs underline" style={{ color: C.accent }}>
+              כבר יש לי חשבון - התחבר
+            </button>
+            <button onClick={() => setMode("choose")} className="text-xs" style={{ color: C.steel }}>חזרה</button>
+          </ShelfTag>
+        )}
+
+        {mode === "login" && (
+          <ShelfTag accent={C.ink} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} autoFocus />
+            <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
+            {resetSent && <p style={{ color: C.sage }} className="text-sm">נשלח מייל לאיפוס הסיסמה - בדוק את תיבת הדואר שלך.</p>}
+            <button onClick={doLogin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
+              {busy ? "מתחבר..." : "התחבר"}
+            </button>
+            <button onClick={doResetPassword} disabled={resetBusy} className="text-xs underline" style={{ color: C.accent }}>
+              {resetBusy ? "שולח..." : "שכחת סיסמה?"}
+            </button>
+            <button onClick={() => setMode("choose")} className="text-xs underline" style={{ color: C.accent }}>
+              אין לי חשבון / רוצה לפתוח ארגון אחר
+            </button>
+          </ShelfTag>
+        )}
+        <p className="text-center text-xs mt-6" style={{ color: C.steel }}>
+          © כל הזכויות שמורות לנפתלי קמפה · ת.ז. 313****31
+        </p>
+        <p className="text-center text-xs">
+          <a
+            href={`https://wa.me/972585120140?text=${encodeURIComponent("שלום, רציתי לפתח/להוסיף:")}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline"
+            style={{ color: C.accent }}
+          >
+            המלצות/פניות לפיתוח: 0585120140
+          </a>
+        </p>
+        <div className="text-center mt-2">
+          <button onClick={() => setShowTerms((v) => !v)} className="text-xs underline" style={{ color: C.accent }}>
+            תנאי שימוש
+          </button>
+          {showTerms && (
+            <div className="mt-2 p-3 rounded-2xl text-xs text-right" style={{ background: C.kraft, color: C.steel, border: `1px solid ${C.kraftDark}` }}>
+              <p className="mb-1">האפליקציה נמצאת כרגע <b>בשלבי פיתוח</b> וניתנת לשימוש <b>ללא עלות בשלב זה</b>.</p>
+              <p className="mb-1">ייתכנו שינויים, תקלות, ואי-זמינות זמנית תוך כדי הפיתוח. אין התחייבות לזמינות רציפה או לשמירת נתונים באופן מוחלט.</p>
+              <p>השימוש באפליקציה הוא באחריות המשתמש. לשאלות או הצעות אפשר לפנות למספר שמופיע למעלה.</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+/* ---------- Login ---------- */
+function Login({ users, onLogin, onFirstRun, onDisconnect }) {
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+
+  function submit(e) {
+    if (e) e.preventDefault();
+    let finalName = name;
+    let finalPassword = password;
+    if (e?.target) {
+      try {
+        const fd = new FormData(e.target);
+        finalName = (fd.get("username") || name || "").toString();
+        finalPassword = (fd.get("password") || password || "").toString();
+      } catch (err) {
+        // fall back to React state if FormData isn't available
+      }
+    }
+    const u = users.find((u) => u.name === finalName.trim() && u.password === finalPassword);
+    if (!u) {
+      setErr("שם משתמש או סיסמה שגויים");
+      return;
+    }
+    setErr("");
+    onLogin(u);
+  }
+
+  return (
+    <div className="min-h-screen flex items-center justify-center wh-body" style={{ background: C.paper }} dir="rtl">
+      <style>{FONTS}</style>
+      <div className="w-full max-w-xs">
+        <h1 className="wh-display text-2xl font-black mb-1 text-center" style={{ color: C.ink }}>
+          ניהול משימות ומלאי מוסדי
+        </h1>
+        <p className="text-center text-sm mb-6" style={{ color: C.steel }}>
+          כניסה למערכת ניהול המלאי
+        </p>
+        <form onSubmit={submit} autoComplete="on">
+          <ShelfTag accent={C.sage} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="שם משתמש"
+              name="username"
+              autoComplete="username"
+              className="p-3 rounded-2xl border"
+              style={{ borderColor: C.kraftDark, background: C.paper }}
+              autoFocus
+            />
+            <input
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              type="password"
+              placeholder="סיסמה"
+              name="password"
+              autoComplete="current-password"
+              className="p-3 rounded-2xl border"
+              style={{ borderColor: C.kraftDark, background: C.paper }}
+            />
+            {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
+            <button
+              type="submit"
+              className="p-3 rounded-2xl font-bold wh-display"
+              style={{ background: C.brand, color: "#fff", cursor: "pointer" }}
+            >
+              כניסה
+            </button>
+          </ShelfTag>
+        </form>
+        {onFirstRun && (
+          <p className="text-xs text-center mt-4" style={{ color: C.steel }}>
+            משתמש ברירת מחדל: <b>מנהל</b> / סיסמה <b>1234</b> (ניתן לשנות בהגדרות לאחר הכניסה)
+          </p>
+        )}
+        <p className="text-xs text-center mt-4" style={{ color: C.steel }}>
+          <button onClick={onDisconnect} className="underline" style={{ color: C.accent }}>זה לא מסד הנתונים שלי / התחבר למסד אחר</button>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Offline / sync status bar ---------- */
+function SyncBar({ showToast }) {
+  const [online, setOnline] = useState(isOnline());
+  const [pending, setPending] = useState(() => getDirtyKeys().length);
+  const [syncing, setSyncing] = useState(false);
+  const [justSynced, setJustSynced] = useState(false);
+
+  const doFlush = useCallback(async () => {
+    if (!isOnline() || getDirtyKeys().length === 0) return;
+    setSyncing(true);
+    const { flushed, remaining } = await flushPendingWrites();
+    setSyncing(false);
+    setPending(remaining);
+    if (flushed > 0 && remaining === 0) {
+      setJustSynced(true);
+      if (showToast) showToast("כל השינויים סונכרנו לשרת ✓");
+      setTimeout(() => setJustSynced(false), 3000);
+    }
+  }, [showToast]);
+
+  useEffect(() => {
+    function onOnline() {
+      setOnline(true);
+      doFlush();
+    }
+    function onOffline() {
+      setOnline(false);
+    }
+    function onSyncChanged(e) {
+      setPending(e.detail);
+    }
+
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("kitchen-sync-changed", onSyncChanged);
+
+    // Catch anything left over from a previous session, and retry periodically in
+    // case navigator.onLine lies (captive portals, flaky mobile data).
+    doFlush();
+    const interval = setInterval(doFlush, 20000);
+
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("kitchen-sync-changed", onSyncChanged);
+      clearInterval(interval);
+    };
+  }, [doFlush]);
+
+  if (online && pending === 0 && !justSynced) return null;
+
+  let bg = C.mustard;
+  let label = "";
+
+  if (!online) {
+    bg = C.steel;
+    label =
+      pending > 0
+        ? `📴 אין חיבור - ${pending} שינויים שמורים במכשיר ויסונכרנו אוטומטית`
+        : "📴 אין חיבור - אפשר להמשיך לעבוד, הנתונים נשמרים במכשיר";
+  } else if (syncing) {
+    bg = C.accent;
+    label = "🔄 מסנכרן...";
+  } else if (pending > 0) {
+    bg = C.mustard;
+    label = `⏳ ${pending} שינויים ממתינים לסנכרון`;
+  } else if (justSynced) {
+    bg = C.sage;
+    label = "✓ הכל מסונכרן";
+  }
+
+  return (
+    <button
+      onClick={doFlush}
+      className="w-full py-1.5 px-3 text-xs font-bold wh-body text-center"
+      style={{ background: bg, color: "#fff", border: "none" }}
+    >
+      {label}
+    </button>
+  );
+}
+
+/* ---------- Splash / welcome screen ---------- */
+const SPLASH_CSS = `
+@keyframes wh-logo-in {
+  0%   { opacity: 0; transform: scale(0.82) translateY(12px); }
+  60%  { opacity: 1; transform: scale(1.03) translateY(0); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes wh-text-in {
+  0%   { opacity: 0; transform: translateY(14px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+@keyframes wh-ring {
+  0%   { transform: scale(0.9); opacity: 0.45; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+@keyframes wh-bar {
+  0%   { width: 0%; }
+  100% { width: 100%; }
+}
+@keyframes wh-fade-out {
+  0%   { opacity: 1; }
+  100% { opacity: 0; visibility: hidden; }
+}
+.wh-splash        { animation: wh-fade-out 420ms ease-in 1580ms forwards; }
+.wh-splash-logo   { animation: wh-logo-in 700ms cubic-bezier(.2,.8,.2,1) both; }
+.wh-splash-ring   { animation: wh-ring 1800ms ease-out infinite; }
+.wh-splash-title  { animation: wh-text-in 600ms ease-out 280ms both; }
+.wh-splash-sub    { animation: wh-text-in 600ms ease-out 440ms both; }
+.wh-splash-bar    { animation: wh-bar 1700ms ease-in-out both; }
+`;
+
+function SplashScreen() {
+  return (
+    <div
+      className="wh-splash fixed inset-0 z-[100] flex flex-col items-center justify-center wh-body"
+      style={{ background: `linear-gradient(160deg, ${C.accent} 0%, ${C.accent2} 100%)` }}
+      dir="rtl"
+    >
+      <style>{FONTS}</style>
+      <style>{SPLASH_CSS}</style>
+
+      <div className="relative flex items-center justify-center mb-7">
+        <span
+          className="wh-splash-ring absolute rounded-full"
+          style={{ width: 168, height: 168, border: "2px solid rgba(255,255,255,0.7)" }}
+        />
+        <span
+          className="wh-splash-ring absolute rounded-full"
+          style={{ width: 168, height: 168, border: "2px solid rgba(255,255,255,0.7)", animationDelay: "600ms" }}
+        />
+        <div
+          className="wh-splash-logo rounded-3xl flex items-center justify-center"
+          style={{
+            width: 132,
+            height: 132,
+            background: C.kraft,
+            boxShadow: "0 18px 44px rgba(20,33,61,0.28)",
+          }}
+        >
+          <img
+            src="/icon-512-v2.png"
+            alt=""
+            style={{ width: 104, height: 104, objectFit: "contain" }}
+          />
+        </div>
+      </div>
+
+      <div
+        className="wh-splash-title wh-display text-center font-black"
+        style={{ color: "#fff", fontSize: 26, letterSpacing: "-0.5px", textShadow: "0 2px 12px rgba(20,33,61,0.25)" }}
+      >
+        ברוכים הבאים
+      </div>
+      <div
+        className="wh-splash-sub wh-display text-center font-bold mt-1.5"
+        style={{ color: "rgba(255,255,255,0.95)", fontSize: 19 }}
+      >
+        לניהול משק חכם
+      </div>
+
+      <div
+        className="mt-9 rounded-full overflow-hidden"
+        style={{ width: 132, height: 3, background: "rgba(255,255,255,0.28)" }}
+      >
+        <div className="wh-splash-bar h-full rounded-full" style={{ background: C.kraft }} />
+      </div>
+    </div>
+  );
+}
+
+/* Grid editor shaped like the Excel sheet it replaces: one row per dish type,
+   one column per day. Tap a cell to pick the dish. */
+// Dish-type rows can optionally belong to a specific meal (slot). Rows with no slot
+// are legacy/shared and appear in every meal, so old menus keep working unchanged.
+function dishTypesForSlot(dishTypes, slotKey) {
+  return (dishTypes || []).filter((dt) => !dt.slot || dt.slot === slotKey);
+}
+
+function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persistDishTypes, slotKey, slotLabel, weekStart }) {
+  const [cell, setCell] = useState(null); // { dayKey, dayLabel, dishTypeId, dishTypeName }
+  const [newRowName, setNewRowName] = useState("");
+  const [addingRow, setAddingRow] = useState(false);
+  const types = dishTypesForSlot(dishTypes, slotKey);
+  // Colorful rows: lunch in a cool-blue family, dinner in a warm family,
+  // each alternating a strong and a weak shade per row.
+  const pal = slotKey === "dinner"
+    ? { strong: "#F6D2A6", weak: "#FCEBD4", head: "#DE9542" }   // ערב - warm
+    : { strong: "#BBD9F2", weak: "#E6F1FB", head: "#3E8FCB" };  // צהריים - cool blue
+
+  async function addRow() {
+    const n = newRowName.trim();
+    if (!n || !persistDishTypes) return;
+    await persistDishTypes([...(dishTypes || []), { id: genId(), name: n, slot: slotKey }]);
+    setNewRowName("");
+    setAddingRow(false);
+  }
+  async function removeRow(dt) {
+    if (!persistDishTypes) return;
+    const shared = !dt.slot;
+    const msg = shared
+      ? `השורה "${dt.name}" משותפת לצהריים ולערב. להסיר אותה מכל התפריט?`
+      : `להסיר את השורה "${dt.name}" מארוחת ${slotLabel}?`;
+    if (typeof window !== "undefined" && !window.confirm(msg)) return;
+    await persistDishTypes((dishTypes || []).filter((d) => d.id !== dt.id));
+  }
+
+
+  const nameOf = (dayKey, dtId) => {
+    const id = weeklyMenu[dayKey]?.[slotKey]?.[dtId];
+    return menuItems.find((m) => m.id === id)?.name || "";
+  };
+
+  return (
+    <div className="mb-4">
+      <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>
+        ארוחת {slotLabel}
+      </div>
+
+      <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: "touch" }}>
+        <table style={{ borderCollapse: "collapse", minWidth: "100%" }}>
+          <thead>
+            <tr>
+              <th
+                style={{
+                  background: pal.head,
+                  color: "#fff",
+                  padding: "8px 6px",
+                  border: `1px solid ${C.kraftDark}`,
+                  position: "sticky",
+                  right: 0,
+                  zIndex: 2,
+                  minWidth: 84,
+                  fontSize: 12,
+                }}
+              />
+              {WEEK_DAYS.map(([, label], idx) => (
+                <th
+                  key={label}
+                  style={{
+                    background: pal.head,
+                    color: "#fff",
+                    padding: "8px 10px",
+                    border: `1px solid ${C.kraftDark}`,
+                    fontSize: 13,
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {label}
+                  <div style={{ fontSize: 10, fontWeight: 400, opacity: 0.9 }}>{weekdayDateLabel(idx, weekStart)}</div>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {types.map((dt, ri) => {
+              const rowBg = ri % 2 === 0 ? pal.strong : pal.weak;
+              return (
+              <tr key={dt.id}>
+                <th
+                  style={{
+                    background: rowBg,
+                    color: "#14213D",
+                    padding: "8px 6px",
+                    border: `1px solid ${C.kraftDark}`,
+                    textAlign: "right",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    position: "sticky",
+                    right: 0,
+                    zIndex: 1,
+                    minWidth: 84,
+                  }}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span>{dt.name}</span>
+                    {persistDishTypes && (
+                      <button
+                        onClick={() => removeRow(dt)}
+                        title="הסר שורה"
+                        style={{ color: C.stamp, fontWeight: 700, fontSize: 13, lineHeight: 1, padding: "0 2px" }}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                </th>
+                {WEEK_DAYS.map(([dayKey, dayLabel]) => {
+                  const val = nameOf(dayKey, dt.id);
+                  return (
+                    <td
+                      key={dayKey}
+                      onClick={() => setCell({ dayKey, dayLabel, dishTypeId: dt.id, dishTypeName: dt.name })}
+                      style={{
+                        border: `1px solid ${C.kraftDark}`,
+                        padding: "8px 10px",
+                        textAlign: "center",
+                        fontSize: 13,
+                        cursor: "pointer",
+                        background: rowBg,
+                        color: val ? "#14213D" : "#5B6B85",
+                        fontWeight: val ? 700 : 400,
+                        opacity: val ? 1 : 0.7,
+                        minWidth: 96,
+                      }}
+                    >
+                      {val || "+"}
+                    </td>
+                  );
+                })}
+              </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      {persistDishTypes && (
+        <div className="mt-2">
+          {types.length === 0 && (
+            <p className="text-xs mb-2" style={{ color: C.steel }}>
+              אין עדיין שורות לארוחת {slotLabel}. הוסף שורה כדי להתחיל.
+            </p>
+          )}
+          {addingRow ? (
+            <div className="flex gap-2">
+              <input
+                autoFocus
+                value={newRowName}
+                onChange={(e) => setNewRowName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") addRow(); }}
+                placeholder={`שם שורה (למשל: מרק, קינוח)`}
+                className="flex-1 p-2 rounded-2xl border text-sm"
+                style={{ borderColor: C.kraftDark }}
+              />
+              <button onClick={addRow} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+                הוסף
+              </button>
+              <button onClick={() => { setAddingRow(false); setNewRowName(""); }} className="px-3 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+                ביטול
+              </button>
+            </div>
+          ) : (
+            <button
+              onClick={() => setAddingRow(true)}
+              className="text-sm font-bold px-3 py-2 rounded-2xl"
+              style={{ background: C.kraft, color: C.ink, border: `1px dashed ${C.kraftDark}` }}
+            >
+              ➕ הוסף שורה לארוחת {slotLabel}
+            </button>
+          )}
+        </div>
+      )}
+
+      {cell && (
+        <div
+          className="fixed inset-0 z-50 flex items-end"
+          style={{ background: "rgba(35,31,61,0.5)" }}
+          onClick={() => setCell(null)}
+        >
+          <div
+            className="w-full wh-body"
+            style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "70vh", overflowY: "auto", padding: 16 }}
+            onClick={(e) => e.stopPropagation()}
+            dir="rtl"
+          >
+            <div className="flex justify-between items-center mb-3">
+              <div>
+                <div className="wh-display font-bold" style={{ color: C.ink }}>{cell.dishTypeName}</div>
+                <div className="text-xs" style={{ color: C.steel }}>{cell.dayLabel} · ארוחת {slotLabel}</div>
+              </div>
+              <button onClick={() => setCell(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
+                סגור
+              </button>
+            </div>
+
+            <button
+              onClick={async () => {
+                await setWeekSlot(cell.dayKey, slotKey, cell.dishTypeId, "");
+                setCell(null);
+              }}
+              className="w-full p-3 rounded-2xl text-sm font-bold mb-2 text-right"
+              style={{ background: C.kraft, color: C.steel, border: `1px solid ${C.kraftDark}` }}
+            >
+              — רוקן תא —
+            </button>
+
+            {menuItems.filter((m) => m.dishType === cell.dishTypeId).length === 0 ? (
+              <p className="text-sm text-center py-6" style={{ color: C.steel }}>
+                אין מנות מסוג "{cell.dishTypeName}". הוסף בניהול ← תפריט.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-2">
+                {menuItems
+                  .filter((m) => m.dishType === cell.dishTypeId)
+                  .map((m) => {
+                    const selected = weeklyMenu[cell.dayKey]?.[slotKey]?.[cell.dishTypeId] === m.id;
+                    return (
+                      <button
+                        key={m.id}
+                        onClick={async () => {
+                          await setWeekSlot(cell.dayKey, slotKey, cell.dishTypeId, m.id);
+                          setCell(null);
+                        }}
+                        className="p-3 rounded-2xl text-right font-bold"
+                        style={{
+                          background: selected ? C.sage : C.kraft,
+                          color: selected ? "#fff" : C.ink,
+                          border: `1.5px solid ${selected ? C.sage : C.kraftDark}`,
+                        }}
+                      >
+                        {selected && "✓ "}{m.name}
+                      </button>
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Unit requests (e.g. the daycare ordering out of our stock) ---------- */
+
+/** ISO date (yyyy-mm-dd) of the Sunday that starts the current week. */
+/** YYYY-MM-DD from a Date using the LOCAL calendar day.
+    toISOString() would convert local midnight to UTC and slide the date back a day in Israel. */
+function isoLocalDate(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+/** Parse a YYYY-MM-DD string as a LOCAL date (not UTC midnight). */
+function parseIsoLocal(iso) {
+  const parts = String(iso || "").split("-").map(Number);
+  if (parts.length < 3 || parts.some((n) => Number.isNaN(n))) return new Date(iso);
+  return new Date(parts[0], parts[1] - 1, parts[2]);
+}
+function weekStartIso(d = new Date()) {
+  const x = new Date(d);
+  x.setDate(x.getDate() - x.getDay());
+  x.setHours(0, 0, 0, 0);
+  return isoLocalDate(x);
+}
+/** "16/7 14:30" - compact date+time for created stamps across the app. */
+function fmtStamp(ts) {
+  if (!ts) return "";
+  return new Date(ts).toLocaleString("he-IL", {
+    day: "numeric",
+    month: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function weekLabel(iso) {
+  const start = parseIsoLocal(iso);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  const f = (d) => d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+  return `${f(start)} – ${f(end)}`;
+}
+const UNIT_STATUS = {
+  open: { label: "פתוחה (ניתן להוסיף)", color: "#5B6B85" },
+  submitted: { label: "נשלחה - ממתינה לאישור", color: "#FFB347" },
+  fulfilled: { label: "נופקה ✓", color: "#5CB85C" },
+  rejected: { label: "נדחתה", color: "#FF5A5F" },
+};
+
+function UnitRequestTab({
+  products,
+  unitRequests,
+  persistUnitRequests,
+  unitTemplates,
+  persistUnitTemplates,
+  currentUser,
+  showToast,
+  notifyManagers,
+}) {
+  const [view, setView] = useState("current"); // current | template | history
+  const [search, setSearch] = useState("");
+  const [catFilter, setCatFilter] = useState("all");
+  const [noteDraft, setNoteDraft] = useState("");
+  const [customName, setCustomName] = useState("");
+
+  const thisWeek = weekStartIso();
+  const mine = (unitRequests || []).filter((r) => r.unitId === currentUser.id);
+  const current = mine.find((r) => r.weekOf === thisWeek && (r.status === "open" || r.status === "submitted"));
+  const history = mine.filter((r) => r !== current).sort((a, b) => b.createdAt - a.createdAt);
+  const template = (unitTemplates || {})[currentUser.id] || [];
+
+  // Only products the manager exposed to units.
+  const catalog = products.filter((p) => p.unitVisible !== false);
+  const categories = Array.from(new Set(catalog.map((p) => p.category || "ללא קטגוריה")));
+  const filtered = catalog
+    .filter((p) => (search ? p.name.includes(search) : true))
+    .filter((p) => (catFilter === "all" ? true : (p.category || "ללא קטגוריה") === catFilter));
+
+  const isSubmitted = current?.status === "submitted";
+  const [addingMore, setAddingMore] = useState(false);
+  const locked = isSubmitted && !addingMore;
+
+  useEffect(() => { setNoteDraft(current?.note || ""); }, [current?.id, current?.status]);
+
+  async function saveNote(text) {
+    if (locked) return;
+    const base = current || {
+      id: genId(),
+      unitId: currentUser.id,
+      unitName: currentUser.name,
+      weekOf: thisWeek,
+      status: "open",
+      createdAt: Date.now(),
+      items: [],
+      note: "",
+    };
+    if ((base.note || "") === (text || "")) return;
+    const updated = { ...base, note: text, updatedAt: Date.now() };
+    const others = (unitRequests || []).filter((r) => r.id !== updated.id);
+    await persistUnitRequests([...others, updated]);
+  }
+
+  async function upsertCurrent(items) {
+    const base = current || {
+      id: genId(),
+      unitId: currentUser.id,
+      unitName: currentUser.name,
+      weekOf: thisWeek,
+      status: "open",
+      createdAt: Date.now(),
+      items: [],
+      note: "",
+    };
+    const updated = { ...base, items, updatedAt: Date.now() };
+    const others = (unitRequests || []).filter((r) => r.id !== updated.id);
+    await persistUnitRequests([...others, updated]);
+  }
+
+  async function setQty(product, qty, unit) {
+    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
+    const q = Math.max(0, Number(qty) || 0);
+    const u = unit || (current?.items || []).find((i) => i.productId === product.id)?.unit || product.unit;
+    const items = (current?.items || []).filter((i) => i.productId !== product.id);
+    if (q > 0) items.push({ productId: product.id, name: product.name, unit: u, qty: q });
+    await upsertCurrent(items);
+  }
+
+  // Add a free-text product that isn't in the catalog.
+  async function addCustomItem() {
+    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
+    const name = customName.trim();
+    if (!name) return;
+    const items = [...(current?.items || []), { productId: "custom-" + genId(), name, unit: "", qty: 1, custom: true }];
+    await upsertCurrent(items);
+    setCustomName("");
+  }
+  async function updateCustomQty(pid, qty) {
+    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
+    const q = Math.max(0, Number(qty) || 0);
+    const items = (current?.items || []).map((i) => (i.productId === pid ? { ...i, qty: q } : i));
+    await upsertCurrent(items);
+  }
+  async function removeItem(pid) {
+    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
+    await upsertCurrent((current?.items || []).filter((i) => i.productId !== pid));
+  }
+
+  async function loadFromTemplate() {
+    if (locked) return showToast("הבקשה כבר נשלחה");
+    if (template.length === 0) return showToast("לא הוגדרה רשימה שבועית קבועה");
+    const items = template
+      .map((t) => {
+        const p = catalog.find((x) => x.id === t.productId);
+        return p ? { productId: p.id, name: p.name, unit: p.unit, qty: t.qty } : null;
+      })
+      .filter(Boolean);
+    await upsertCurrent(items);
+    showToast(`נטענו ${items.length} מוצרים מהרשימה הקבועה`);
+  }
+
+  async function saveAsTemplate() {
+    const items = (current?.items || []).map((i) => ({ productId: i.productId, qty: i.qty }));
+    if (items.length === 0) return showToast("אין מוצרים לשמור");
+    await persistUnitTemplates({ ...(unitTemplates || {}), [currentUser.id]: items });
+    showToast("נשמר כרשימה שבועית קבועה ✓");
+  }
+
+  async function submit() {
+    if (!current || (current.items || []).length === 0) return showToast("הבקשה ריקה");
+    const others = (unitRequests || []).filter((r) => r.id !== current.id);
+    await persistUnitRequests([...others, { ...current, note: noteDraft, status: "submitted", submittedAt: Date.now() }]);
+    if (notifyManagers) {
+      await notifyManagers(`🧺 ${currentUser.name} שלח בקשה שבועית (${current.items.length} מוצרים) - ממתינה לאישורך`, { tab: "admin", section: "unitrequests" });
+    }
+    showToast("הבקשה נשלחה למחסן ✓");
+  }
+
+  async function reopen() {
+    const others = (unitRequests || []).filter((r) => r.id !== current.id);
+    await persistUnitRequests([...others, { ...current, status: "open" }]);
+    showToast("הבקשה נפתחה מחדש לעריכה");
+  }
+
+  async function finishAddMore() {
+    setAddingMore(false);
+    if (notifyManagers) await notifyManagers(`🧺 ${currentUser.name} הוסיף פריטים לבקשה שכבר נשלחה`, { tab: "admin", section: "unitrequests" });
+    showToast("הפריטים נוספו לבקשה והמחסן עודכן");
+  }
+
+  // Load a previous request's items into this week's request, so it can be edited and re-sent.
+  async function reuseRequest(r) {
+    if (locked && current?.status === "submitted") {
+      // fine — reuse replaces into a fresh editable request below
+    }
+    const items = (r.items || []).map((i) => ({ ...i }));
+    await upsertCurrent(items);
+    setView("current");
+    showToast("הבקשה הועתקה לעריכה — אפשר לשנות ולשלוח מחדש");
+  }
+
+  function printRequest(req) {
+    const r = req || current;
+    const printItems = (r && r.status === "fulfilled" && Array.isArray(r.issuedItems) && r.issuedItems.length) ? r.issuedItems : (r ? r.items : []);
+    if (!r || (printItems || []).length === 0) return showToast("אין מה להדפיס");
+    const rows = (printItems || [])
+      .map((i, idx) => `<tr style="background:${idx % 2 ? "#EAF3FB" : "#fff"}"><td>${idx + 1}</td><td class="name">${i.name}</td><td class="qty">${i.qty} ${i.unit || ""}</td></tr>`)
+      .join("");
+    const noteText = (req ? r.managerNote || r.note : (noteDraft || r.note)) || "";
+    const heading = r.status === "fulfilled" ? "בקשה שאושרה מהמחסן" : "בקשה מהמחסן";
+    const html = `
+      <!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="utf-8"><title>${heading}</title>
+      <style>
+        @page { size: A4 portrait; margin: 14mm; }
+        * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        body { font-family: Arial, sans-serif; color: #111; }
+        h1 { text-align: center; font-size: 22px; margin: 0 0 4px; }
+        .sub { text-align: center; color: #555; font-size: 13px; margin-bottom: 16px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #444; padding: 8px 10px; font-size: 15px; }
+        thead th { background: #3E8FCB; color: #fff; }
+        td { text-align: center; }
+        td.name { text-align: right; font-weight: bold; }
+        .note { margin-top: 16px; padding: 10px; border: 1px dashed #888; border-radius: 8px; font-size: 14px; }
+      </style></head><body>
+        <h1>${heading}</h1>
+        <div class="sub">${r.unitName || currentUser.name || ""} · ${new Date(r.fulfilledAt || r.submittedAt || r.updatedAt || r.createdAt || Date.now()).toLocaleDateString("he-IL")}</div>
+        <table>
+          <thead><tr><th style="width:36px">#</th><th>מוצר</th><th style="width:110px">כמות</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        ${noteText ? `<div class="note"><b>הערה:</b> ${noteText}</div>` : ""}
+      </body></html>`;
+    const win = window.open("", "_blank");
+    win.document.write(html);
+    win.document.close();
+  }
+
+  const qtyOf = (id) => (current?.items || []).find((i) => i.productId === id)?.qty || 0;
+  const unitOf = (p) => (current?.items || []).find((i) => i.productId === p.id)?.unit || p.unit;
+  const totalItems = (current?.items || []).length;
+  const customItems = (current?.items || []).filter((i) => i.custom);
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-4">
+        {[["current", "הבקשה השבועית"], ["template", "רשימה קבועה"], ["history", "היסטוריה"]].map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setView(id)}
+            className="flex-1 py-2 rounded-2xl text-sm font-bold"
+            style={{ background: view === id ? C.brand : C.kraft, color: view === id ? "#fff" : C.ink }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {view === "current" && (
+        <>
+          <ShelfTag accent={current ? UNIT_STATUS[current.status].color : C.steel} style={{ marginBottom: 16 }}>
+            <div className="flex justify-between items-center">
+              <div>
+                <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
+                  שבוע {weekLabel(thisWeek)}
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: C.steel }}>
+                  {current ? `${totalItems} מוצרים · ${UNIT_STATUS[current.status].label}` : "עדיין לא התחלת בקשה לשבוע הזה"}
+                </div>
+              </div>
+              {template.length > 0 && !locked && (
+                <button onClick={loadFromTemplate} className="text-xs font-bold px-3 py-2 rounded-2xl" style={{ background: C.accent, color: "#fff" }}>
+                  טען רשימה קבועה
+                </button>
+              )}
+            </div>
+            {isSubmitted && !addingMore && (
+              <div className="flex gap-2 mt-2">
+                <button onClick={() => setAddingMore(true)} className="flex-1 py-2 rounded-2xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>
+                  ➕ הוסף עוד לבקשה
+                </button>
+                <button onClick={reopen} className="flex-1 py-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
+                  פתח מחדש לעריכה
+                </button>
+              </div>
+            )}
+            {addingMore && (
+              <div className="mt-2">
+                <div className="text-xs mb-2 p-2 rounded-xl" style={{ background: "rgba(232,168,77,0.15)", color: C.ink }}>
+                  מצב הוספה: הוסף פריטים למטה (חיפוש / מוצר חדש), והם יתווספו לבקשה שכבר נשלחה.
+                </div>
+                <button onClick={finishAddMore} className="w-full py-2 rounded-2xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>
+                  ✓ סיום - עדכן את המחסן
+                </button>
+              </div>
+            )}
+            {totalItems > 0 && (
+              <button
+                onClick={() => printRequest()}
+                className="w-full mt-2 py-2.5 rounded-2xl font-bold text-sm"
+                style={{ background: C.accent, color: "#fff" }}
+              >
+                🖨️ הדפס טבלה עכשיו (בלי צורך באישור מנהל)
+              </button>
+            )}
+          </ShelfTag>
+
+          {totalItems > 0 && (
+            <ShelfTag accent={C.sage} style={{ marginBottom: 16 }}>
+              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>מה ביקשת</div>
+              <div className="flex flex-col gap-1.5">
+                {(current.items || []).map((i) => (
+                  <div key={i.productId} className="flex justify-between text-sm">
+                    <span style={{ color: C.ink }}>{i.name}</span>
+                    <span className="font-bold" style={{ color: C.ink }}>{i.qty} {i.unit}</span>
+                  </div>
+                ))}
+              </div>
+              <textarea
+                value={noteDraft}
+                onChange={(e) => setNoteDraft(e.target.value)}
+                onBlur={() => saveNote(noteDraft)}
+                disabled={locked}
+                placeholder="הערה למחסן (לא חובה)..."
+                className="w-full mt-3 p-2 rounded-2xl border text-sm"
+                style={{ borderColor: C.kraftDark, minHeight: 56, resize: "vertical", background: locked ? C.kraft : C.kraft }}
+              />
+              {!isSubmitted && (
+                <div className="flex gap-2 mt-3">
+                  <button onClick={submit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
+                    שלח למחסן
+                  </button>
+                  <button onClick={saveAsTemplate} className="px-3 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+                    שמור כקבועה
+                  </button>
+                </div>
+              )}
+            </ShelfTag>
+          )}
+
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="חיפוש מוצר..."
+            className="w-full p-3 rounded-2xl border mb-3"
+            style={{ borderColor: C.kraftDark, background: C.kraft }}
+          />
+
+          {!locked && (
+            <div className="flex gap-2 mb-3">
+              <input
+                value={customName}
+                onChange={(e) => setCustomName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") addCustomItem(); }}
+                placeholder="מוצר שלא ברשימה..."
+                className="flex-1 p-3 rounded-2xl border"
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
+              />
+              <button onClick={addCustomItem} className="px-4 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
+                הוסף
+              </button>
+            </div>
+          )}
+
+          {customItems.length > 0 && (
+            <ShelfTag accent={C.mustard} style={{ marginBottom: 12 }}>
+              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>מוצרים שהוספת ידנית</div>
+              <div className="flex flex-col gap-2">
+                {customItems.map((i) => (
+                  <div key={i.productId} className="flex justify-between items-center">
+                    <span className="font-bold text-sm" style={{ color: C.ink }}>{i.name}</span>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => updateCustomQty(i.productId, i.qty - 1)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}>−</button>
+                      <input type="number" value={i.qty === 0 ? "" : i.qty} onChange={(e) => updateCustomQty(i.productId, e.target.value)} disabled={locked} className="w-12 text-center p-1.5 rounded-xl border" style={{ borderColor: C.kraftDark }} />
+                      <button onClick={() => updateCustomQty(i.productId, i.qty + 1)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.brand, color: "#fff", opacity: locked ? 0.4 : 1 }}>+</button>
+                      <button onClick={() => removeItem(i.productId)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </ShelfTag>
+          )}
+
+          <div className="flex gap-2 overflow-x-auto pb-2 mb-3">
+            <button
+              onClick={() => setCatFilter("all")}
+              className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
+              style={{ background: catFilter === "all" ? C.brand : C.kraft, color: catFilter === "all" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              הכל
+            </button>
+            {categories.map((c) => {
+              const col = categoryColor(c);
+              const active = catFilter === c;
+              return (
+                <button
+                  key={c}
+                  onClick={() => setCatFilter(c)}
+                  className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
+                  style={{ background: active ? col : C.kraft, color: active ? "#fff" : col, border: `1.5px solid ${col}` }}
+                >
+                  {c}
+                </button>
+              );
+            })}
+          </div>
+
+          {catalog.length === 0 && (
+            <ShelfTag accent={C.steel}>
+              <p className="text-sm text-center" style={{ color: C.steel }}>
+                המנהל עדיין לא פתח מוצרים להזמנה. פנה אליו.
+              </p>
+            </ShelfTag>
+          )}
+
+          <div className="flex flex-col gap-2">
+            {filtered.map((p) => {
+              const q = qtyOf(p.id);
+              const u = unitOf(p);
+              const isBox = u === "ארגז";
+              const step = isBox ? 0.5 : 1;
+              return (
+                <ShelfTag key={p.id} accent={q > 0 ? C.sage : C.kraftDark}>
+                  <div className="flex justify-between items-center">
+                    <div className="flex gap-2 items-center">
+                      {p.imageData && (
+                        <img src={p.imageData} alt="" className="rounded-xl" style={{ width: 44, height: 44, objectFit: "cover" }} />
+                      )}
+                      <div>
+                        <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
+                        <div className="text-xs" style={{ color: C.steel }}>{p.category || "ללא קטגוריה"}</div>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => setQty(p, Math.max(0, q - step), u)}
+                        disabled={locked || q === 0}
+                        className="w-8 h-8 rounded-xl font-bold"
+                        style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked || q === 0 ? 0.4 : 1 }}
+                      >
+                        −
+                      </button>
+                      <input
+                        type="number"
+                        step={step}
+                        value={q === 0 ? "" : q}
+                        onChange={(e) => setQty(p, e.target.value, u)}
+                        disabled={locked}
+                        placeholder="0"
+                        className="w-14 text-center p-1.5 rounded-xl border"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                      <button
+                        onClick={() => setQty(p, q + step, u)}
+                        disabled={locked}
+                        className="w-8 h-8 rounded-xl font-bold"
+                        style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}
+                      >
+                        +
+                      </button>
+                      <button
+                        onClick={() => setQty(p, q > 0 ? q : step, isBox ? (p.unit || "יח׳") : "ארגז")}
+                        disabled={locked}
+                        title="החלף בין יחידות לארגזים"
+                        className="px-2 h-8 rounded-xl font-bold text-xs whitespace-nowrap"
+                        style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}
+                      >
+                        {isBox ? "🧺 ארגז" : (p.unit || "יח׳")}
+                      </button>
+                    </div>
+                  </div>
+                </ShelfTag>
+              );
+            })}
+          </div>
+        </>
+      )}
+
+      {view === "template" && (
+        <ShelfTag accent={C.accent}>
+          <div className="wh-display font-bold text-sm mb-1" style={{ color: C.ink }}>הרשימה השבועית הקבועה</div>
+          <p className="text-xs mb-3" style={{ color: C.steel }}>
+            הדברים שאתם מזמינים כל שבוע. בנו בקשה בלשונית "הבקשה השבועית", לחצו "שמור כקבועה", ומאז אפשר לטעון אותה בלחיצה אחת בכל שבוע.
+          </p>
+          {template.length === 0 ? (
+            <p className="text-sm text-center py-4" style={{ color: C.steel }}>עדיין לא הוגדרה רשימה קבועה</p>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              {template.map((t) => {
+                const p = products.find((x) => x.id === t.productId);
+                if (!p) return null;
+                return (
+                  <div key={t.productId} className="flex justify-between text-sm">
+                    <span style={{ color: C.ink }}>{p.name}</span>
+                    <span className="font-bold" style={{ color: C.ink }}>{t.qty} {p.unit}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </ShelfTag>
+      )}
+
+      {view === "history" && (
+        <div className="flex flex-col gap-2">
+          {history.length === 0 && (
+            <p className="text-sm text-center py-8" style={{ color: C.steel }}>אין בקשות קודמות</p>
+          )}
+          {history.map((r) => {
+            const st = UNIT_STATUS[r.status] || UNIT_STATUS.open;
+            return (
+              <ShelfTag key={r.id} accent={st.color}>
+                <div className="flex justify-between items-center">
+                  <div>
+                    <div className="font-bold text-sm" style={{ color: C.ink }}>שבוע {weekLabel(r.weekOf)}</div>
+                    <div className="text-xs" style={{ color: C.steel }}>{(r.items || []).length} מוצרים</div>
+                  </div>
+                  <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: st.color, color: "#fff" }}>
+                    {st.label}
+                  </span>
+                </div>
+                {r.managerNote && (
+                  <div className="text-xs mt-2 p-2 rounded-xl" style={{ background: C.paper, color: C.steel }}>
+                    הערת המחסן: {r.managerNote}
+                  </div>
+                )}
+                <div className="flex gap-2 mt-2">
+                  <button onClick={() => reuseRequest(r)} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.brand, color: "#fff" }}>
+                    📋 פתח וערוך מחדש
+                  </button>
+                  <button onClick={() => printRequest(r)} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                    🖨️ הדפס טבלה
+                  </button>
+                </div>
+              </ShelfTag>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Main App ---------- */
+/* Catches render crashes so the app shows a recovery screen instead of going white.
+   Also lets the user jump back to a safe tab without reinstalling. */
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error("App crashed:", error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="min-h-screen flex items-center justify-center p-6" style={{ background: "#F3F6FB", fontFamily: "Arial,sans-serif" }} dir="rtl">
+          <div className="w-full max-w-xs text-center">
+            <div className="text-5xl mb-4">😕</div>
+            <h1 style={{ color: "#14213D", fontWeight: 900, fontSize: 20, marginBottom: 8 }}>משהו השתבש</h1>
+            <p style={{ color: "#5B6B85", fontSize: 14, marginBottom: 20 }}>
+              אירעה תקלה זמנית. הנתונים שלך שמורים. נסה לטעון מחדש.
+            </p>
+            <button
+              onClick={() => { window.location.hash = ""; window.location.reload(); }}
+              className="w-full p-3 rounded-2xl font-bold"
+              style={{ background: "#14213D", color: "#fff", border: "none", marginBottom: 8 }}
+            >
+              טען מחדש
+            </button>
+            <button
+              onClick={() => {
+                try { localStorage.setItem("kitchen-force-tab", "tasks"); } catch (e) {}
+                window.location.hash = "";
+                window.location.reload();
+              }}
+              className="w-full p-3 rounded-2xl font-bold"
+              style={{ background: C.kraft, color: "#14213D", border: "1px solid #DCE4F0" }}
+            >
+              פתח במסך המשימות
+            </button>
+            <p style={{ color: "#8894a8", fontSize: 11, marginTop: 16, direction: "ltr", wordBreak: "break-all" }}>
+              {String(this.state.error?.message || this.state.error).slice(0, 120)}
+            </p>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+/* ---------- Kiosk scan station ---------- */
+let _kioskAudioCtx = null;
+function playBeep(kind) {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    if (!_kioskAudioCtx) _kioskAudioCtx = new Ctx();
+    const ctx = _kioskAudioCtx;
+    if (ctx.state === "suspended") ctx.resume();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    const now = ctx.currentTime;
+    if (kind === "error") { osc.type = "square"; osc.frequency.value = 200; }
+    else { osc.type = "sine"; osc.frequency.value = 880; }
+    const dur = kind === "error" ? 0.4 : 0.15;
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.5, now + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + dur);
+    osc.start(now);
+    osc.stop(now + dur);
+  } catch (e) { /* ignore */ }
+}
+
+function KioskScanner({ products, persistProducts, logStockChange, currentUser, onExit, onSwitchMode }) {
+  const productsRef = useRef(products);
+  const [last, setLast] = useState(null); // { ok, name, qty, code }
+  const [count, setCount] = useState(0);
+
+  useEffect(() => { productsRef.current = products; }, [products]);
+
+  function handleScan(raw) {
+    const code = String(raw).trim();
+    if (!code) return;
+    const product = productsRef.current.find((p) => p.barcode === code);
+    if (!product) {
+      playBeep("error");
+      setLast({ ok: false, code });
+      return;
+    }
+    const newQty = Math.max((product.quantity || 0) - 1, 0);
+    const next = productsRef.current.map((p) =>
+      p.id === product.id ? { ...p, quantity: newQty } : p
+    );
+    productsRef.current = next; // update immediately so rapid scans stay correct
+    persistProducts(next);
+    if (logStockChange) logStockChange(product.id, -1, currentUser?.name || "תחנת סריקה");
+    playBeep("ok");
+    setLast({ ok: true, name: product.name, qty: newQty, code });
+    setCount((c) => c + 1);
+  }
+
+  // Capture scans globally (hardware scanner types like a keyboard, ends with Enter).
+  const handleScanRef = useRef(handleScan);
+  handleScanRef.current = handleScan;
+  useEffect(() => {
+    let buffer = "";
+    let lastTime = 0;
+    function onKey(e) {
+      const now = Date.now();
+      if (now - lastTime > 100) buffer = "";
+      lastTime = now;
+      if (e.key === "Enter") {
+        if (buffer) { handleScanRef.current(buffer); buffer = ""; }
+        return;
+      }
+      if (e.key && e.key.length === 1) buffer += e.key;
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Keep the screen awake while the station is running.
+  useEffect(() => {
+    let lock = null;
+    async function acquire() {
+      try { if (navigator.wakeLock) lock = await navigator.wakeLock.request("screen"); } catch (e) {}
+    }
+    acquire();
+    const onVis = () => { if (document.visibilityState === "visible") acquire(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => {
+      document.removeEventListener("visibilitychange", onVis);
+      try { lock && lock.release(); } catch (e) {}
+    };
+  }, []);
+
+  const bg = last ? (last.ok ? "#1f6b3a" : "#7a1f1f") : "#1f2a24";
+
+  return (
+    <div
+      dir="rtl"
+      style={{
+        position: "fixed", inset: 0, zIndex: 60, background: bg,
+        transition: "background 0.15s", display: "flex", flexDirection: "column",
+        alignItems: "center", justifyContent: "center", color: "#fff",
+        fontFamily: "'Heebo', sans-serif", padding: 24, textAlign: "center",
+      }}
+    >
+      <button
+        onClick={() => { if (window.confirm("לצאת ממצב תחנת סריקה?")) onExit(); }}
+        style={{ position: "absolute", top: 16, left: 16, background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", borderRadius: 16, padding: "8px 16px", fontSize: 14 }}
+      >
+        יציאה
+      </button>
+      {onSwitchMode && (
+        <button
+          onClick={onSwitchMode}
+          style={{ position: "absolute", top: 56, left: 16, background: "rgba(255,255,255,0.12)", color: "#fff", border: "none", borderRadius: 16, padding: "6px 14px", fontSize: 13 }}
+        >
+          📷 מצב מצלמה
+        </button>
+      )}
+      <div style={{ position: "absolute", top: 20, right: 20, fontSize: 15, opacity: 0.7 }}>
+        נסרקו: {count}
+      </div>
+
+      {!last && (
+        <div>
+          <div style={{ fontSize: 80, marginBottom: 12 }}>📦</div>
+          <div style={{ fontSize: 30, fontWeight: 700 }}>מוכן לסריקה</div>
+          <div style={{ fontSize: 17, opacity: 0.75, marginTop: 8 }}>העבר מוצר מול הסורק</div>
+        </div>
+      )}
+
+      {last && last.ok && (
+        <div>
+          <div style={{ fontSize: 70, marginBottom: 4 }}>✅</div>
+          <div style={{ fontSize: 36, fontWeight: 900, lineHeight: 1.2 }}>{last.name}</div>
+          <div style={{ fontSize: 20, marginTop: 14, opacity: 0.9 }}>נשאר במלאי</div>
+          <div style={{ fontSize: 96, fontWeight: 900, lineHeight: 1, fontFamily: "'Rubik', sans-serif" }}>{last.qty}</div>
+        </div>
+      )}
+
+      {last && !last.ok && (
+        <div>
+          <div style={{ fontSize: 70, marginBottom: 4 }}>❌</div>
+          <div style={{ fontSize: 32, fontWeight: 900 }}>ברקוד לא מזוהה</div>
+          <div style={{ fontSize: 18, marginTop: 12, opacity: 0.85, direction: "ltr" }}>{last.code}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KioskCameraScanner({ products, persistProducts, logStockChange, currentUser, onExit, onSwitchMode }) {
+  const videoRef = useRef(null);
+  const streamRef = useRef(null);
+  const rafRef = useRef(null);
+  const productsRef = useRef(products);
+  const lastCodeRef = useRef({ code: null, ts: 0 });
+  const [last, setLast] = useState(null);
+  const [count, setCount] = useState(0);
+  const [flash, setFlash] = useState(null); // "ok" | "err"
+  const [err, setErr] = useState("");
+
+  useEffect(() => { productsRef.current = products; }, [products]);
+
+  function processCode(raw) {
+    const code = String(raw).trim();
+    if (!code) return;
+    const now = Date.now();
+    if (lastCodeRef.current.code === code && now - lastCodeRef.current.ts < 2500) return;
+    lastCodeRef.current = { code, ts: now };
+
+    const product = productsRef.current.find((p) => p.barcode === code);
+    if (!product) {
+      playBeep("error");
+      setLast({ ok: false, code });
+      setFlash("err"); setTimeout(() => setFlash(null), 300);
+      return;
+    }
+    const newQty = Math.max((product.quantity || 0) - 1, 0);
+    const next = productsRef.current.map((p) => (p.id === product.id ? { ...p, quantity: newQty } : p));
+    productsRef.current = next;
+    persistProducts(next);
+    if (logStockChange) logStockChange(product.id, -1, currentUser?.name || "תחנת מצלמה");
+    playBeep("ok");
+    setLast({ ok: true, name: product.name, qty: newQty, code });
+    setCount((c) => c + 1);
+    setFlash("ok"); setTimeout(() => setFlash(null), 300);
+  }
+
+  const processRef = useRef(processCode);
+  processRef.current = processCode;
+
+  useEffect(() => {
+    let cancelled = false;
+    function stop() {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
+      if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
+    }
+    async function start() {
+      if (!("BarcodeDetector" in window)) {
+        setErr("הדפדפן במכשיר הזה לא תומך בסריקת מצלמה רציפה. השתמש במצב סורק חומרה.");
+        return;
+      }
+      let formats;
+      try {
+        const supported = await window.BarcodeDetector.getSupportedFormats();
+        const wanted = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "code_39", "qr_code"];
+        formats = wanted.filter((f) => supported.includes(f));
+        if (!formats.length) throw new Error("no formats");
+      } catch (e) { setErr("סריקת מצלמה לא נתמכת במכשיר הזה."); return; }
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
+        streamRef.current = stream;
+        if (videoRef.current) { videoRef.current.srcObject = stream; await videoRef.current.play(); }
+        const detector = new window.BarcodeDetector({ formats });
+        const loop = async () => {
+          if (cancelled || !videoRef.current) return;
+          try {
+            const codes = await detector.detect(videoRef.current);
+            if (codes && codes.length) processRef.current(codes[0].rawValue);
+          } catch (e) { /* ignore per-frame errors */ }
+          rafRef.current = requestAnimationFrame(loop);
+        };
+        loop();
+      } catch (e) {
+        setErr("לא ניתן להפעיל את המצלמה. בדוק הרשאות מצלמה בדפדפן.");
+      }
+    }
+    start();
+    return () => { cancelled = true; stop(); };
+  }, []);
+
+  useEffect(() => {
+    let lock = null;
+    async function acquire() { try { if (navigator.wakeLock) lock = await navigator.wakeLock.request("screen"); } catch (e) {} }
+    acquire();
+    const onVis = () => { if (document.visibilityState === "visible") acquire(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { document.removeEventListener("visibilitychange", onVis); try { lock && lock.release(); } catch (e) {} };
+  }, []);
+
+  return (
+    <div dir="rtl" style={{ position: "fixed", inset: 0, zIndex: 60, background: "#000", overflow: "hidden" }}>
+      <video
+        ref={videoRef}
+        muted
+        playsInline
+        autoPlay
+        style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+      />
+
+      {flash && (
+        <div style={{ position: "absolute", inset: 0, background: flash === "ok" ? "rgba(31,107,58,0.45)" : "rgba(122,31,31,0.45)" }} />
+      )}
+
+      {!err && (
+        <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-50%)", width: "70%", maxWidth: 360, height: 160, border: "3px solid rgba(255,255,255,0.85)", borderRadius: 16 }} />
+      )}
+
+      <button
+        onClick={() => { if (window.confirm("לצאת ממצב תחנת סריקה?")) onExit(); }}
+        style={{ position: "absolute", top: 16, left: 16, background: "rgba(0,0,0,0.5)", color: "#fff", border: "none", borderRadius: 16, padding: "8px 16px", fontSize: 14 }}
+      >
+        יציאה
+      </button>
+      {onSwitchMode && (
+        <button
+          onClick={onSwitchMode}
+          style={{ position: "absolute", top: 56, left: 16, background: "rgba(0,0,0,0.5)", color: "#fff", border: "none", borderRadius: 16, padding: "6px 14px", fontSize: 13 }}
+        >
+          🔌 מצב סורק חומרה
+        </button>
+      )}
+      <div style={{ position: "absolute", top: 20, right: 20, color: "#fff", fontSize: 15, background: "rgba(0,0,0,0.4)", padding: "4px 10px", borderRadius: 12 }}>
+        נסרקו: {count}
+      </div>
+
+      <div
+        style={{
+          position: "absolute", bottom: 0, left: 0, right: 0, padding: 24, textAlign: "center",
+          background: "linear-gradient(transparent, rgba(0,0,0,0.78))", color: "#fff", fontFamily: "'Heebo', sans-serif",
+        }}
+      >
+        {err ? (
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#ffd7d7" }}>{err}</div>
+        ) : !last ? (
+          <div style={{ fontSize: 22, fontWeight: 700 }}>הצג מוצר מול המצלמה</div>
+        ) : last.ok ? (
+          <div>
+            <div style={{ fontSize: 30, fontWeight: 900 }}>{last.name}</div>
+            <div style={{ fontSize: 18, marginTop: 4 }}>
+              נשאר במלאי: <span style={{ fontSize: 30, fontWeight: 900, fontFamily: "'Rubik', sans-serif" }}>{last.qty}</span>
+            </div>
+          </div>
+        ) : (
+          <div style={{ fontSize: 24, fontWeight: 900, color: "#ffd7d7" }}>❌ ברקוד לא מזוהה</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUser, openSignal, onUnread }) {
+  const [messages, setMessages] = useState([]);
+  const [reads, setReads] = useState({});
+  const [open, setOpen] = useState(false);
+  const [activeThread, setActiveThread] = useState(null); // manager: selected worker id
+  const [picking, setPicking] = useState(false);
+  const [text, setText] = useState("");
+  const bodyRef = useRef(null);
+  const myId = currentUser?.id;
+
+  async function reload() {
+    try {
+      const m = await loadKey(KEYS.messages, []);
+      const r = await loadKey(KEYS.chatReads, {});
+      setMessages(Array.isArray(m) ? m : []);
+      setReads(r && typeof r === "object" ? r : {});
+    } catch (e) { /* ignore */ }
+  }
+
+  useEffect(() => {
+    reload();
+    const t = setInterval(reload, 4000);
+    return () => clearInterval(t);
+  }, []);
+
+  const lastRead = reads[myId] || 0;
+  const unread = messages.filter((msg) =>
+    isManager
+      ? msg.fromRole !== "manager" && msg.ts > lastRead
+      : msg.threadId === myId && msg.fromRole === "manager" && msg.ts > lastRead
+  ).length;
+
+  async function markRead() {
+    const next = { ...reads, [myId]: Date.now() };
+    setReads(next);
+    try { await saveKey(KEYS.chatReads, next); } catch (e) {}
+  }
+
+  function openChat() {
+    setOpen(true);
+    if (!isManager) { setActiveThread(myId); markRead(); }
+    else { setActiveThread(null); }
+  }
+
+  useEffect(() => {
+    if (open && bodyRef.current) bodyRef.current.scrollTop = bodyRef.current.scrollHeight;
+  }, [open, messages, activeThread]);
+
+  // Report unread count up so the header can show the badge on its chat button.
+  useEffect(() => {
+    if (onUnread) onUnread(unread);
+  }, [unread, onUnread]);
+
+  // Open the chat when the header's chat button is tapped.
+  useEffect(() => {
+    if (openSignal) openChat();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSignal]);
+
+  async function send() {
+    const t = text.trim();
+    if (!t) return;
+    const threadId = isManager ? activeThread : myId;
+    if (!threadId) return;
+    const msg = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      threadId,
+      fromId: myId,
+      fromName: currentUser?.name || "",
+      fromRole: isManager ? "manager" : "worker",
+      text: t,
+      ts: Date.now(),
+    };
+    setText("");
+    try {
+      const latest = await loadKey(KEYS.messages, []);
+      const arr = Array.isArray(latest) ? latest : [];
+      const nextArr = [...arr, msg];
+      await saveKey(KEYS.messages, nextArr);
+      setMessages(nextArr);
+    } catch (e) {}
+    try {
+      if (isManager) { if (notifyUser) notifyUser(threadId, "הודעה חדשה מההנהלה", null); }
+      else if (notifyManagers) notifyManagers(`הודעה חדשה מ${currentUser?.name || "עובד"}`, null);
+    } catch (e) {}
+    markRead();
+  }
+
+  const userName = (id) => (users.find((u) => u.id === id) || {}).name || "עובד";
+  const fmtTime = (ts) => { try { return new Date(ts).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }); } catch (e) { return ""; } };
+
+  const threads = (() => {
+    const map = {};
+    for (const m of messages) if (!map[m.threadId] || m.ts > map[m.threadId].ts) map[m.threadId] = m;
+    return Object.keys(map).map((tid) => ({ threadId: tid, last: map[tid] })).sort((a, b) => b.last.ts - a.last.ts);
+  })();
+
+  const threadMessages = messages
+    .filter((m) => m.threadId === (isManager ? activeThread : myId))
+    .sort((a, b) => a.ts - b.ts);
+
+  const inThread = !isManager || activeThread;
+
+  return (
+    <>
+      {open && (
+        <div dir="rtl" style={{ position: "fixed", inset: 0, zIndex: 70, background: C.paper, display: "flex", flexDirection: "column", fontFamily: "'Heebo', sans-serif" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: 14, background: C.brand, color: "#fff" }}>
+            {isManager && activeThread && (
+              <button onClick={() => setActiveThread(null)} style={{ background: "transparent", border: "none", color: "#fff", fontSize: 20, cursor: "pointer" }}>›</button>
+            )}
+            <div style={{ fontWeight: 800, fontSize: 17, flex: 1 }}>
+              {isManager ? (activeThread ? `שיחה עם ${userName(activeThread)}` : "פניות עובדים") : "צ'אט עם ההנהלה"}
+            </div>
+            <button onClick={() => setOpen(false)} style={{ background: "transparent", border: "none", color: "#fff", fontSize: 22, cursor: "pointer" }}>✕</button>
+          </div>
+
+          {isManager && !activeThread ? (
+            <div style={{ flex: 1, overflowY: "auto", padding: 8 }}>
+              <button
+                onClick={() => setPicking((v) => !v)}
+                style={{ width: "100%", background: C.brand, color: "#fff", border: "none", borderRadius: 14, padding: 12, marginBottom: 10, fontWeight: 700, cursor: "pointer" }}
+              >
+                ✏️ הודעה חדשה לעובד
+              </button>
+              {picking && (
+                <div style={{ marginBottom: 10 }}>
+                  {users.filter((u) => u.id !== myId).length === 0 && (
+                    <div style={{ textAlign: "center", color: C.steel, padding: 8 }}>אין עובדים אחרים</div>
+                  )}
+                  {users.filter((u) => u.id !== myId).map((u) => (
+                    <button
+                      key={u.id}
+                      onClick={() => { setActiveThread(u.id); setPicking(false); markRead(); }}
+                      style={{ width: "100%", textAlign: "right", background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 12, padding: 10, marginBottom: 6, cursor: "pointer", fontWeight: 700, color: C.ink }}
+                    >
+                      {u.name}{u.role === "manager" ? " (מנהל)" : ""}
+                    </button>
+                  ))}
+                </div>
+              )}
+              {threads.length === 0 && !picking && (
+                <div style={{ textAlign: "center", color: C.steel, marginTop: 40 }}>אין פניות עדיין</div>
+              )}
+              {threads.map(({ threadId, last }) => {
+                const isUnread = last.fromRole !== "manager" && last.ts > lastRead;
+                return (
+                  <button
+                    key={threadId}
+                    onClick={() => { setActiveThread(threadId); markRead(); }}
+                    style={{ width: "100%", textAlign: "right", background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 14, padding: 12, marginBottom: 8, cursor: "pointer" }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontWeight: 800, color: C.ink }}>{userName(threadId)}</span>
+                      <span style={{ fontSize: 12, color: C.steel }}>{fmtTime(last.ts)}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                      <span style={{ fontSize: 13, color: C.steel, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "80%" }}>
+                        {last.fromRole === "manager" ? "אתה: " : ""}{last.text}
+                      </span>
+                      {isUnread && <span style={{ width: 10, height: 10, borderRadius: "50%", background: "#dc2626" }} />}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div ref={bodyRef} style={{ flex: 1, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+              {threadMessages.length === 0 && (
+                <div style={{ textAlign: "center", color: C.steel, marginTop: 40 }}>
+                  {isManager ? "אין הודעות בשיחה" : "כתוב הודעה כדי לפנות להנהלה"}
+                </div>
+              )}
+              {threadMessages.map((m) => {
+                const mine = m.fromId === myId;
+                return (
+                  <div key={m.id} style={{ alignSelf: mine ? "flex-start" : "flex-end", maxWidth: "78%", background: mine ? C.brand : C.kraft, color: mine ? "#fff" : C.ink, border: mine ? "none" : `1px solid ${C.kraftDark}`, borderRadius: 14, padding: "8px 12px" }}>
+                    {!mine && <div style={{ fontSize: 11, fontWeight: 700, opacity: 0.7, marginBottom: 2 }}>{m.fromRole === "manager" ? "ההנהלה" : m.fromName}</div>}
+                    <div style={{ fontSize: 15, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{m.text}</div>
+                    <div style={{ fontSize: 10, opacity: 0.6, marginTop: 3, textAlign: "left" }}>{fmtTime(m.ts)}</div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {inThread && (
+            <div style={{ display: "flex", gap: 8, padding: 10, borderTop: `1px solid ${C.kraftDark}`, background: C.kraft }}>
+              <input
+                value={text}
+                onChange={(e) => setText(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); send(); } }}
+                placeholder="הקלד הודעה..."
+                style={{ flex: 1, padding: "10px 14px", borderRadius: 20, border: `1px solid ${C.kraftDark}`, fontSize: 15 }}
+              />
+              <button onClick={send} style={{ background: C.brand, color: "#fff", border: "none", borderRadius: 20, padding: "0 20px", fontWeight: 700, cursor: "pointer" }}>שלח</button>
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
+function NotifItem({ n, onOpen, onDelete, onSnooze }) {
+  const [dx, setDx] = useState(0);
+  const startX = useRef(null);
+  const moved = useRef(false);
+  const THRESHOLD = 80;
+
+  function onTouchStart(e) { startX.current = e.touches[0].clientX; moved.current = false; }
+  function onTouchMove(e) {
+    if (startX.current == null) return;
+    const d = e.touches[0].clientX - startX.current;
+    if (Math.abs(d) > 6) moved.current = true;
+    setDx(d);
+  }
+  function onTouchEnd() {
+    if (dx < -THRESHOLD) onDelete(n);
+    else if (dx > THRESHOLD) onSnooze(n);
+    setDx(0);
+    startX.current = null;
+  }
+  function handleClick() { if (!moved.current) onOpen(n); }
+
+  return (
+    <div style={{ position: "relative", overflow: "hidden", borderRadius: 12 }}>
+      <div
+        style={{
+          position: "absolute", inset: 0, display: "flex", alignItems: "center",
+          justifyContent: dx < 0 ? "flex-start" : "flex-end", padding: "0 16px",
+          background: dx < 0 ? "#dc2626" : "#2563eb", color: "#fff", fontWeight: 700, fontSize: 14,
+        }}
+      >
+        {dx < 0 ? "🗑 מחק" : "⏰ הזכר אחר כך"}
+      </div>
+      <button
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+        onClick={handleClick}
+        className="p-2 rounded-xl text-sm text-right flex items-center gap-2 w-full"
+        style={{
+          position: "relative",
+          transform: `translateX(${dx}px)`,
+          transition: startX.current == null ? "transform 0.2s" : "none",
+          background: n.read ? C.paper : "rgba(124,92,252,0.15)",
+          color: C.ink,
+          border: `1px solid ${n.read ? C.kraftDark : "#D8CEFF"}`,
+        }}
+      >
+        <span className="flex-1">{n.message}</span>
+        {n.link && <span style={{ color: C.accent, fontWeight: 700 }}>‹</span>}
+      </button>
+    </div>
+  );
+}
+
+function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyManagers, onExit }) {
+  const [name, setName] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [locQuery, setLocQuery] = useState("");
+  const [locationId, setLocationId] = useState("");
+  const [showSug, setShowSug] = useState(false);
+  const [desc, setDesc] = useState("");
+  const [urgent, setUrgent] = useState(false);
+  const [sent, setSent] = useState(false);
+
+  useEffect(() => {
+    let lock = null;
+    async function acquire() { try { if (navigator.wakeLock) lock = await navigator.wakeLock.request("screen"); } catch (e) {} }
+    acquire();
+    const onVis = () => { if (document.visibilityState === "visible") acquire(); };
+    document.addEventListener("visibilitychange", onVis);
+    return () => { document.removeEventListener("visibilitychange", onVis); try { lock && lock.release(); } catch (e) {} };
+  }, []);
+
+  const cat = (taskCategories || []).find((c) => c.id === categoryId);
+
+  async function submit() {
+    if (!desc.trim()) return;
+    const title = cat ? `${cat.name}${locQuery.trim() ? " · " + locQuery.trim() : ""}` : desc.trim().slice(0, 40);
+    const created = {
+      id: genId(),
+      title,
+      description: desc.trim(),
+      assignedToId: "",
+      priority: urgent ? "urgent" : "normal",
+      location: locQuery.trim(),
+      locationId: locationId || "",
+      categoryId: categoryId || "",
+      status: "open",
+      createdAt: Date.now(),
+      createdBy: name.trim() || "בחור",
+      comments: [],
+    };
+    let baseTasks = tasks;
+    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
+    await persistTasks([created, ...baseTasks]);
+    if (notifyManagers) notifyManagers(`🛠️ דיווח חדש מ${created.createdBy}: ${title}`, { tab: "tasks" });
+    setSent(true);
+    setName(""); setCategoryId(""); setLocQuery(""); setLocationId(""); setShowSug(false); setDesc(""); setUrgent(false);
+    setTimeout(() => setSent(false), 2600);
+  }
+
+  const locSuggestions = (locations || [])
+    .filter((l) => locQuery.trim() && (l.name.includes(locQuery.trim()) || (l.group || "").includes(locQuery.trim())) && l.name !== locQuery.trim())
+    .slice(0, 8);
+
+  const field = { padding: "12px 14px", borderRadius: 14, border: `1px solid ${C.kraftDark}`, width: "100%", fontSize: 16, background: C.kraft };
+
+  return (
+    <div dir="rtl" style={{ position: "fixed", inset: 0, zIndex: 60, background: C.paper, overflowY: "auto", fontFamily: "'Heebo', sans-serif" }}>
+      <div style={{ background: C.brand, color: "#fff", padding: 16, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ fontWeight: 800, fontSize: 18 }}>🛠️ דיווח תקלה / בקשה</div>
+        <button onClick={() => { if (window.confirm("לצאת ממסך הדיווח?")) onExit(); }} style={{ background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", borderRadius: 14, padding: "6px 14px", fontSize: 13 }}>יציאה</button>
+      </div>
+
+      {sent ? (
+        <div style={{ padding: 40, textAlign: "center" }}>
+          <div style={{ fontSize: 72 }}>✅</div>
+          <div style={{ fontSize: 26, fontWeight: 900, color: C.ink, marginTop: 8 }}>הדיווח נשלח!</div>
+          <div style={{ fontSize: 16, color: C.steel, marginTop: 6 }}>תודה, ההנהלה קיבלה את הפנייה.</div>
+        </div>
+      ) : (
+        <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 12, maxWidth: 520, margin: "0 auto" }}>
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 700, color: C.steel, display: "block", marginBottom: 4 }}>השם שלך</label>
+            <input value={name} onChange={(e) => setName(e.target.value)} placeholder="שם הבחור" style={field} />
+          </div>
+
+          {(taskCategories || []).length > 0 && (
+            <div>
+              <label style={{ fontSize: 13, fontWeight: 700, color: C.steel, display: "block", marginBottom: 4 }}>סוג התקלה</label>
+              <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} style={field}>
+                <option value="">— בחר (לא חובה) —</option>
+                {taskCategories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+          )}
+
+          <div style={{ position: "relative" }}>
+            <label style={{ fontSize: 13, fontWeight: 700, color: C.steel, display: "block", marginBottom: 4 }}>מיקום / חדר</label>
+            <input
+              value={locQuery}
+              onChange={(e) => { setLocQuery(e.target.value); setLocationId(""); setShowSug(true); }}
+              onFocus={() => setShowSug(true)}
+              placeholder="התחל להקליד מקום..."
+              style={field}
+            />
+            {showSug && locSuggestions.length > 0 && (
+              <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 5, background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 14, marginTop: 4, overflow: "hidden", boxShadow: "0 6px 18px rgba(35,31,61,0.15)" }}>
+                {locSuggestions.map((l) => (
+                  <button
+                    key={l.id}
+                    onClick={() => { setLocQuery(l.name); setLocationId(l.id); setShowSug(false); }}
+                    style={{ display: "block", width: "100%", textAlign: "right", padding: "10px 14px", border: "none", borderBottom: `1px solid ${C.kraft}`, background: C.kraft, cursor: "pointer", fontSize: 15, color: C.ink }}
+                  >
+                    📍 {l.name}{l.group ? <span style={{ color: C.steel, fontSize: 13 }}>{" · " + l.group}</span> : null}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div>
+            <label style={{ fontSize: 13, fontWeight: 700, color: C.steel, display: "block", marginBottom: 4 }}>פירוט / הערות</label>
+            <textarea value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="תאר את התקלה או הבקשה..." style={{ ...field, minHeight: 110, resize: "vertical" }} />
+          </div>
+
+          <button
+            onClick={() => setUrgent((v) => !v)}
+            style={{ ...field, textAlign: "right", fontWeight: 700, color: urgent ? "#fff" : C.ink, background: urgent ? C.stamp : C.kraft, cursor: "pointer" }}
+          >
+            {urgent ? "🔴 סומן כדחוף" : "סמן כדחוף (אופציונלי)"}
+          </button>
+
+          <button
+            onClick={submit}
+            disabled={!desc.trim()}
+            style={{ padding: 16, borderRadius: 16, border: "none", background: desc.trim() ? C.sage : C.kraftDark, color: "#fff", fontSize: 18, fontWeight: 800, cursor: "pointer", opacity: desc.trim() ? 1 : 0.6, marginTop: 4 }}
+          >
+            שלח דיווח
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AccessibilityWidget() {
+  const KEY = "kitchen-a11y";
+  const DEFAULTS = { fontScale: 1, darkMode: "auto", contrast: false, grayscale: false, invert: false, readable: false, spacing: false, nomotion: false, focus: false };
+  const [open, setOpen] = useState(false);
+  const [s, setS] = useState(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+      // migrate the old boolean `dark` to the new tri-state
+      if (saved.darkMode === undefined && saved.dark !== undefined) saved.darkMode = saved.dark ? "on" : "auto";
+      delete saved.dark;
+      return { ...DEFAULTS, ...saved };
+    } catch (e) { return { ...DEFAULTS }; }
+  });
+
+  // Follow the phone's system dark setting when darkMode is "auto".
+  const [sysDark, setSysDark] = useState(() => {
+    try { return window.matchMedia("(prefers-color-scheme: dark)").matches; } catch (e) { return false; }
+  });
+  useEffect(() => {
+    let mq;
+    try { mq = window.matchMedia("(prefers-color-scheme: dark)"); } catch (e) { return; }
+    const handler = (e) => setSysDark(e.matches);
+    if (mq.addEventListener) mq.addEventListener("change", handler);
+    else if (mq.addListener) mq.addListener(handler);
+    return () => {
+      if (mq.removeEventListener) mq.removeEventListener("change", handler);
+      else if (mq.removeListener) mq.removeListener(handler);
+    };
+  }, []);
+  const effectiveDark = s.darkMode === "on" ? true : s.darkMode === "off" ? false : sysDark;
+
+  // One-time class-based rules (no filters/transforms here, so they never affect layout positioning).
+  useEffect(() => {
+    if (document.getElementById("acc-style")) return;
+    const st = document.createElement("style");
+    st.id = "acc-style";
+    st.textContent =
+      'html.acc-readable, html.acc-readable * { font-family: Arial, "Segoe UI", "Heebo", sans-serif !important; }' +
+      "html.acc-spacing * { line-height: 1.9 !important; letter-spacing: .3px !important; }" +
+      "html.acc-nomotion * { animation: none !important; transition: none !important; scroll-behavior: auto !important; }" +
+      "html.acc-focus a:focus, html.acc-focus button:focus, html.acc-focus input:focus, html.acc-focus select:focus, html.acc-focus textarea:focus { outline: 3px solid #1a56db !important; outline-offset: 2px !important; }";
+    document.head.appendChild(st);
+  }, []);
+
+  // Apply the current settings to the document (and persist them).
+  useEffect(() => {
+    try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {}
+    const html = document.documentElement;
+    try { html.style.zoom = s.fontScale && s.fontScale !== 1 ? String(s.fontScale) : ""; } catch (e) {}
+    const f = [];
+    if (s.contrast) f.push("contrast(1.35)");
+    if (s.grayscale) f.push("grayscale(1)");
+    if (s.invert) f.push("invert(1) hue-rotate(180deg)");
+    html.style.filter = f.join(" ");
+    html.classList.toggle("dark-mode", !!effectiveDark);
+    html.classList.toggle("acc-readable", !!s.readable);
+    html.classList.toggle("acc-spacing", !!s.spacing);
+    html.classList.toggle("acc-nomotion", !!s.nomotion);
+    html.classList.toggle("acc-focus", !!s.focus);
+  }, [s, effectiveDark]);
+
+  const setKey = (k, v) => setS((cur) => ({ ...cur, [k]: v }));
+  const toggle = (k) => setS((cur) => ({ ...cur, [k]: !cur[k] }));
+  const reset = () => setS({ ...DEFAULTS });
+
+  const Row = ({ label, k }) => (
+    <button
+      onClick={() => toggle(k)}
+      style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between", width: "100%",
+        padding: "11px 12px", borderRadius: 12, marginBottom: 8, cursor: "pointer",
+        border: `1.5px solid ${s[k] ? C.accent : C.kraftDark}`, background: s[k] ? "rgba(74,159,224,0.15)" : C.kraft,
+        color: C.ink, fontWeight: 700, fontSize: 14,
+      }}
+    >
+      <span>{label}</span>
+      <span style={{ color: C.accent, fontWeight: 800 }}>{s[k] ? "✓" : ""}</span>
+    </button>
+  );
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        aria-label="הגדרות נגישות"
+        title="נגישות"
+        style={{
+          position: "fixed", bottom: 20, left: 0, zIndex: 3000,
+          width: 28, height: 32, borderRadius: "0 11px 11px 0", border: "1px solid #fff", borderLeft: "none",
+          background: C.accent, color: "#fff", fontSize: 15, cursor: "pointer", paddingRight: 2,
+          boxShadow: "0 2px 8px rgba(0,0,0,0.25)", display: "flex", alignItems: "center", justifyContent: "center",
+          opacity: 0.7,
+        }}
+      >
+        ♿
+      </button>
+
+      {open && (
+        <div
+          onClick={() => setOpen(false)}
+          style={{ position: "fixed", inset: 0, zIndex: 3001, background: "rgba(0,0,0,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center" }}
+        >
+          <div
+            dir="rtl"
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: C.kraft, width: "100%", maxWidth: 480, maxHeight: "85vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, fontFamily: "'Heebo', sans-serif" }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+              <div style={{ fontWeight: 800, fontSize: 18, color: C.ink }}>♿ הגדרות נגישות</div>
+              <button onClick={() => setOpen(false)} style={{ background: C.brand, color: "#fff", border: "none", borderRadius: 999, padding: "5px 14px", fontWeight: 700, cursor: "pointer" }}>סגור</button>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.steel, marginBottom: 6 }}>
+                מצב תצוגה {s.darkMode === "auto" ? `(אוטומטי — כרגע ${sysDark ? "חשוך" : "בהיר"})` : ""}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                {[["auto", "📱 אוטומטי"], ["off", "☀️ בהיר"], ["on", "🌙 חשוך"]].map(([val, label]) => (
+                  <button
+                    key={val}
+                    onClick={() => setKey("darkMode", val)}
+                    style={{
+                      flex: 1, padding: "11px 4px", borderRadius: 12, cursor: "pointer", fontWeight: 800, fontSize: 14,
+                      border: `2px solid ${s.darkMode === val ? C.accent : C.kraftDark}`,
+                      background: s.darkMode === val ? "rgba(74,159,224,0.15)" : C.kraft, color: C.ink,
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: C.steel, marginBottom: 6 }}>גודל טקסט</div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button
+                  onClick={() => setKey("fontScale", Math.max(0.8, Math.round(((s.fontScale || 1) - 0.1) * 10) / 10))}
+                  style={{ flex: 1, padding: 10, borderRadius: 12, border: `1px solid ${C.kraftDark}`, background: C.kraft, fontWeight: 800, fontSize: 18, cursor: "pointer" }}
+                >א−</button>
+                <div style={{ minWidth: 54, textAlign: "center", fontWeight: 800, color: C.ink }}>{Math.round((s.fontScale || 1) * 100)}%</div>
+                <button
+                  onClick={() => setKey("fontScale", Math.min(1.6, Math.round(((s.fontScale || 1) + 0.1) * 10) / 10))}
+                  style={{ flex: 1, padding: 10, borderRadius: 12, border: `1px solid ${C.kraftDark}`, background: C.kraft, fontWeight: 800, fontSize: 18, cursor: "pointer" }}
+                >א+</button>
+              </div>
+            </div>
+
+            <Row label="ניגודיות גבוהה" k="contrast" />
+            <Row label="גווני אפור" k="grayscale" />
+            <Row label="היפוך צבעים" k="invert" />
+            <Row label="פונט קריא" k="readable" />
+            <Row label="ריווח שורות מוגדל" k="spacing" />
+            <Row label="עצירת אנימציות" k="nomotion" />
+            <Row label="הדגשת מיקוד מקלדת" k="focus" />
+
+            <button
+              onClick={reset}
+              style={{ width: "100%", padding: 12, borderRadius: 12, border: "none", background: C.stamp, color: "#fff", fontWeight: 800, fontSize: 15, cursor: "pointer", marginTop: 6 }}
+            >
+              איפוס הגדרות נגישות
+            </button>
+
+            <p style={{ fontSize: 11, color: C.steel, marginTop: 12, lineHeight: 1.6 }}>
+              המערכת שואפת לעמוד בתקנות שוויון זכויות לאנשים עם מוגבלות (התאמות נגישות לשירות) ובתקן הישראלי ת"י 5568 ברמה AA. נתקלת בבעיית נגישות? נשמח לדעת כדי לתקן.
+            </p>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+export default function AppWithBoundary() {
+  return (
+    <>
+      <ErrorBoundary>
+        <App />
+      </ErrorBoundary>
+      <AccessibilityWidget />
+    </>
+  );
+}
+
+function App() {
+  const [splashDone, setSplashDone] = useState(false);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [passwordRecovery, setPasswordRecovery] = useState(() =>
+    typeof window !== "undefined" && window.location.hash.includes("type=recovery")
+  );
+  const [authProfile, setAuthProfile] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  const [users, setUsers] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [tasks, setTasks] = useState([]);
+  const [settings, setSettings] = useState({ supplierPhone: "" });
+  const [notifications, setNotifications] = useState([]);
+  const [menuItems, setMenuItems] = useState([]);
+  const [weeklyMenu, setWeeklyMenu] = useState({});
+  const [savedMenus, setSavedMenus] = useState([]);
+  const [reminders, setReminders] = useState([]);
+  const [stockLog, setStockLog] = useState([]);
+  const [orderHistory, setOrderHistory] = useState([]);
+  const [locations, setLocations] = useState([]);
+  const [dishTypes, setDishTypes] = useState([]);
+  const [taskCategories, setTaskCategories] = useState([]);
+  const [orderRequests, setOrderRequests] = useState([]);
+  const [unitRequests, setUnitRequests] = useState([]);
+  const [unitTemplates, setUnitTemplates] = useState({});
+  const [personalPurchases, setPersonalPurchases] = useState([]);
+  const [currentUser, setCurrentUser] = useState(null);
+  const [tab, setTab] = useState(() => {
+    // If the previous session crashed and the user chose "open tasks", respect that once.
+    try {
+      const forced = localStorage.getItem("kitchen-force-tab");
+      if (forced) {
+        localStorage.removeItem("kitchen-force-tab");
+        return forced;
+      }
+    } catch (e) {}
+    return "dashboard";
+  });
+  const [scannerOpen, setScannerOpen] = useState(false);
+  const [scanResult, setScanResult] = useState(null); // { code, product|null }
+  const [toast, setToast] = useState("");
+  const [showNotifications, setShowNotifications] = useState(false);
+  const [snoozeTarget, setSnoozeTarget] = useState(null);
+  const [snoozeTime, setSnoozeTime] = useState("");
+  const [adminSection, setAdminSection] = useState(null); // set when a notification points at an admin screen
+  const [focusTaskId, setFocusTaskId] = useState(null);   // task to auto-open after tapping a notification
+  const [newTaskSignal, setNewTaskSignal] = useState(0);  // bump to open the "new task" form (header button / home-screen shortcut)
+  const [chatOpenSignal, setChatOpenSignal] = useState(0); // bump to open the internal chat from the header
+  const [chatUnread, setChatUnread] = useState(0);         // unread chat count, shown on the header chat button
+
+  // When a push notification is tapped, the app opens with the target in the URL.
+  // Read it once on startup, navigate to the right screen, then clean the URL.
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const t = params.get("tab");
+      const s = params.get("section");
+      const tk = params.get("taskId");
+      const action = params.get("action");
+      if (t || s || tk || action) {
+        if (s) setAdminSection(s);
+        if (tk) setFocusTaskId(tk);
+        if (action === "new-task") {
+          // Opened from the home-screen "add task" shortcut - jump to tasks and open the form.
+          setTab("tasks");
+          setNewTaskSignal((n) => n + 1);
+        } else if (t) {
+          setTab(t);
+        }
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+    } catch (e) { /* ignore */ }
+  }, []);
+
+  // Make the phone/browser Back button move between tabs instead of leaving the app.
+  const tabRef = useRef(tab);
+  useEffect(() => { tabRef.current = tab; }, [tab]);
+  const skipTabPushRef = useRef(false);
+  const firstTabRef = useRef(true);
+  useEffect(() => {
+    try { window.history.replaceState({ appTab: tabRef.current }, ""); } catch (e) {}
+    const onPop = (e) => {
+      const t = (e.state && e.state.appTab) || "dashboard";
+      skipTabPushRef.current = true;
+      setTab(t);
+    };
+    window.addEventListener("popstate", onPop);
+    return () => window.removeEventListener("popstate", onPop);
+  }, []);
+  useEffect(() => {
+    if (firstTabRef.current) { firstTabRef.current = false; return; }
+    if (skipTabPushRef.current) { skipTabPushRef.current = false; return; }
+    try { window.history.pushState({ appTab: tab }, ""); } catch (e) {}
+  }, [tab]);
+  const [showMenu, setShowMenu] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
+  const [kioskOn, setKioskOn] = useState(false);
+  const wakeLockRef = useRef(null);
+
+  async function acquireWakeLock() {
+    try {
+      if ("wakeLock" in navigator) wakeLockRef.current = await navigator.wakeLock.request("screen");
+    } catch (e) { /* not supported / denied */ }
+  }
+  async function toggleKiosk() {
+    if (!kioskOn) {
+      try { await (document.documentElement.requestFullscreen && document.documentElement.requestFullscreen()); } catch (e) {}
+      await acquireWakeLock();
+      setKioskOn(true);
+    } else {
+      try { if (document.fullscreenElement && document.exitFullscreen) await document.exitFullscreen(); } catch (e) {}
+      try { if (wakeLockRef.current) { await wakeLockRef.current.release(); wakeLockRef.current = null; } } catch (e) {}
+      setKioskOn(false);
+    }
+  }
+  // Re-acquire the wake lock after the screen was off / app was backgrounded.
+  useEffect(() => {
+    function onVis() {
+      if (kioskOn && document.visibilityState === "visible" && !wakeLockRef.current) acquireWakeLock();
+    }
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [kioskOn]);
+  const [locked, setLocked] = useState(() => isBiometricEnabled());
+  const [biometricPrompt, setBiometricPrompt] = useState(false);
+  const [notifBanner, setNotifBanner] = useState(false);
+  const seenNotifIdsRef = useRef(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setSplashDone(true), 2100);
+    return () => clearTimeout(t);
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const session = await window.auth.getSession();
+        if (session) {
+          try {
+            const profile = await window.auth.getMyProfile();
+            if (profile) {
+              setAuthProfile(profile);
+              try {
+                localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(profile));
+              } catch (e) {}
+            }
+          } catch (e) {
+            // Offline (or the server is unreachable): the Supabase session itself is
+            // stored locally and still valid, so fall back to the last known profile
+            // instead of bouncing a logged-in user back to the login screen.
+            console.error("getMyProfile failed, falling back to cached profile", e);
+            const cached = cachedProfile();
+            if (cached) setAuthProfile(cached);
+          }
+        }
+      } catch (e) {
+        console.error(e);
+        const cached = cachedProfile();
+        if (cached) setAuthProfile(cached);
+      }
+      setAuthChecked(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (authProfile) {
+      // Lock all storage reads/writes to this org BEFORE the data-load effect runs.
+      setActiveOrg(authProfile.org_id);
+      setCurrentUser({
+        id: authProfile.id,
+        name: authProfile.display_name || authProfile.email || "משתמש",
+        email: authProfile.email,
+        phone: authProfile.phone || "",
+        role: authProfile.role,
+        orgId: authProfile.org_id,
+        permissions: { ...DEFAULT_PERMISSIONS, ...(authProfile.permissions || {}) },
+      });
+    } else {
+      setActiveOrg(null);
+      setCurrentUser(null);
+    }
+  }, [authProfile]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    if (isManager(currentUser)) return;
+    const perms = currentUser.permissions || DEFAULT_PERMISSIONS;
+
+    // A unit user (e.g. the daycare) whose only permission is requesting from stock
+    // should land straight on that screen instead of an empty inventory tab.
+    if (perms.unitRequest === true && perms.inventory === false && perms.order === false && perms.tasks === false) {
+      if (tab !== "unitrequest") setTab("unitrequest");
+      return;
+    }
+
+    if (tab === "tasks" && perms.tasks === false) {
+      if (perms.inventory !== false) setTab("inventory");
+      else if (perms.order !== false) setTab("order");
+    } else if (tab === "inventory" && perms.inventory === false) {
+      if (perms.order !== false) setTab("order");
+      else if (perms.tasks !== false) setTab("tasks");
+    }
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    setLoaded(false);
+    seenNotifIdsRef.current = null;
+    (async () => {
+      const [orgProfiles, p, t, s, n, m, w, r, sl, oh, loc, dt, tc, orq, ur, ut, pp] = await Promise.all([
+        (async () => {
+          try {
+            const list = await window.auth.getOrgProfiles();
+            if (list) await cacheSet("__org_profiles__", list);
+            return list;
+          } catch (e) {
+            console.error("getOrgProfiles failed, using cache", e);
+            return (await cacheGet("__org_profiles__")) || [];
+          }
+        })(),
+        loadKey(KEYS.products, []),
+        loadKey(KEYS.tasks, []),
+        loadKey(KEYS.settings, { supplierPhone: "" }),
+        loadKey(KEYS.notifications, []),
+        loadKey(KEYS.menuItems, []),
+        loadKey(KEYS.weeklyMenu, {}),
+        loadKey(KEYS.reminders, []),
+        loadKey(KEYS.stockLog, []),
+        loadKey(KEYS.orderHistory, []),
+        loadKey(KEYS.locations, null),
+        loadKey(KEYS.dishTypes, null),
+        loadKey(KEYS.taskCategories, null),
+        loadKey(KEYS.orderRequests, []),
+        loadKey(KEYS.unitRequests, []),
+        loadKey(KEYS.unitTemplates, {}),
+        loadKey(KEYS.personalPurchases, []),
+      ]);
+      const finalLocations = loc || [];
+      let finalDishTypes = dt;
+      if (finalDishTypes === null) {
+        finalDishTypes = [
+          { id: genId(), name: "מנה עיקרית" },
+          { id: genId(), name: "תוספת" },
+          { id: genId(), name: "ירקנית" },
+        ];
+        await saveKey(KEYS.dishTypes, finalDishTypes);
+      }
+      let finalTaskCategories = tc;
+      if (finalTaskCategories === null) {
+        finalTaskCategories = [
+          { id: genId(), name: "חשמל", icon: "⚡" },
+          { id: genId(), name: "אינסטלציה", icon: "🔧" },
+          { id: genId(), name: "נגרות", icon: "🪚" },
+          { id: genId(), name: "מיזוג", icon: "❄️" },
+          { id: genId(), name: "ניקיון", icon: "🧹" },
+          { id: genId(), name: "מטבח", icon: "🍳" },
+          { id: genId(), name: "כללי", icon: "📋" },
+        ];
+        await saveKey(KEYS.taskCategories, finalTaskCategories);
+      }
+
+      const finalUsers = (orgProfiles || []).map((prof) => ({
+        id: prof.id,
+        name: prof.display_name || "משתמש",
+        phone: prof.phone || "",
+        loginEmail: prof.email || "",
+        contactEmail: prof.contact_email || "",
+        role: prof.role,
+        permissions: { ...DEFAULT_PERMISSIONS, ...(prof.permissions || {}) },
+      }));
+
+      // Check recurring reminders: if a reminder's scheduled weekday has passed
+      // since it last fired, spawn a task + notification for it now.
+      let finalTasks = t || [];
+      let finalNotifications = n || [];
+      let finalReminders = r || [];
+      let remindersChanged = false;
+      const finalProducts = p || [];
+
+      function mostRecentDateForWeekday(weekday) {
+        const now = new Date();
+        const diff = (now.getDay() - weekday + 7) % 7;
+        const d = new Date(now);
+        d.setDate(now.getDate() - diff);
+        return d.toISOString().slice(0, 10);
+      }
+
+      finalReminders = finalReminders.map((rem) => {
+        if (!rem.active) return rem;
+        let triggerDate;
+        if (rem.scheduleType === "date") {
+          if (!rem.date) return rem;
+          const todayIso = new Date().toISOString().slice(0, 10);
+          if (todayIso < rem.date) return rem; // not due yet
+          triggerDate = rem.date;
+        } else {
+          triggerDate = mostRecentDateForWeekday(rem.dayOfWeek);
+        }
+        if (rem.lastTriggeredDate === triggerDate) return rem;
+        const product = finalProducts.find((pp) => pp.id === rem.productId);
+        const subject = product ? product.name : rem.categoryId ? `קטגוריה ${rem.categoryId}` : "";
+        const title = subject ? `תזכורת הזמנה: ${subject}` : `תזכורת: ${rem.title}`;
+        finalTasks = [
+          ...finalTasks,
+          {
+            id: genId(),
+            title,
+            description: rem.title,
+            assignedToId: rem.assignedToId,
+            priority: "normal",
+            location: "",
+            status: "open",
+            createdAt: Date.now(),
+            createdBy: "תזכורת אוטומטית",
+          },
+        ];
+        finalNotifications = [
+          ...finalNotifications,
+          { id: genId(), userId: rem.assignedToId, message: title, read: false, createdAt: Date.now() },
+        ];
+        remindersChanged = true;
+        const updated = { ...rem, lastTriggeredDate: triggerDate };
+        if (rem.scheduleType === "date") updated.active = false; // one-time: don't fire again
+        return updated;
+      });
+
+      if (remindersChanged) {
+        await saveKey(KEYS.tasks, finalTasks);
+        await saveKey(KEYS.notifications, finalNotifications);
+        await saveKey(KEYS.reminders, finalReminders);
+      }
+
+      setUsers(finalUsers);
+      setProducts(finalProducts);
+      setTasks(finalTasks);
+      setSettings(s || { supplierPhone: "" });
+      setNotifications(finalNotifications);
+      setMenuItems(m || []);
+      setWeeklyMenu(w || {});
+      setReminders(finalReminders);
+      setStockLog(sl || []);
+      setOrderHistory(oh || []);
+      setLocations(finalLocations || []);
+      setDishTypes(finalDishTypes || []);
+      setTaskCategories(finalTaskCategories || []);
+      if (typeof window !== "undefined") window.__taskCats = finalTaskCategories || [];
+      setOrderRequests(orq || []);
+      setUnitRequests(ur || []);
+      setUnitTemplates(ut || {});
+      setPersonalPurchases(pp || []);
+      setLoaded(true);
+    })();
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    let unsubscribe = () => {};
+    const reloadMap = {
+      [KEYS.products]: async () => setProducts((await loadKey(KEYS.products, [])) || []),
+      [KEYS.tasks]: async () => {
+        const server = (await loadKey(KEYS.tasks, [])) || [];
+        // Never let an incoming sync reopen a task we just closed: if our local copy has a
+        // newer status change (bigger statusAt) than the server's, keep ours for that task.
+        setTasks((local) => {
+          const byId = new Map((local || []).map((t) => [t.id, t]));
+          return server.map((st) => {
+            const lt = byId.get(st.id);
+            if (lt && (lt.statusAt || 0) > (st.statusAt || 0)) {
+              return { ...st, status: lt.status, completedAt: lt.completedAt, statusAt: lt.statusAt };
+            }
+            return st;
+          });
+        });
+      },
+      [KEYS.settings]: async () => setSettings((await loadKey(KEYS.settings, { supplierPhone: "" })) || { supplierPhone: "" }),
+      [KEYS.notifications]: async () => setNotifications((await loadKey(KEYS.notifications, [])) || []),
+      [KEYS.menuItems]: async () => setMenuItems((await loadKey(KEYS.menuItems, [])) || []),
+      [KEYS.weeklyMenu]: async () => setWeeklyMenu((await loadKey(KEYS.weeklyMenu, {})) || {}),
+      [KEYS.savedMenus]: async () => setSavedMenus((await loadKey(KEYS.savedMenus, [])) || []),
+      [KEYS.mapRooms]: async () => setMapRooms((await loadKey(KEYS.mapRooms, [])) || []),
+      [KEYS.reminders]: async () => setReminders((await loadKey(KEYS.reminders, [])) || []),
+      [KEYS.stockLog]: async () => setStockLog((await loadKey(KEYS.stockLog, [])) || []),
+      [KEYS.orderHistory]: async () => setOrderHistory((await loadKey(KEYS.orderHistory, [])) || []),
+      [KEYS.locations]: async () => setLocations((await loadKey(KEYS.locations, [])) || []),
+      [KEYS.dishTypes]: async () => setDishTypes((await loadKey(KEYS.dishTypes, [])) || []),
+      [KEYS.taskCategories]: async () => setTaskCategories((await loadKey(KEYS.taskCategories, [])) || []),
+      [KEYS.orderRequests]: async () => setOrderRequests((await loadKey(KEYS.orderRequests, [])) || []),
+      [KEYS.unitRequests]: async () => setUnitRequests((await loadKey(KEYS.unitRequests, [])) || []),
+      [KEYS.unitTemplates]: async () => setUnitTemplates((await loadKey(KEYS.unitTemplates, {})) || {}),
+      [KEYS.personalPurchases]: async () => setPersonalPurchases((await loadKey(KEYS.personalPurchases, [])) || []),
+    };
+    window.auth.subscribeToOrgChanges((payload) => {
+      const rawKey = payload.new?.key || payload.old?.key;
+      if (!rawKey) return;
+      const org = getActiveOrg();
+      let baseKey;
+      if (!org) {
+        baseKey = rawKey;
+      } else if (rawKey.startsWith(org + ORG_SEP)) {
+        baseKey = rawKey.slice((org + ORG_SEP).length);
+      } else {
+        // A change belonging to a different org (or a legacy un-namespaced row).
+        return;
+      }
+      const reloader = reloadMap[baseKey];
+      if (reloader) reloader();
+    })
+      .then((fn) => {
+        unsubscribe = fn;
+      })
+      .catch((e) => {
+        // No network: realtime just isn't available. The app keeps working from
+        // the local cache and will re-subscribe on the next load.
+        console.error("realtime subscribe failed", e);
+      });
+    // also refresh the team member list occasionally isn't covered by kv_store changes
+    // (profiles table changes aren't part of this subscription), so no action needed there.
+    return () => unsubscribe();
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!loaded || !currentUser || locked) return;
+    if (isBiometricEnabled() || hasPromptedBiometric()) return;
+    isBiometricSupported().then((supported) => {
+      if (supported) setBiometricPrompt(true);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, currentUser?.id]);
+
+  /* Fire an OS notification for any notification that newly appears for me.
+     The first pass only seeds the baseline, so existing/old items stay quiet.
+     If Web Push is active on this device, the service worker already shows these
+     as OS notifications - so we only fire a LOCAL one as a fallback when push is
+     off here, otherwise every alert would show up twice. */
+  useEffect(() => {
+    if (!loaded || !currentUser) return;
+    const mine = notifications.filter((n) => n.userId === currentUser.id);
+
+    if (seenNotifIdsRef.current === null) {
+      seenNotifIdsRef.current = new Set(mine.map((n) => n.id));
+      return;
+    }
+
+    const fresh = mine.filter((n) => !seenNotifIdsRef.current.has(n.id));
+    fresh.forEach((n) => seenNotifIdsRef.current.add(n.id));
+    if (fresh.length === 0) return;
+
+    (async () => {
+      let pushOn = false;
+      try { pushOn = window.auth?.isPushRegistered ? await window.auth.isPushRegistered() : false; } catch (e) {}
+      if (pushOn) return; // the service worker's push notification already covers these
+
+      fresh.forEach((n) => {
+        if (n.read) return;
+        const link = n.link || {};
+        const org = getActiveOrg();
+        const extra = link.taskId
+          ? {
+              url: "/?tab=tasks&taskId=" + encodeURIComponent(link.taskId) + (org ? "&org=" + encodeURIComponent(org) : ""),
+              actions: [{ action: "done", title: "✓ בוצע" }],
+            }
+          : undefined;
+        showOsNotification("משימה חדשה 📋", n.message, n.id, extra);
+      });
+    })();
+  }, [notifications, loaded, currentUser?.id]);
+
+  /* Offer to turn on notifications once, after the biometric prompt is out of the way. */
+  useEffect(() => {
+    if (!loaded || !currentUser || locked || biometricPrompt) return;
+    if (!notificationsSupported()) return;
+    if (notificationPermission() !== "default") return;
+    if (hasPromptedNotifications()) return;
+    setNotifBanner(true);
+  }, [loaded, currentUser?.id, locked, biometricPrompt]);
+
+  /* Push endpoints can silently expire (browser update, long inactivity). Re-registering
+     on every load is cheap - it upserts on the same endpoint - and keeps delivery alive. */
+  useEffect(() => {
+    if (!loaded || !currentUser || locked) return;
+    if (!notificationsSupported() || notificationPermission() !== "granted") return;
+    (async () => {
+      try {
+        if (window.auth?.registerPush) await window.auth.registerPush();
+      } catch (e) {
+        console.error("push re-registration failed", e);
+      }
+    })();
+  }, [loaded, currentUser?.id, locked]);
+
+  /* Follow-up reminders. Whichever device is open when one comes due fires it, and
+     stamps followUpFiredAt so it never fires twice. Checked on load and every 5 min. */
+  useEffect(() => {
+    if (!loaded || !currentUser) return;
+
+    async function checkFollowUps() {
+      const now = Date.now();
+      // Read the freshest list from the server first. This effect captures `tasks`
+      // once at mount, so without this the 5-min timer would re-save a stale list and
+      // silently reopen every task closed since mount.
+      let base = tasks;
+      try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) base = latest; } catch (e) {}
+      const due = base.filter(
+        (t) => t.followUpAt && !t.followUpFiredAt && t.followUpAt <= now && t.status !== "done"
+      );
+      if (due.length === 0) return;
+
+      const next = base.map((t) =>
+        due.some((d) => d.id === t.id) ? { ...t, followUpFiredAt: now } : t
+      );
+      await persistTasks(next);
+
+      for (const t of due) {
+        const msg = `⏰ תזכורת: ${t.title}`;
+        const link = { tab: "tasks", taskId: t.id };
+        // Deliver to the assignee, or the creator if nobody is assigned. Uses the
+        // low-level delivery so a reminder you set for yourself still reaches you.
+        const recipients = new Set([t.assignedToId || t.createdById].filter(Boolean));
+        for (const uid of recipients) {
+          await deliverNotification(uid, msg, link);
+        }
+      }
+    }
+
+    checkFollowUps();
+    const interval = setInterval(checkFollowUps, 5 * 60 * 1000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, currentUser?.id, tasks]);
+
+  // Reading = marking as read: while the bell panel is open, clear the unread
+  // flag for this user's notifications after a moment, so the badge count clears.
+  useEffect(() => {
+    if (!showNotifications) return;
+    const hasUnread = notifications.some((n) => n.userId === currentUser?.id && !n.read);
+    if (!hasUnread) return;
+    const t = setTimeout(() => {
+      persistNotifications(notifications.map((n) => (n.userId === currentUser?.id ? { ...n, read: true } : n)));
+    }, 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showNotifications]);
+
+  /* Tapping a notification takes you to whatever it's about, marks it read,
+     and closes the panel. Older notifications have no link - they just get marked read. */
+  async function openNotification(n) {
+    const next = notifications.map((x) => (x.id === n.id ? { ...x, read: true } : x));
+    await persistNotifications(next);
+    setShowNotifications(false);
+
+    if (!n.link) return;
+    const { tab: target, section, taskId } = n.link;
+
+    if (section) setAdminSection(section);
+    if (taskId) setFocusTaskId(taskId);
+    if (target) setTab(target);
+  }
+
+  async function deleteNotification(n) {
+    await persistNotifications(notifications.filter((x) => x.id !== n.id));
+  }
+  function tomorrowAt(h, m) {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(h, m, 0, 0);
+    return d.getTime();
+  }
+  function timeToTs(hhmm) {
+    const [h, m] = hhmm.split(":").map(Number);
+    const d = new Date();
+    d.setHours(h, m, 0, 0);
+    if (d.getTime() <= Date.now()) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+  async function snoozeNotification(n, untilTs) {
+    await persistNotifications(notifications.map((x) => (x.id === n.id ? { ...x, snoozedUntil: untilTs, read: false } : x)));
+    setSnoozeTarget(null);
+    setSnoozeTime("");
+  }
+
+  function showToast(msg) {
+    setToast(msg);
+    setTimeout(() => setToast(""), 2200);
+  }
+
+  async function persistProducts(next) {
+    setProducts(next);
+    await saveKey(KEYS.products, next);
+  }
+  async function updateUserProfile(id, fields) {
+    await window.auth.updateProfile(id, fields);
+    setUsers((cur) =>
+      cur.map((u) =>
+        u.id === id
+          ? {
+              ...u,
+              ...fields,
+              name: fields.display_name ?? u.name,
+              contactEmail: fields.contact_email ?? u.contactEmail,
+            }
+          : u
+      )
+    );
+  }
+  async function deleteUserProfile(id) {
+    await window.auth.deleteProfile(id);
+    setUsers((cur) => cur.filter((u) => u.id !== id));
+  }
+  async function persistTasks(next) {
+    setTasks(next);
+    await saveKey(KEYS.tasks, next);
+  }
+  async function persistSettings(next) {
+    setSettings(next);
+    await saveKey(KEYS.settings, next);
+  }
+  async function persistNotifications(next) {
+    setNotifications(next);
+    await saveKey(KEYS.notifications, next);
+  }
+  async function persistMenuItems(next) {
+    setMenuItems(next);
+    await saveKey(KEYS.menuItems, next);
+  }
+  async function persistWeeklyMenu(next) {
+    setWeeklyMenu(next);
+    await saveKey(KEYS.weeklyMenu, next);
+  }
+  async function persistSavedMenus(next) {
+    setSavedMenus(next);
+    await saveKey(KEYS.savedMenus, next);
+  }
+  const [mapRooms, setMapRooms] = useState([]);
+  async function persistMapRooms(next) {
+    setMapRooms(next);
+    await saveKey(KEYS.mapRooms, next);
+  }
+  useEffect(() => {
+    if (!currentUser) return;
+    loadKey(KEYS.mapRooms, []).then((v) => setMapRooms(Array.isArray(v) ? v : [])).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
+  // ---- Full backup / restore ----
+  const [backupOpen, setBackupOpen] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
+  async function exportBackup() {
+    setBackupBusy(true);
+    try {
+      const data = {};
+      for (const k of Object.values(KEYS)) {
+        try {
+          const v = await loadKey(k, null);
+          if (v !== null && v !== undefined) data[k] = v;
+        } catch (e) {}
+      }
+      const payload = { app: "kitchen", version: 1, exportedAt: new Date().toISOString(), data };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().slice(0, 16).replace(/[:T]/g, "-");
+      a.href = url;
+      a.download = `גיבוי-משק-חכם-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      showToast("הגיבוי הורד למכשיר");
+    } catch (e) {
+      showToast("שגיאה ביצירת הגיבוי");
+    }
+    setBackupBusy(false);
+  }
+  async function importBackup(file) {
+    if (!file) return;
+    setBackupBusy(true);
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      const data = parsed && parsed.data ? parsed.data : parsed;
+      const keys = Object.keys(data || {});
+      if (keys.length === 0) { showToast("קובץ הגיבוי ריק או לא תקין"); setBackupBusy(false); return; }
+      if (!window.confirm(`לשחזר ${keys.length} סוגי נתונים מהגיבוי?\n\nזה ידרוס את הנתונים הנוכחיים במערכת בנתונים מהקובץ. מומלץ להוריד גיבוי עדכני קודם.`)) { setBackupBusy(false); return; }
+      for (const k of keys) {
+        try { await saveKey(k, data[k]); } catch (e) {}
+      }
+      showToast("השחזור הושלם - טוען מחדש...");
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (e) {
+      showToast("קובץ הגיבוי לא תקין");
+      setBackupBusy(false);
+    }
+  }
+  useEffect(() => {
+    if (!currentUser) return;
+    loadKey(KEYS.savedMenus, []).then((v) => setSavedMenus(Array.isArray(v) ? v : [])).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+  async function persistReminders(next) {
+    setReminders(next);
+    await saveKey(KEYS.reminders, next);
+  }
+  async function persistStockLog(next) {
+    setStockLog(next);
+    await saveKey(KEYS.stockLog, next);
+  }
+  async function persistOrderHistory(next) {
+    setOrderHistory(next);
+    await saveKey(KEYS.orderHistory, next);
+  }
+  async function recordOrder(entry) {
+    // Keep the last 300 orders - plenty of history without bloating storage.
+    const next = [{ id: genId(), createdAt: Date.now(), ...entry }, ...orderHistory].slice(0, 300);
+    await persistOrderHistory(next);
+    showToast("✓ נשמר בהיסטוריית הזמנות");
+  }
+  async function deleteOrderHistoryEntry(id) {
+    await persistOrderHistory(orderHistory.filter((o) => o.id !== id));
+    showToast("ההזמנה נמחקה מההיסטוריה");
+  }
+  async function logStockChange(productId, delta, userName) {
+    if (!delta) return;
+    const next = [...stockLog, { id: genId(), productId, delta, userName, timestamp: Date.now() }];
+    await persistStockLog(next);
+  }
+  async function persistLocations(next) {
+    setLocations(next);
+    await saveKey(KEYS.locations, next);
+  }
+  async function persistDishTypes(next) {
+    setDishTypes(next);
+    await saveKey(KEYS.dishTypes, next);
+  }
+  async function persistTaskCategories(next) {
+    setTaskCategories(next);
+    await saveKey(KEYS.taskCategories, next);
+  }
+
+  async function persistUnitRequests(next) {
+    setUnitRequests(next);
+    await saveKey(KEYS.unitRequests, next);
+  }
+  async function persistUnitTemplates(next) {
+    setUnitTemplates(next);
+    await saveKey(KEYS.unitTemplates, next);
+  }
+  async function persistPersonalPurchases(next) {
+    setPersonalPurchases(next);
+    await saveKey(KEYS.personalPurchases, next);
+  }
+  async function persistOrderRequests(next) {
+    setOrderRequests(next);
+    await saveKey(KEYS.orderRequests, next);
+  }
+  /** Notify every manager in the org (used when a supervisor submits an order request). */
+  /* Two layers on purpose:
+     1. The in-app notification (kv_store + realtime) - the source of truth.
+     2. A real Web Push - the only thing that reaches a phone whose app is CLOSED.
+     Push is best-effort: if the Edge Function is down or we're offline, the in-app
+     notification still lands, and the OS notification fires next time the app opens. */
+  async function pushTo(userIds, title, body, link) {
+    try {
+      if (!window.auth?.sendPush) return;
+      const ids = userIds.filter(Boolean);
+      if (ids.length === 0) return;
+      let url = "/";
+      if (link) {
+        const p = new URLSearchParams();
+        if (link.tab) p.set("tab", link.tab);
+        if (link.section) p.set("section", link.section);
+        if (link.taskId) {
+          p.set("taskId", link.taskId);
+          const org = getActiveOrg();
+          if (org) p.set("org", org);
+        }
+        const qs = p.toString();
+        if (qs) url = "/?" + qs;
+      }
+      await window.auth.sendPush({ userIds: ids, title, body, url });
+    } catch (e) {
+      console.error("push send failed (in-app notification still delivered)", e);
+    }
+  }
+
+  async function notifyManagers(message, link) {
+    const managers = users.filter((u) => u.role === "manager" && u.id !== currentUser?.id);
+    if (managers.length === 0) return;
+    const next = [
+      ...notifications,
+      ...managers.map((u) => ({ id: genId(), userId: u.id, message, link, read: false, createdAt: Date.now() })),
+    ];
+    await persistNotifications(next);
+    pushTo(managers.map((u) => u.id), "ניהול משק חכם", message, link);
+  }
+  /* `link` tells the notification bell where to jump when tapped, e.g.
+     { tab: "tasks", taskId } or { tab: "admin", section: "unitrequests" }. */
+  // Low-level delivery: records the in-app notification and sends the push. Used by
+  // scheduled reminders, which must reach everyone — including the person who set them.
+  async function deliverNotification(userId, message, link) {
+    if (!userId) return;
+    const next = [
+      ...notifications,
+      { id: genId(), userId, message, link, read: false, createdAt: Date.now() },
+    ];
+    await persistNotifications(next);
+    pushTo([userId], "ניהול משק חכם", message, link);
+  }
+  async function notifyUser(userId, message, link) {
+    // Never notify the person performing the action — no self-pop on your own task.
+    if (!userId || userId === currentUser?.id) return;
+    await deliverNotification(userId, message, link);
+  }
+
+  const lowStock = products.filter((p) => Number(p.quantity) <= Number(p.threshold));
+  const myOpenTasks = currentUser
+    ? tasks.filter((t) => t.assignedToId === currentUser.id && t.status !== "done")
+    : [];
+  const myNotifications = currentUser
+    ? notifications.filter((n) => n.userId === currentUser.id && (!n.snoozedUntil || n.snoozedUntil <= Date.now())).sort((a, b) => b.createdAt - a.createdAt)
+    : [];
+  const unreadCount = myNotifications.filter((n) => !n.read).length;
+  const pendingRequestCount = (orderRequests || []).filter((r) => r.status === "pending").length;
+
+  if (!splashDone) {
+    return <SplashScreen />;
+  }
+
+  if (passwordRecovery) {
+    return <SetNewPasswordScreen onDone={() => setPasswordRecovery(false)} />;
+  }
+
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: C.paper }}>
+        <p className="wh-body" style={{ color: C.steel }}>טוען...</p>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <AuthGate
+        onAuthed={async () => {
+          const profile = await window.auth.getMyProfile();
+          if (profile) setAuthProfile(profile);
+        }}
+      />
+    );
+  }
+
+  if (!loaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center" style={{ background: C.paper }}>
+        <p className="wh-body" style={{ color: C.steel }}>טוען...</p>
+      </div>
+    );
+  }
+
+  if (locked) {
+    return (
+      <LockScreen
+        onUnlock={() => setLocked(false)}
+        onUseLogout={async () => {
+          disableBiometric();
+          await window.auth.signOut();
+          setAuthProfile(null);
+          setLocked(false);
+        }}
+      />
+    );
+  }
+
+  const kioskParam =
+    typeof window !== "undefined"
+      ? new URLSearchParams(window.location.search).get("kiosk")
+      : null;
+  if (kioskParam === "1" || kioskParam === "camera" || kioskParam === "report") {
+    const goToKiosk = (val) => {
+      const u = new URL(window.location.href);
+      u.searchParams.set("kiosk", val);
+      window.location.href = u.toString();
+    };
+    const exitKiosk = () => { window.location.href = window.location.pathname; };
+    const kioskProps = {
+      products,
+      persistProducts,
+      logStockChange,
+      currentUser,
+      onExit: exitKiosk,
+    };
+    if (kioskParam === "report") {
+      return <KioskReport tasks={tasks} persistTasks={persistTasks} taskCategories={taskCategories} locations={locations} notifyManagers={notifyManagers} onExit={exitKiosk} />;
+    }
+    if (kioskParam === "camera") {
+      return <KioskCameraScanner {...kioskProps} onSwitchMode={() => goToKiosk("1")} />;
+    }
+    return <KioskScanner {...kioskProps} onSwitchMode={() => goToKiosk("camera")} />;
+  }
+
+  async function handleScanDetected(code) {
+    const product = products.find((p) => p.barcode === code);
+    if (product) {
+      const newQty = Math.max((product.quantity || 0) - 1, 0);
+      const next = products.map((p) =>
+        p.id === product.id ? { ...p, quantity: newQty } : p
+      );
+      await persistProducts(next);
+      await logStockChange(product.id, -1, currentUser?.name || "סריקה");
+      setScanResult({ code, product: { ...product, quantity: newQty } });
+    } else {
+      setScanResult({ code, product: null });
+    }
+    setScannerOpen(false);
+  }
+
+  return (
+    <div className="min-h-screen flex flex-col wh-body" style={{ background: C.paper, position: "relative" }} dir="rtl">
+      <style>{FONTS}</style>
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          backgroundImage: "url(/icon-512-v2.png)",
+          backgroundRepeat: "no-repeat",
+          backgroundPosition: "center",
+          backgroundSize: "60vw",
+          opacity: 0.05,
+          pointerEvents: "none",
+          zIndex: 0,
+        }}
+      />
+      <div style={{ position: "relative", zIndex: 1 }} className="flex flex-col min-h-screen">
+
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3" style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "0 0 24px 24px" }}>
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowMenu(true)}
+            className="text-xl px-2 py-1 rounded-full"
+            style={{ background: "rgba(255,255,255,0.25)", color: "#fff" }}
+            aria-label="תפריט"
+          >
+            ☰
+          </button>
+          <div>
+            <div className="wh-display font-black text-lg" style={{ color: C.paper }}>ניהול משימות ומלאי מוסדי</div>
+            <div className="text-xs" style={{ color: C.kraft }}>
+              {currentUser.name} · {roleLabel(currentUser.role)}
+            </div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => setChatOpenSignal((n) => n + 1)}
+            className="relative text-lg px-2 py-1 rounded-full"
+            style={{ background: "rgba(255,255,255,0.25)" }}
+            aria-label="צ'אט עם ההנהלה"
+            title="צ'אט"
+          >
+            💬
+            {chatUnread > 0 && (
+              <span style={{ position: "absolute", top: -4, right: -4, background: "#dc2626", color: "#fff", borderRadius: 12, minWidth: 18, height: 18, fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px" }}>
+                {chatUnread}
+              </span>
+            )}
+          </button>
+          <button
+            onClick={() => { setTab("tasks"); setNewTaskSignal((n) => n + 1); }}
+            className="text-lg px-2 py-1 rounded-full"
+            style={{ background: "rgba(255,255,255,0.25)", color: "#fff" }}
+            aria-label="הוסף משימה"
+            title="משימה חדשה"
+          >
+            ➕
+          </button>
+          <button
+            onClick={() => setShowNotifications((v) => !v)}
+            className="relative text-lg px-2 py-1 rounded-full"
+            style={{ background: "rgba(255,255,255,0.25)" }}
+          >
+            🔔
+            {unreadCount > 0 && (
+              <span
+                className="absolute -top-1 -left-1 rounded-full text-[10px] px-1.5 py-0.5 font-bold"
+                style={{ background: C.stamp, color: "#fff", minWidth: 16 }}
+              >
+                {unreadCount}
+              </span>
+            )}
+          </button>
+        </div>
+      </div>
+
+      <SyncBar showToast={showToast} />
+
+      {showNotifications && (
+        <div
+          className="fixed top-16 left-4 right-4 z-40 rounded-2xl p-3 wh-body"
+          style={{ background: C.kraft, boxShadow: "0 8px 24px rgba(35,31,61,0.2)", maxHeight: "60vh", overflowY: "auto" }}
+        >
+          <div className="flex justify-between items-center mb-2">
+            <span className="wh-display font-bold" style={{ color: C.ink }}>התראות</span>
+            <button
+              onClick={async () => {
+                const next = notifications.map((n) => (n.userId === currentUser.id ? { ...n, read: true } : n));
+                await persistNotifications(next);
+              }}
+              className="text-xs font-bold"
+              style={{ color: C.accent }}
+            >
+              סמן הכל כנקרא
+            </button>
+          </div>
+          {myNotifications.length === 0 ? (
+            <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין התראות</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {myNotifications.map((n) => (
+                <NotifItem key={n.id} n={n} onOpen={openNotification} onDelete={deleteNotification} onSnooze={setSnoozeTarget} />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {snoozeTarget && (
+        <>
+          <div className="fixed inset-0 z-50" style={{ background: "rgba(35,31,61,0.4)" }} onClick={() => { setSnoozeTarget(null); setSnoozeTime(""); }} />
+          <div className="fixed left-4 right-4 z-50 rounded-2xl p-4 wh-body" style={{ top: "28%", background: C.kraft, boxShadow: "0 8px 24px rgba(35,31,61,0.25)" }} dir="rtl">
+            <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>⏰ הזכר לי אחר כך</div>
+            <div className="text-xs mb-3" style={{ color: C.steel }}>{snoozeTarget.message}</div>
+            <div className="flex flex-col gap-2">
+              <button onClick={() => snoozeNotification(snoozeTarget, Date.now() + 3600000)} className="py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>בעוד שעה</button>
+              <button onClick={() => snoozeNotification(snoozeTarget, Date.now() + 3 * 3600000)} className="py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>בעוד 3 שעות</button>
+              <button onClick={() => snoozeNotification(snoozeTarget, tomorrowAt(8, 0))} className="py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>מחר בבוקר (08:00)</button>
+              <div className="flex gap-2 items-center mt-1">
+                <input type="time" value={snoozeTime} onChange={(e) => setSnoozeTime(e.target.value)} className="p-2 rounded-2xl border flex-1" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+                <button onClick={() => { if (snoozeTime) snoozeNotification(snoozeTarget, timeToTs(snoozeTime)); }} className="px-4 py-2 rounded-2xl font-bold text-sm whitespace-nowrap" style={{ background: C.brand, color: "#fff" }}>בשעה שבחרת</button>
+              </div>
+            </div>
+            <button onClick={() => { setSnoozeTarget(null); setSnoozeTime(""); }} className="w-full mt-3 py-2 rounded-2xl font-bold text-sm" style={{ background: "transparent", color: C.steel }}>ביטול</button>
+          </div>
+        </>
+      )}
+
+      {/* Toast */}
+      {toast && (
+        <div
+          className="fixed top-3 left-1/2 -translate-x-1/2 z-50 px-4 py-2 rounded-2xl wh-body text-sm font-medium"
+          style={{ background: C.brand, color: "#fff" }}
+        >
+          {toast}
+        </div>
+      )}
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto px-4 py-4">
+        {notifBanner && (
+          <ShelfTag accent={C.mustard} style={{ marginBottom: 16 }}>
+            <div className="flex items-start gap-3">
+              <div className="text-2xl">🔔</div>
+              <div className="flex-1">
+                <div className="wh-display font-bold text-sm mb-1" style={{ color: C.ink }}>
+                  להפעיל התראות?
+                </div>
+                <p className="text-xs mb-3" style={{ color: C.steel }}>
+                  תקבל התראה בטלפון ברגע שמוקצית לך משימה חדשה - גם כשהאפליקציה סגורה לגמרי.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={async () => {
+                      const result = await enablePushOnThisDevice();
+                      setNotifBanner(false);
+                      if (result === "granted") {
+                        showToast("התראות הופעלו");
+                        showOsNotification("ההתראות פעילות ✓", "לבדיקת השעון: לחץ על ✓ בוצע מהשעון", "test", { actions: [{ action: "done-test", title: "✓ בוצע (בדיקה)" }] });
+                      } else {
+                        showToast("ההתראות לא הופעלו");
+                      }
+                    }}
+                    className="px-4 py-2 rounded-2xl font-bold text-sm"
+                    style={{ background: C.brand, color: "#fff" }}
+                  >
+                    הפעל
+                  </button>
+                  <button
+                    onClick={() => { markPromptedNotifications(); setNotifBanner(false); }}
+                    className="px-4 py-2 rounded-2xl text-sm"
+                    style={{ color: C.steel }}
+                  >
+                    לא עכשיו
+                  </button>
+                </div>
+              </div>
+            </div>
+          </ShelfTag>
+        )}
+        {tab === "dashboard" && (
+          <Dashboard
+            tasks={tasks}
+            products={products}
+            orderHistory={orderHistory}
+            users={users}
+            currentUser={currentUser}
+            unitRequests={unitRequests}
+            onGoTo={(t, section) => { if (section) setAdminSection(section); setTab(t); }}
+          />
+        )}
+        {tab === "inventory" && (
+          <InventoryTab
+            products={products}
+            persistProducts={persistProducts}
+            openScanner={() => setScannerOpen(true)}
+            scanResult={scanResult}
+            clearScanResult={() => setScanResult(null)}
+            currentUser={currentUser}
+            showToast={showToast}
+            isManager={isManager(currentUser)}
+            logStockChange={logStockChange}
+          />
+        )}
+        {tab === "order" && (
+          <OrderTab
+            lowStock={lowStock}
+            products={products}
+            settings={settings}
+            tasks={tasks}
+            persistTasks={persistTasks}
+            persistSettings={persistSettings}
+            isManager={isManager(currentUser)}
+            menuItems={menuItems}
+            weeklyMenu={weeklyMenu}
+            persistWeeklyMenu={persistWeeklyMenu}
+            showToast={showToast}
+            dishTypes={dishTypes}
+            persistDishTypes={persistDishTypes}
+            currentUser={currentUser}
+            orderRequests={orderRequests}
+            persistOrderRequests={persistOrderRequests}
+            notifyManagers={notifyManagers}
+            recordOrder={recordOrder}
+            orderHistory={orderHistory}
+            deleteOrderHistoryEntry={deleteOrderHistoryEntry}
+            savedMenus={savedMenus}
+            persistSavedMenus={persistSavedMenus}
+          />
+        )}
+        {tab === "tasks" && (
+          <TasksTab
+            tasks={tasks}
+            persistTasks={persistTasks}
+            users={users}
+            currentUser={currentUser}
+            showToast={showToast}
+            notifyUser={notifyUser}
+            locations={locations}
+            taskCategories={taskCategories}
+            focusTaskId={focusTaskId}
+            onFocusConsumed={() => setFocusTaskId(null)}
+            newTaskSignal={newTaskSignal}
+          />
+        )}
+        {tab === "map" && (
+          <MapTab
+            mapRooms={mapRooms}
+            persistMapRooms={persistMapRooms}
+            tasks={tasks}
+            persistTasks={persistTasks}
+            currentUser={currentUser}
+            showToast={showToast}
+            notifyManagers={notifyManagers}
+            notifyUser={notifyUser}
+            onOpenTask={(taskId) => { setFocusTaskId(taskId); setTab("tasks"); }}
+            users={users}
+            taskCategories={taskCategories}
+            locations={locations}
+          />
+        )}
+        {tab === "unitrequest" && canRequestFromStock(currentUser) && (
+          <UnitRequestTab
+            products={products}
+            unitRequests={unitRequests}
+            persistUnitRequests={persistUnitRequests}
+            unitTemplates={unitTemplates}
+            persistUnitTemplates={persistUnitTemplates}
+            currentUser={currentUser}
+            showToast={showToast}
+            notifyManagers={notifyManagers}
+          />
+        )}
+        {tab === "admin" && hasAnyAdminSection(currentUser) && (
+          <AdminTab
+            users={users}
+            updateUserProfile={updateUserProfile}
+            deleteUserProfile={deleteUserProfile}
+            currentUser={currentUser}
+            products={products}
+            persistProducts={persistProducts}
+            settings={settings}
+            persistSettings={persistSettings}
+            showToast={showToast}
+            menuItems={menuItems}
+            persistMenuItems={persistMenuItems}
+            weeklyMenu={weeklyMenu}
+            persistWeeklyMenu={persistWeeklyMenu}
+            reminders={reminders}
+            persistReminders={persistReminders}
+            stockLog={stockLog}
+            locations={locations}
+            persistLocations={persistLocations}
+            dishTypes={dishTypes}
+            persistDishTypes={persistDishTypes}
+            taskCategories={taskCategories}
+            persistTaskCategories={persistTaskCategories}
+            orderRequests={orderRequests}
+            persistOrderRequests={persistOrderRequests}
+            notifyUser={notifyUser}
+            unitRequests={unitRequests}
+            persistUnitRequests={persistUnitRequests}
+            logStockChange={logStockChange}
+            tasks={tasks}
+            orderHistory={orderHistory}
+            personalPurchases={personalPurchases}
+            persistPersonalPurchases={persistPersonalPurchases}
+            initialSection={adminSection}
+            onSectionConsumed={() => setAdminSection(null)}
+          />
+        )}
+      </div>
+
+      {/* Side drawer menu */}
+      {showMenu && (
+        <>
+          <div
+            className="fixed inset-0 z-40"
+            style={{ background: "rgba(35,31,61,0.4)" }}
+            onClick={() => setShowMenu(false)}
+          />
+          <div
+            className="fixed top-0 right-0 bottom-0 z-50 flex flex-col wh-body"
+            style={{ width: "78%", maxWidth: 300, background: C.paper, boxShadow: "-8px 0 24px rgba(35,31,61,0.25)", borderRadius: "24px 0 0 24px" }}
+          >
+            <div className="p-4" style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "24px 0 0 0" }}>
+              <div className="wh-display font-black text-lg" style={{ color: "#fff" }}>ניהול משימות ומלאי מוסדי</div>
+              <div className="text-xs" style={{ color: "#fff" }}>{currentUser.name} · {roleLabel(currentUser.role)}</div>
+            </div>
+            <div className="flex flex-col p-3 gap-2 flex-1">
+              <DrawerItem label="🏠 בית" active={tab === "dashboard"} onClick={() => { setTab("dashboard"); setShowMenu(false); }} />
+              {(isManager(currentUser) || currentUser.permissions?.inventory !== false) && (
+                <DrawerItem label="מלאי" active={tab === "inventory"} onClick={() => { setTab("inventory"); setShowMenu(false); }} />
+              )}
+              {(isManager(currentUser) || currentUser.permissions?.order !== false) && (
+                <DrawerItem
+                  label="הזמנה"
+                  active={tab === "order"}
+                  onClick={() => { setTab("order"); setShowMenu(false); }}
+                  badge={lowStock.length > 0 ? lowStock.length : null}
+                  badgeColor={C.stamp}
+                />
+              )}
+              {(isManager(currentUser) || currentUser.permissions?.tasks !== false) && (
+                <DrawerItem
+                  label="משימות ותיקונים"
+                  active={tab === "tasks"}
+                  onClick={() => { setTab("tasks"); setShowMenu(false); }}
+                  badge={myOpenTasks.length > 0 ? myOpenTasks.length : null}
+                  badgeColor={C.mustard}
+                />
+              )}
+              {(isManager(currentUser) || currentUser.permissions?.tasks !== false) && (
+                <DrawerItem
+                  label="🗺️ מפת המוסד"
+                  active={tab === "map"}
+                  onClick={() => { setTab("map"); setShowMenu(false); }}
+                />
+              )}
+              {canRequestFromStock(currentUser) && (
+                <DrawerItem
+                  label="בקשה מהמחסן"
+                  active={tab === "unitrequest"}
+                  onClick={() => { setTab("unitrequest"); setShowMenu(false); }}
+                />
+              )}
+              {hasAnyAdminSection(currentUser) && (
+                <DrawerItem
+                  label="ניהול"
+                  active={tab === "admin"}
+                  onClick={() => { setTab("admin"); setShowMenu(false); }}
+                  badge={isManager(currentUser) && pendingRequestCount > 0 ? pendingRequestCount : null}
+                  badgeColor={C.stamp}
+                />
+              )}
+            </div>
+            {isManager(currentUser) && (
+              <div className="mx-3 mb-2 p-3 rounded-2xl" style={{ background: C.paper }}>
+                <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>לחיבור עובד חדש למסד הזה:</div>
+                <div className="text-xs" style={{ color: C.steel }}>
+                  שתף איתו את מזהה הארגון (זמין למנהל במסך ניהול ← עובדים) - הוא יזין אותו ב"הצטרף לארגון קיים" בהרשמה הראשונה שלו.
+                </div>
+              </div>
+            )}
+            <NotificationsToggle showToast={showToast} />
+            <BiometricToggle currentUser={currentUser} showToast={showToast} />
+            <button
+              onClick={() => { toggleKiosk(); setShowMenu(false); }}
+              className="mx-3 mb-2 py-2 rounded-2xl font-bold text-sm"
+              style={{ background: kioskOn ? C.brand : C.kraft, color: kioskOn ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              🖥️ {kioskOn ? "צא ממסך מלא" : "מסך מלא (קיוסק)"}
+            </button>
+            {isManager(currentUser) && (
+              <button
+                onClick={() => { setBackupOpen(true); setShowMenu(false); }}
+                className="mx-3 mb-2 py-2 rounded-2xl font-bold text-sm"
+                style={{ background: C.sage, color: "#fff" }}
+              >
+                💾 גיבוי ושחזור
+              </button>
+            )}
+            <button
+              onClick={async () => { await window.auth.signOut(); setAuthProfile(null); setShowMenu(false); }}
+              className="m-3 py-2 rounded-2xl font-bold text-sm"
+              style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              יציאה
+            </button>
+            <p className="text-center text-xs pb-1">
+              <button onClick={() => { setShowPrivacy(true); setShowMenu(false); }} className="underline" style={{ color: C.steel, background: "none", border: "none", cursor: "pointer" }}>
+                מדיניות פרטיות
+              </button>
+            </p>
+            <p className="text-center text-xs" style={{ color: C.steel }}>
+              © כל הזכויות שמורות לנפתלי קמפה · ת.ז. 313****31
+            </p>
+            <p className="text-center text-xs pb-3">
+              <a
+                href={`https://wa.me/972585120140?text=${encodeURIComponent("שלום, רציתי לפתח/להוסיף:")}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline"
+                style={{ color: C.accent }}
+              >
+                המלצות/פניות לפיתוח: 0585120140
+              </a>
+            </p>
+          </div>
+        </>
+      )}
+
+      {scannerOpen && (
+        <BarcodeScanner onDetected={handleScanDetected} onClose={() => setScannerOpen(false)} />
+      )}
+
+      {showPrivacy && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setShowPrivacy(false)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 560, maxHeight: "90vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 18, margin: "0 auto" }}>
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>מדיניות פרטיות</div>
+              <button onClick={() => setShowPrivacy(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+            <div className="text-sm leading-relaxed" style={{ color: C.ink }}>
+              <p className="mb-3" style={{ color: C.steel }}>עודכן לאחרונה: {new Date().toLocaleDateString("he-IL")}</p>
+
+              <p className="mb-3">אפליקציית "ניהול משק חכם" ("האפליקציה") נועדה לניהול פנימי של מלאי, משימות, תפריטים והזמנות במוסד. מסמך זה מסביר איזה מידע נאסף, כיצד נשמר ובמה נעשה בו שימוש.</p>
+
+              <div className="font-bold mt-3 mb-1">איזה מידע נאסף</div>
+              <p className="mb-3">מידע תפעולי שאתה מזין: מוצרים ומלאי, משימות ותמונות שמצורפות אליהן, תפריטים, בקשות והזמנות, מקומות/חדרים, והערות. בנוסף נשמרים פרטי חשבון בסיסיים (שם משתמש ושיוך לארגון) לצורך התחברות והרשאות.</p>
+
+              <div className="font-bold mt-3 mb-1">היכן נשמר המידע</div>
+              <p className="mb-3">המידע נשמר בשרתי הענן של ספק התשתית (Supabase) המשמש את האפליקציה, וכן במטמון מקומי במכשיר שלך כדי לאפשר עבודה גם בחיבור אינטרנט לא יציב. הגישה למידע מוגבלת למשתמשים המשויכים לאותו ארגון.</p>
+
+              <div className="font-bold mt-3 mb-1">התראות (Push)</div>
+              <p className="mb-3">אם תאשר קבלת התראות, יישמר מזהה מנוי טכני לצורך שליחת התראות למכשיר. אפשר לבטל זאת בכל עת דרך הגדרות המכשיר או האפליקציה.</p>
+
+              <div className="font-bold mt-3 mb-1">סריקת חשבוניות</div>
+              <p className="mb-3">אם תשתמש בתכונת סריקת החשבונית, תמונת החשבונית נשלחת לשירות עיבוד חיצוני (Anthropic) לצורך זיהוי הטקסט בלבד, ואינה נשמרת אצל אותו שירות מעבר לעיבוד הבקשה.</p>
+
+              <div className="font-bold mt-3 mb-1">שימוש במידע</div>
+              <p className="mb-3">המידע משמש אך ורק להפעלת האפליקציה עבורך ועבור הארגון שלך. איננו מוכרים מידע, ואין באפליקציה פרסומות.</p>
+
+              <div className="font-bold mt-3 mb-1">שמירה וגיבוי</div>
+              <p className="mb-3">המידע נשמר כל עוד החשבון/הארגון פעיל. מנהל יכול לייצא גיבוי ולשחזר מידע דרך מסך הגיבוי באפליקציה.</p>
+
+              <div className="font-bold mt-3 mb-1">מחיקה ופניות</div>
+              <p className="mb-3">לבקשת מחיקת מידע או לכל שאלה בנושא פרטיות, ניתן לפנות לאחראי האפליקציה בטלפון 0585120140.</p>
+
+              <p className="text-xs mt-4" style={{ color: C.steel }}>מסמך זה הוא תמצית לנוחות המשתמשים ואינו מהווה ייעוץ משפטי.</p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {biometricPrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(35,31,61,0.5)" }}>
+          <div className="w-full max-w-xs p-5 rounded-2xl wh-body text-center" style={{ background: C.paper }}>
+            <div className="text-4xl mb-3">👆</div>
+            <div className="wh-display font-bold mb-2" style={{ color: C.ink }}>כניסה מהירה?</div>
+            <p className="text-sm mb-4" style={{ color: C.steel }}>
+              רוצה להפעיל כניסה עם טביעת אצבע / זיהוי פנים במכשיר הזה, כדי לא להקליד סיסמה בכל פעם?
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                onClick={async () => {
+                  try {
+                    await registerBiometric(currentUser.name);
+                    showToast("נעילת טביעת אצבע הופעלה");
+                  } catch (e) {
+                    showToast("לא ניתן היה להפעיל טביעת אצבע במכשיר הזה");
+                  }
+                  markPromptedBiometric();
+                  setBiometricPrompt(false);
+                }}
+                className="p-3 rounded-2xl font-bold wh-display"
+                style={{ background: C.brand, color: "#fff" }}
+              >
+                כן, הפעל
+              </button>
+              <button
+                onClick={() => { markPromptedBiometric(); setBiometricPrompt(false); }}
+                className="p-2 rounded-2xl text-sm"
+                style={{ color: C.steel }}
+              >
+                אולי מאוחר יותר
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <InternalChat currentUser={currentUser} users={users} isManager={isManager(currentUser)} notifyManagers={notifyManagers} notifyUser={notifyUser} openSignal={chatOpenSignal} onUnread={setChatUnread} />
+
+      {backupOpen && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => !backupBusy && setBackupOpen(false)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 520, borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}>
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>💾 גיבוי ושחזור</div>
+              <button onClick={() => !backupBusy && setBackupOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+
+            <p className="text-sm mb-3" style={{ color: C.steel }}>
+              הורד קובץ גיבוי של כל נתוני המערכת (מוצרים, תפריטים, משימות, מקומות, מפה, הזמנות ועוד) ושמור אותו במקום בטוח. אם משהו נמחק - אפשר לשחזר ממנו.
+            </p>
+
+            <button
+              onClick={exportBackup}
+              disabled={backupBusy}
+              className="w-full py-3 rounded-2xl font-bold mb-2"
+              style={{ background: C.brand, color: "#fff", opacity: backupBusy ? 0.6 : 1 }}
+            >
+              {backupBusy ? "עובד…" : "⬇️ הורד גיבוי עכשיו"}
+            </button>
+
+            <label
+              className="block w-full text-center py-3 rounded-2xl font-bold cursor-pointer"
+              style={{ background: C.kraft, color: C.stamp, border: `1.5px dashed ${C.stamp}` }}
+            >
+              ⬆️ שחזר מקובץ גיבוי
+              <input type="file" accept=".json,application/json" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; importBackup(f); }} style={{ display: "none" }} disabled={backupBusy} />
+            </label>
+
+            <p className="text-xs mt-3 p-2 rounded-xl" style={{ background: "rgba(232,168,77,0.15)", color: C.ink }}>
+              ⚠️ שחזור דורס את הנתונים הנוכחיים בנתונים מהקובץ. תמיד הורד גיבוי עדכני לפני שחזור. מומלץ להוריד גיבוי אחת לשבוע.
+            </p>
+          </div>
+        </div>
+      )}
+      </div>
+    </div>
+  );
+}
+
+function TabButton({ label, active, onClick, badge, badgeColor }) {
+  return (
+    <button
+      onClick={onClick}
+      className="relative flex-1 py-3 wh-display text-sm font-bold"
+      style={{ color: active ? "#fff" : "#9AA69E", borderTop: active ? `2px solid #fff` : "2px solid transparent" }}
+    >
+      {label}
+      {badge && (
+        <span
+          className="absolute top-1 left-1/2 translate-x-3 rounded-full text-[10px] px-1.5 py-0.5 font-bold"
+          style={{ background: badgeColor, color: "#fff", minWidth: 16 }}
+        >
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function DrawerItem({ label, active, onClick, badge, badgeColor }) {
+  return (
+    <button
+      onClick={onClick}
+      className="relative flex items-center justify-between px-4 py-3 rounded-2xl wh-display text-sm font-bold text-right"
+      style={{
+        background: active ? C.ink : "transparent",
+        color: active ? "#fff" : C.ink,
+      }}
+    >
+      <span>{label}</span>
+      {badge && (
+        <span
+          className="rounded-full text-[10px] px-1.5 py-0.5 font-bold"
+          style={{ background: badgeColor, color: "#fff", minWidth: 16 }}
+        >
+          {badge}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/* ---------- Dashboard (home screen) ---------- */
+function DonutChart({ segments, total, size = 150 }) {
+  const stroke = 26;
+  const r = (size - stroke) / 2;
+  const cx = size / 2;
+  const circ = 2 * Math.PI * r;
+  let offset = 0;
+
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <circle cx={cx} cy={cx} r={r} fill="none" stroke={C.kraft} strokeWidth={stroke} />
+      {total > 0 &&
+        segments.map((seg, i) => {
+          if (seg.value === 0) return null;
+          const len = (seg.value / total) * circ;
+          const el = (
+            <circle
+              key={i}
+              cx={cx}
+              cy={cx}
+              r={r}
+              fill="none"
+              stroke={seg.color}
+              strokeWidth={stroke}
+              strokeDasharray={`${len} ${circ - len}`}
+              strokeDashoffset={-offset}
+              transform={`rotate(-90 ${cx} ${cx})`}
+            />
+          );
+          offset += len;
+          return el;
+        })}
+      <text x={cx} y={cx - 4} textAnchor="middle" className="wh-display" style={{ fontSize: 30, fontWeight: 900, fill: C.ink }}>
+        {total}
+      </text>
+      <text x={cx} y={cx + 16} textAnchor="middle" style={{ fontSize: 11, fill: C.steel }}>
+        סה"כ משימות
+      </text>
+    </svg>
+  );
+}
+
+function Dashboard({ tasks, products, orderHistory, users, currentUser, unitRequests, onGoTo }) {
+  const now = Date.now();
+
+  // Guard every input - the dashboard can render during the first load pass,
+  // before some arrays exist, and a single undefined here white-screens the app.
+  const allTasks = Array.isArray(tasks) ? tasks : [];
+  const allProducts = Array.isArray(products) ? products : [];
+  const allOrders = Array.isArray(orderHistory) ? orderHistory : [];
+  const allUnitReqs = Array.isArray(unitRequests) ? unitRequests : [];
+
+  const open = allTasks.filter((t) => t.status !== "done");
+  const inProgress = allTasks.filter((t) => t.status === "in_progress");
+  const newTasks = allTasks.filter((t) => t.status !== "done" && t.status !== "in_progress");
+  const done = allTasks.filter((t) => t.status === "done");
+  const urgent = open.filter((t) => t.priority === "urgent");
+  const overdueFollowups = allTasks.filter((t) => t.followUpAt && t.followUpAt < now && t.status !== "done");
+  const lowStock = allProducts.filter((p) => Number(p.quantity) <= Number(p.threshold));
+  const pendingUnit = allUnitReqs.filter((r) => r.status === "submitted");
+
+  // week's orders
+  const weekAgo = now - 7 * 86400000;
+  const weekOrders = allOrders.filter((o) => o.createdAt >= weekAgo);
+  const weekSpend = weekOrders.reduce((sum, o) => sum + Number(o.total || 0), 0);
+
+  const statusSegments = [
+    { label: "חדש", value: newTasks.length, color: C.accent },
+    { label: "בטיפול", value: inProgress.length, color: C.mustard },
+    { label: "הושלם", value: done.length, color: C.sage },
+  ];
+
+  // by category
+  const byCat = {};
+  open.forEach((t) => {
+    const key = t.categoryId || "none";
+    byCat[key] = (byCat[key] || 0) + 1;
+  });
+
+  const greeting = (() => {
+    const h = new Date().getHours();
+    if (h < 12) return "בוקר טוב";
+    if (h < 17) return "צהריים טובים";
+    if (h < 21) return "ערב טוב";
+    return "לילה טוב";
+  })();
+
+  return (
+    <div>
+      <div className="mb-4">
+        <div className="wh-display font-black text-xl" style={{ color: C.ink }}>
+          {greeting}, {currentUser.name} 👋
+        </div>
+        <div className="text-sm" style={{ color: C.steel }}>
+          {new Date().toLocaleDateString("he-IL", { weekday: "long", day: "numeric", month: "long" })}
+        </div>
+      </div>
+
+      {/* Alert row */}
+      {(urgent.length > 0 || overdueFollowups.length > 0 || pendingUnit.length > 0) && (
+        <div className="flex flex-col gap-2 mb-4">
+          {urgent.length > 0 && (
+            <button onClick={() => onGoTo("tasks")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "rgba(255,90,95,0.15)", border: `1px solid ${C.stamp}` }}>
+              <span className="text-xl">⚠️</span>
+              <span className="text-sm font-bold" style={{ color: C.stamp }}>{urgent.length} משימות דחופות פתוחות</span>
+            </button>
+          )}
+          {overdueFollowups.length > 0 && (
+            <button onClick={() => onGoTo("tasks")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "rgba(232,168,77,0.15)", border: `1px solid ${C.mustard}` }}>
+              <span className="text-xl">⏰</span>
+              <span className="text-sm font-bold" style={{ color: C.ink }}>{overdueFollowups.length} תזכורות המשך באיחור</span>
+            </button>
+          )}
+          {pendingUnit.length > 0 && currentUser.role === "manager" && (
+            <button onClick={() => onGoTo("admin", "unitrequests")} className="w-full p-3 rounded-2xl text-right flex items-center gap-3" style={{ background: "rgba(124,92,252,0.15)", border: `1px solid ${C.accent}` }}>
+              <span className="text-xl">🧺</span>
+              <span className="text-sm font-bold" style={{ color: C.ink }}>{pendingUnit.length} בקשות מהמחסן ממתינות</span>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Metric cards */}
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        <button onClick={() => onGoTo("tasks")} className="text-right">
+          <DashCard icon="📋" label="משימות פתוחות" value={open.length} color={C.mustard} />
+        </button>
+        <button onClick={() => onGoTo("tasks")} className="text-right">
+          <DashCard icon="✅" label="הושלמו" value={done.length} color={C.sage} />
+        </button>
+        <button onClick={() => onGoTo("order")} className="text-right">
+          <DashCard icon="🛒" label="מוצרים בחוסר" value={lowStock.length} color={lowStock.length > 0 ? C.stamp : C.sage} />
+        </button>
+        <button onClick={() => onGoTo("order")} className="text-right">
+          <DashCard icon="📦" label="הזמנות השבוע" value={weekOrders.length} sub={`₪${weekSpend.toFixed(0)}`} color={C.accent} />
+        </button>
+      </div>
+
+      {/* Status donut */}
+      <ShelfTag accent={C.ink} style={{ marginBottom: 16 }}>
+        <div className="wh-display font-bold text-sm mb-3" style={{ color: C.ink }}>סטטוס משימות</div>
+        <div className="flex items-center gap-4">
+          <DonutChart segments={statusSegments} total={allTasks.length} />
+          <div className="flex-1 flex flex-col gap-2">
+            {statusSegments.map((s) => {
+              const pct = allTasks.length ? Math.round((s.value / allTasks.length) * 100) : 0;
+              return (
+                <div key={s.label} className="flex items-center gap-2">
+                  <span style={{ width: 12, height: 12, borderRadius: 6, background: s.color, display: "inline-block" }} />
+                  <span className="text-sm flex-1" style={{ color: C.ink }}>{s.label}</span>
+                  <span className="text-sm font-bold" style={{ color: C.ink }}>{s.value}</span>
+                  <span className="text-xs" style={{ color: C.steel }}>({pct}%)</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </ShelfTag>
+
+      {/* By category */}
+      {Object.keys(byCat).length > 0 && (
+        <ShelfTag accent={C.accent}>
+          <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>משימות פתוחות לפי קטגוריה</div>
+          <div className="flex flex-col gap-1.5">
+            {Object.entries(byCat).sort((a, b) => b[1] - a[1]).map(([catId, count]) => {
+              const cat = catId === "none" ? null : (window.__taskCats || []).find((c) => c.id === catId);
+              const name = cat ? `${cat.icon || "📋"} ${cat.name}` : "ללא קטגוריה";
+              const col = cat ? categoryColor(cat.name) : C.steel;
+              const max = Math.max(...Object.values(byCat));
+              return (
+                <div key={catId}>
+                  <div className="flex justify-between text-sm mb-0.5">
+                    <span style={{ color: C.ink }}>{name}</span>
+                    <span className="font-bold" style={{ color: C.ink }}>{count}</span>
+                  </div>
+                  <div className="rounded-full overflow-hidden" style={{ background: C.kraft, height: 6 }}>
+                    <div style={{ background: col, height: "100%", width: `${(count / max) * 100}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </ShelfTag>
+      )}
+    </div>
+  );
+}
+
+function DashCard({ icon, label, value, sub, color }) {
+  return (
+    <div className="rounded-2xl p-3" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${color}`, boxShadow: "0 2px 8px rgba(20,33,61,0.05)" }}>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs" style={{ color: C.steel }}>{label}</span>
+        <span className="text-lg">{icon}</span>
+      </div>
+      <div className="wh-display font-black" style={{ color, fontSize: 30 }}>{value}</div>
+      {sub && <div className="text-xs" style={{ color: C.steel }}>{sub}</div>}
+    </div>
+  );
+}
+
+/* ---------- Inventory Tab ---------- */
+function InventoryTab({ products, persistProducts, openScanner, scanResult, clearScanResult, currentUser, showToast, isManager, logStockChange }) {
+  const [search, setSearch] = useState("");
+  const [showSummary, setShowSummary] = useState(false);
+  const [viewMode, setViewMode] = useState("category"); // "category" | "name"
+  const [activeCategory, setActiveCategory] = useState("all"); // "all" | specific category name
+  const [hwMode, setHwMode] = useState(false);
+  const [hwValue, setHwValue] = useState("");
+  const [hwLog, setHwLog] = useState([]);
+  const hwInputRef = useRef(null);
+  const filtered = products.filter((p) => p.name.includes(search) || p.barcode.includes(search));
+  const filteredByCategory =
+    activeCategory === "all" ? filtered : filtered.filter((p) => (p.category || "ללא קטגוריה") === activeCategory);
+
+  const allCategories = Array.from(
+    new Set(products.map((p) => p.category || "ללא קטגוריה"))
+  );
+
+  async function adjustQty(product, delta) {
+    const next = products.map((p) =>
+      p.id === product.id ? { ...p, quantity: Math.max(0, Number(p.quantity) + delta) } : p
+    );
+    await persistProducts(next);
+    if (logStockChange) logStockChange(product.id, delta, currentUser.name);
+    showToast(`${product.name}: ${delta > 0 ? "+" : ""}${delta} (${currentUser.name})`);
+  }
+
+  async function setQty(product, newQty) {
+    const next = products.map((p) => (p.id === product.id ? { ...p, quantity: newQty } : p));
+    await persistProducts(next);
+    const delta = Number(newQty) - Number(product.quantity);
+    if (logStockChange) logStockChange(product.id, delta, currentUser.name);
+    showToast(`${product.name}: עודכן ל-${newQty} (${currentUser.name})`);
+  }
+
+  function handleHardwareScan(rawCode) {
+    const code = String(rawCode).trim();
+    if (!code) return;
+    const product = products.find((p) => p.barcode === code);
+    if (!product) {
+      showToast(`❌ ברקוד לא מזוהה: ${code}`);
+      setHwLog((l) => [{ text: `❌ לא נמצא: ${code}`, ts: Date.now() }, ...l].slice(0, 8));
+      return;
+    }
+    adjustQty(product, -1);
+    setHwLog((l) => [{ text: `✅ ${product.name} → ${Math.max(0, Number(product.quantity) - 1)}`, ts: Date.now() }, ...l].slice(0, 8));
+  }
+
+  const summaryByCategory = Object.entries(
+    products.reduce((acc, p) => {
+      const cat = p.category || "ללא קטגוריה";
+      if (!acc[cat]) acc[cat] = { count: 0, value: 0, low: 0 };
+      acc[cat].count += 1;
+      acc[cat].value += Number(p.price) * Number(p.quantity);
+      if (Number(p.quantity) <= Number(p.threshold)) acc[cat].low += 1;
+      return acc;
+    }, {})
+  );
+  const totalValue = products.reduce((sum, p) => sum + Number(p.price) * Number(p.quantity), 0);
+  const totalLow = products.filter((p) => Number(p.quantity) <= Number(p.threshold)).length;
+
+  return (
+    <div>
+      <button
+        onClick={() => setShowSummary((v) => !v)}
+        className="w-full py-2 mb-4 rounded-2xl font-bold text-sm wh-display"
+        style={{ background: C.brand, color: "#fff" }}
+      >
+        {showSummary ? "▲ הסתר סיכום מלאי" : "📊 הצג סיכום מלאי"}
+      </button>
+
+      {showSummary && (
+        <ShelfTag accent={C.steel} style={{ marginBottom: 16 }}>
+          <div className="flex justify-between mb-3 pb-2" style={{ borderBottom: `1px solid ${C.kraftDark}` }}>
+            <div className="text-center flex-1">
+              <div className="wh-display font-black text-xl" style={{ color: C.ink }}>{products.length}</div>
+              <div className="text-xs" style={{ color: C.steel }}>מוצרים</div>
+            </div>
+            <div className="text-center flex-1">
+              <div className="wh-display font-black text-xl" style={{ color: C.ink }}>₪{totalValue.toFixed(0)}</div>
+              <div className="text-xs" style={{ color: C.steel }}>ערך מלאי כולל</div>
+            </div>
+            <div className="text-center flex-1">
+              <div className="wh-display font-black text-xl" style={{ color: totalLow > 0 ? C.stamp : C.sage }}>{totalLow}</div>
+              <div className="text-xs" style={{ color: C.steel }}>מתחת לסף</div>
+            </div>
+          </div>
+          <div className="flex flex-col gap-2">
+            {summaryByCategory.map(([cat, s]) => (
+              <div key={cat} className="flex justify-between items-center text-sm">
+                <span style={{ color: C.ink }} className="font-bold">{cat}</span>
+                <span style={{ color: C.steel }}>
+                  {s.count} מוצרים · ₪{s.value.toFixed(0)}
+                  {s.low > 0 && <span style={{ color: C.stamp }}> · {s.low} בחוסר</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        </ShelfTag>
+      )}
+
+      <div className="flex gap-2 mb-4">
+        <input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="חיפוש מוצר..."
+          className="flex-1 p-3 rounded-2xl border"
+          style={{ borderColor: C.kraftDark, background: C.kraft }}
+        />
+        <button
+          onClick={openScanner}
+          className="px-4 rounded-2xl wh-display font-bold"
+          style={{ background: C.brand, color: "#fff" }}
+        >
+          📷 סרוק
+        </button>
+        <button
+          onClick={() => setHwMode((v) => !v)}
+          className="px-4 rounded-2xl wh-display font-bold"
+          style={{ background: hwMode ? C.stamp : C.steel, color: "#fff" }}
+        >
+          🔌 סורק חומרה
+        </button>
+      </div>
+
+      {hwMode && (
+        <ShelfTag accent={C.stamp} style={{ marginBottom: 16 }}>
+          <div className="text-xs mb-2 font-bold" style={{ color: C.steel }}>
+            חבר את הסורק (USB/בלוטות'), לחץ בתוך התיבה, וסרוק. כל סריקה מורידה 1 מהמלאי.
+          </div>
+          <input
+            ref={hwInputRef}
+            value={hwValue}
+            onChange={(e) => setHwValue(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                handleHardwareScan(hwValue);
+                setHwValue("");
+                if (hwInputRef.current) hwInputRef.current.focus();
+              }
+            }}
+            placeholder="ממתין לסריקה..."
+            className="w-full p-3 rounded-2xl border wh-display"
+            style={{ borderColor: C.stamp, background: C.kraft, direction: "ltr", fontSize: 18 }}
+            autoFocus
+          />
+          {hwLog.length > 0 && (
+            <div className="mt-3 flex flex-col gap-1">
+              {hwLog.map((entry) => (
+                <div key={entry.ts} className="text-sm" style={{ color: C.ink }}>{entry.text}</div>
+              ))}
+            </div>
+          )}
+        </ShelfTag>
+      )}
+
+      {scanResult && (
+        <ScanResultCard
+          scanResult={scanResult}
+          products={products}
+          onAdjust={adjustQty}
+          onClose={clearScanResult}
+          isManager={isManager}
+        />
+      )}
+
+      {activeCategory === "all" && (
+        <div className="flex gap-2 mb-3">
+          <button
+            onClick={() => setViewMode("category")}
+            className="flex-1 py-2 rounded-2xl text-sm font-bold"
+            style={{ background: viewMode === "category" ? C.brand : C.kraft, color: viewMode === "category" ? "#fff" : C.ink }}
+          >
+            לפי קטגוריה
+          </button>
+          <button
+            onClick={() => setViewMode("name")}
+            className="flex-1 py-2 rounded-2xl text-sm font-bold"
+            style={{ background: viewMode === "name" ? C.brand : C.kraft, color: viewMode === "name" ? "#fff" : C.ink }}
+          >
+            לפי שם (רשימה)
+          </button>
+        </div>
+      )}
+
+      <div className="flex gap-2 overflow-x-auto pb-2 mb-3" style={{ scrollbarWidth: "thin" }}>
+        <button
+          onClick={() => setActiveCategory("all")}
+          className="px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap"
+          style={{ background: activeCategory === "all" ? C.brand : C.kraft, color: activeCategory === "all" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+        >
+          הכל
+        </button>
+        {allCategories.map((cat) => {
+          const col = categoryColor(cat);
+          const active = activeCategory === cat;
+          return (
+            <button
+              key={cat}
+              onClick={() => setActiveCategory(cat)}
+              className="px-4 py-2 rounded-full text-sm font-bold whitespace-nowrap"
+              style={{
+                background: active ? col : C.kraft,
+                color: active ? "#fff" : col,
+                border: `1.5px solid ${col}`,
+              }}
+            >
+              {cat}
+            </button>
+          );
+        })}
+      </div>
+
+      <div className="flex flex-col gap-4">
+        {filteredByCategory.length === 0 && (
+          <p className="text-sm text-center py-8" style={{ color: C.steel }}>
+            אין מוצרים להצגה. {isManager ? "הוסף מוצרים במסך ניהול." : ""}
+          </p>
+        )}
+        {viewMode === "name" || activeCategory !== "all" ? (
+          <div className="flex flex-col gap-3">
+            {[...filteredByCategory].sort((a, b) => a.name.localeCompare(b.name, "he")).map((p) => (
+              <ProductCard key={p.id} p={p} onSetQty={setQty} />
+            ))}
+          </div>
+        ) : (
+          Object.entries(
+            filteredByCategory.reduce((acc, p) => {
+              const cat = p.category || "ללא קטגוריה";
+              (acc[cat] = acc[cat] || []).push(p);
+              return acc;
+            }, {})
+          ).map(([cat, items]) => (
+            <div key={cat}>
+              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.steel }}>{cat} ({items.length})</div>
+              <div className="flex flex-col gap-3">
+                {items.map((p) => (
+                  <ProductCard key={p.id} p={p} onSetQty={setQty} />
+                ))}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProductCard({ p, onSetQty }) {
+  const low = Number(p.quantity) <= Number(p.threshold);
+  const [value, setValue] = useState(p.quantity);
+
+  useEffect(() => { setValue(p.quantity); }, [p.quantity]);
+
+  const changed = Number(value) !== Number(p.quantity);
+
+  return (
+    <ShelfTag accent={low ? C.stamp : C.sage}>
+      <div className="flex justify-between items-start">
+        <div className="flex gap-2">
+          {p.imageData && (
+            <img src={p.imageData} alt="" className="rounded-xl flex-shrink-0" style={{ width: 56, height: 56, objectFit: "cover" }} />
+          )}
+          <div>
+            <div className="wh-display font-bold" style={{ color: C.ink }}>{p.name}</div>
+            <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>
+              ברקוד: {p.barcode || "—"}
+            </div>
+            <div className="text-xs mt-1" style={{ color: C.steel }}>
+              ₪{Number(p.price).toFixed(2)} ליחידה · סף מינ׳ {p.threshold} {p.unit}
+              {p.unitsPerCarton > 0 && ` · ${p.unitsPerCarton} ביחידה בקרטון`}
+            </div>
+          </div>
+        </div>
+        <div className="text-left">
+          <div className="wh-display font-black text-2xl" style={{ color: low ? C.stamp : C.ink }}>
+            {p.quantity}
+          </div>
+          <div className="text-xs" style={{ color: C.steel }}>{p.unit}</div>
+        </div>
+      </div>
+      <div className="flex gap-2 mt-3 items-center">
+        <label className="text-xs font-bold" style={{ color: C.steel }}>כמות סופית:</label>
+        <input
+          type="number"
+          value={value === 0 ? "" : value}
+          onChange={(e) => setValue(e.target.value === "" ? 0 : Number(e.target.value))}
+          className="w-20 text-center p-2 rounded-2xl border"
+          style={{ borderColor: C.kraftDark }}
+        />
+        <button
+          onClick={() => onSetQty(p, Math.max(0, Number(value)))}
+          disabled={!changed}
+          className="flex-1 py-2 rounded-2xl font-bold"
+          style={{
+            background: changed ? C.sage : C.kraft,
+            color: changed ? "#fff" : C.steel,
+            cursor: changed ? "pointer" : "default",
+          }}
+        >
+          עדכן
+        </button>
+      </div>
+    </ShelfTag>
+  );
+}
+
+function ScanResultCard({ scanResult, onAdjust, onClose, isManager }) {
+  const [qty, setQty] = useState(1);
+  const { code, product } = scanResult;
+
+  if (!product) {
+    return (
+      <ShelfTag accent={C.stamp} style={{ marginBottom: 16 }}>
+        <div className="wh-display font-bold" style={{ color: C.stamp }}>מוצר לא נמצא</div>
+        <div className="text-xs my-1" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>
+          ברקוד שנסרק: {code}
+        </div>
+        {isManager && (
+          <p className="text-xs mb-2" style={{ color: C.steel }}>
+            אפשר להוסיף מוצר חדש עם הברקוד הזה במסך ניהול.
+          </p>
+        )}
+        <button onClick={onClose} className="w-full py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
+          סגור
+        </button>
+      </ShelfTag>
+    );
+  }
+
+  return (
+    <ShelfTag accent={C.sage} style={{ marginBottom: 16 }}>
+      <div className="wh-display font-bold" style={{ color: C.ink }}>{product.name}</div>
+      <div className="text-xs mb-2" style={{ color: C.steel }}>מלאי נוכחי: {product.quantity} {product.unit}</div>
+      <div className="flex items-center gap-2 mb-3">
+        <button onClick={() => setQty((q) => Math.max(1, q - 1))} className="px-3 py-1 rounded-2xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>−</button>
+        <input
+          type="number"
+          value={qty}
+          onChange={(e) => setQty(Math.max(1, Number(e.target.value)))}
+          className="w-16 text-center p-1 rounded-2xl border"
+          style={{ borderColor: C.kraftDark }}
+        />
+        <button onClick={() => setQty((q) => q + 1)} className="px-3 py-1 rounded-2xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>+</button>
+      </div>
+      <div className="flex gap-2">
+        <button
+          onClick={() => { onAdjust(product, -qty); onClose(); }}
+          className="flex-1 py-2 rounded-2xl font-bold"
+          style={{ background: C.stamp, color: "#fff" }}
+        >
+          הורד מלאי
+        </button>
+        <button
+          onClick={() => { onAdjust(product, qty); onClose(); }}
+          className="flex-1 py-2 rounded-2xl font-bold"
+          style={{ background: C.sage, color: "#fff" }}
+        >
+          הוסף למלאי
+        </button>
+      </div>
+      <button onClick={onClose} className="w-full mt-2 py-1 text-xs" style={{ color: C.steel }}>ביטול</button>
+    </ShelfTag>
+  );
+}
+
+/* ---------- Order Tab ---------- */
+function useHebrewHolidays() {
+  const [holidays, setHolidays] = useState([]);
+  const [loadingHolidays, setLoadingHolidays] = useState(true);
+
+  useEffect(() => {
+    const start = new Date();
+    const end = new Date();
+    end.setDate(end.getDate() + 90);
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    const url = `https://www.hebcal.com/hebcal?v=1&cfg=json&maj=on&min=on&mod=on&start=${fmt(start)}&end=${fmt(end)}&lg=he`;
+    fetch(url)
+      .then((r) => r.json())
+      .then((data) => {
+        const items = (data.items || [])
+          .filter((it) => it.category === "holiday")
+          .map((it) => ({ date: it.date, title: it.hebrew || it.title }));
+        setHolidays(items);
+      })
+      .catch(() => setHolidays([]))
+      .finally(() => setLoadingHolidays(false));
+  }, []);
+
+  return { holidays, loadingHolidays };
+}
+
+/** Weekly Torah portions from Hebcal, keyed by the Shabbat they're read on. */
+function useParshiot() {
+  const [parshiot, setParshiot] = useState([]);
+
+  useEffect(() => {
+    const start = new Date();
+    start.setDate(start.getDate() - 7);
+    const end = new Date();
+    end.setDate(end.getDate() + 120);
+    const fmt = (d) => d.toISOString().slice(0, 10);
+    // s=on adds the weekly parasha to the results.
+    const url = `https://www.hebcal.com/hebcal?v=1&cfg=json&s=on&start=${fmt(start)}&end=${fmt(end)}&lg=he`;
+
+    fetch(url)
+      .then((r) => r.json())
+      .then((data) => {
+        const items = (data.items || [])
+          .filter((it) => it.category === "parashat")
+          .map((it) => ({ date: it.date.slice(0, 10), title: it.hebrew || it.title }));
+        setParshiot(items);
+      })
+      .catch(() => setParshiot([]));
+  }, []);
+
+  return parshiot;
+}
+
+/** The Saturday that closes the week starting on the given Sunday. */
+function shabbatOfWeek(weekStartIsoStr) {
+  const d = parseIsoLocal(weekStartIsoStr);
+  d.setDate(d.getDate() + 6);
+  return isoLocalDate(d);
+}
+
+/** ISO Sunday of next week. */
+function nextWeekStartIso() {
+  const d = parseIsoLocal(weekStartIso());
+  d.setDate(d.getDate() + 7);
+  return isoLocalDate(d);
+}
+
+function HebrewCalendarWidget() {
+  const { holidays, loadingHolidays } = useHebrewHolidays();
+  const [open, setOpen] = useState(false);
+
+  function formatHebrewDate(iso) {
+    try {
+      return new Date(iso).toLocaleDateString("he-IL", { weekday: "short", day: "numeric", month: "short" });
+    } catch (e) {
+      return iso;
+    }
+  }
+
+  return (
+    <div className="mb-4">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="w-full py-2 rounded-2xl font-bold text-sm"
+        style={{ background: C.accent2, color: "#fff" }}
+      >
+        📅 חגים ואירועים קרובים בלוח העברי {open ? "▲" : "▼"}
+      </button>
+      {open && (
+        <ShelfTag accent={C.accent2} style={{ marginTop: 8 }}>
+          {loadingHolidays ? (
+            <p className="text-sm text-center" style={{ color: C.steel }}>טוען...</p>
+          ) : holidays.length === 0 ? (
+            <p className="text-sm text-center" style={{ color: C.steel }}>לא נמצאו אירועים קרובים</p>
+          ) : (
+            <div className="flex flex-col gap-2">
+              {holidays.map((h, i) => (
+                <div key={i} className="flex justify-between text-sm">
+                  <span className="font-bold" style={{ color: C.ink }}>{h.title}</span>
+                  <span style={{ color: C.steel }}>{formatHebrewDate(h.date)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </ShelfTag>
+      )}
+    </div>
+  );
+}
+
+function OrderTab({ lowStock, products, settings, persistSettings, isManager, tasks, persistTasks, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry, savedMenus, persistSavedMenus }) {
+  const mayApprove = canSendOrders(currentUser);
+  const myPending = (orderRequests || []).filter((r) => r.createdById === currentUser?.id && r.status === "pending");
+  const suppliers = settings.suppliers || [];
+  const [selectedSupplierId, setSelectedSupplierId] = useState(suppliers[0]?.id || "");
+  const [manualPhone, setManualPhone] = useState(settings.supplierPhone || "");
+  const [manualEmail, setManualEmail] = useState(settings.supplierEmail || "");
+  const [channel, setChannel] = useState("whatsapp"); // "whatsapp" | "sms" | "email"
+  const [orderMode, setOrderMode] = useState("stock"); // "stock" | "menu" | "week"
+  const [qtys, setQtys] = useState({}); // start empty - no quantity is pre-filled; the user types what they want
+  const [selectedMenuIds, setSelectedMenuIds] = useState([]);
+  const [portions, setPortions] = useState(1);
+  const [weekPortions, setWeekPortions] = useState(1);
+  const [menuQtys, setMenuQtys] = useState({});
+  const [weekQtys, setWeekQtys] = useState({});
+  const [pickedIds, setPickedIds] = useState([]);        // which computed needs go on the order
+  const [orderExtras, setOrderExtras] = useState({});    // productId -> qty, for items NOT in the menu
+  const [extrasOpen, setExtrasOpen] = useState(false);
+  const [extraSearch, setExtraSearch] = useState("");
+  const [pendingOrder, setPendingOrder] = useState(null); // review sheet before anything is sent
+  const [orderSearch, setOrderSearch] = useState("");
+  const [orderSupplierFilter, setOrderSupplierFilter] = useState("all");
+  const [supplierOverrides, setSupplierOverrides] = useState({}); // productId -> supplierId chosen at order time (overrides the product's default)
+  const [adHocItems, setAdHocItems] = useState([]); // free-text products not in the catalog: { id, name, qty, supplierId }
+  const [adHocName, setAdHocName] = useState("");
+  const [orderNote, setOrderNote] = useState("שלום, הזמנה לשבוע:");
+  // Suppliers already sent this round — their send button is hidden until the selection changes.
+  const [sentSuppliers, setSentSuppliers] = useState([]);
+  // Menu-time reminders: "order product X on day Y" — created as tasks so the existing
+  // reminder engine fires them at the set time.
+  const [remOpen, setRemOpen] = useState(false);
+  const [showOnlyMarked, setShowOnlyMarked] = useState(false); // filter lists to show only marked items
+  const [remProduct, setRemProduct] = useState("");
+  const [remDate, setRemDate] = useState("");
+  const [remTime, setRemTime] = useState("08:00");
+  const [remNote, setRemNote] = useState("");
+  const orderReminders = (tasks || [])
+    .filter((t) => t.kind === "order-reminder" && t.status !== "done")
+    .sort((a, b) => (a.followUpAt || 0) - (b.followUpAt || 0));
+  async function createOrderReminder() {
+    if (!remDate) { showToast("בחר יום לתזכורת"); return; }
+    const name = remProduct.trim();
+    const when = combineDateTime(remDate, remTime);
+    const label = name ? `🛒 להזמין: ${name}` : "🛒 תזכורת הזמנה";
+    const task = {
+      id: genId(),
+      kind: "order-reminder",
+      title: `${label}${remNote.trim() ? ` — ${remNote.trim()}` : ""}`,
+      description: "",
+      location: "",
+      assignedToId: "",
+      priority: "normal",
+      categoryId: "",
+      followUpAt: when,
+      status: "open",
+      comments: [],
+      createdAt: Date.now(),
+      createdBy: currentUser?.name || "",
+      createdById: currentUser?.id || "",
+    };
+    await persistTasks([task, ...(tasks || [])]);
+    setRemProduct(""); setRemNote(""); setRemDate("");
+    showToast("התזכורת נוספה ✓");
+  }
+  async function deleteOrderReminder(id) {
+    await persistTasks((tasks || []).filter((t) => t.id !== id));
+  }
+  const [selectedForOrder, setSelectedForOrder] = useState([]);
+  // Reset the "already sent" suppliers whenever the selection or mode changes.
+  useEffect(() => { setSentSuppliers([]); }, [pickedIds, selectedForOrder, orderMode]);
+  const [openPicker, setOpenPicker] = useState(null);
+  const [weekView, setWeekView] = useState("grid"); // "grid" (like the Excel sheet) | "days"
+  const [menuWeek, setMenuWeek] = useState("next"); // which week the printed menu is for
+  const [parshaOverride, setParshaOverride] = useState("");
+  const [savedMenusOpen, setSavedMenusOpen] = useState(false);
+
+  // Keep the in-progress order (quantities, picks, extras, ad-hoc items) so it survives
+  // switching tabs or reloading. Stored per-organization on this device.
+  // Placed AFTER all the order state declarations so its dependencies are initialized.
+  const orderDraftKey = `kitchen-order-draft::${getActiveOrg() || "_"}`;
+  const orderHydratedRef = useRef(false);
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(orderDraftKey);
+      if (raw) {
+        const d = JSON.parse(raw);
+        if (d.qtys) setQtys(d.qtys);
+        if (d.orderExtras) setOrderExtras(d.orderExtras);
+        if (d.supplierOverrides) setSupplierOverrides(d.supplierOverrides);
+        if (Array.isArray(d.pickedIds)) setPickedIds(d.pickedIds);
+        if (Array.isArray(d.selectedForOrder)) setSelectedForOrder(d.selectedForOrder);
+        if (Array.isArray(d.adHocItems)) setAdHocItems(d.adHocItems);
+        if (d.menuQtys) setMenuQtys(d.menuQtys);
+        if (d.weekQtys) setWeekQtys(d.weekQtys);
+      }
+    } catch (e) {}
+    orderHydratedRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  useEffect(() => {
+    if (!orderHydratedRef.current) return;
+    try {
+      localStorage.setItem(orderDraftKey, JSON.stringify({ qtys, orderExtras, supplierOverrides, pickedIds, selectedForOrder, adHocItems, menuQtys, weekQtys }));
+    } catch (e) {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qtys, orderExtras, supplierOverrides, pickedIds, selectedForOrder, adHocItems, menuQtys, weekQtys]);
+  function clearOrderDraft() {
+    setQtys({}); setOrderExtras({}); setSupplierOverrides({}); setPickedIds([]); setSelectedForOrder([]); setAdHocItems([]); setMenuQtys({}); setWeekQtys({});
+    try { localStorage.removeItem(orderDraftKey); } catch (e) {}
+    showToast("טיוטת ההזמנה נוקתה");
+  }
+
+  const [drafts, setDrafts] = useState([]);
+  const [editingDraftId, setEditingDraftId] = useState(null); // which saved draft the review sheet is editing (null = brand-new order)
+  const [sheetAddSearch, setSheetAddSearch] = useState(""); // add-a-product box inside the review sheet
+  function addProductToPending(product) {
+    setPendingOrder((po) => {
+      if (!po) return po;
+      if (po.items.some((it) => it.product.id === product.id)) {
+        return { ...po, items: po.items.map((it) => (it.product.id === product.id ? { ...it, qty: (Number(it.qty) || 0) + 1 } : it)) };
+      }
+      return { ...po, items: [...po.items, { product, qty: 1 }] };
+    });
+    setSheetAddSearch("");
+  }
+  useEffect(() => {
+    loadKey(KEYS.orderDrafts, []).then((d) => setDrafts(Array.isArray(d) ? d : [])).catch(() => {});
+  }, []);
+  async function persistDrafts(next) { setDrafts(next); await saveKey(KEYS.orderDrafts, next); }
+  function saveDraftFromPending() {
+    if (!pendingOrder) return;
+    const items = pendingOrder.items
+      .filter(({ qty }) => Number(qty) > 0)
+      .map(({ product, qty }) => ({ productId: product.id, name: product.name, unit: product.unit, price: Number(product.price || 0), qty }));
+    if (items.length === 0) { showToast("אין מוצרים לשמירה - הכמות של כולם אפס"); return; }
+    if (editingDraftId) {
+      // Editing an existing draft: update it in place instead of creating a duplicate.
+      persistDrafts(
+        drafts.map((d) =>
+          d.id === editingDraftId
+            ? { ...d, supplierId: pendingOrder.supplierId, title: pendingOrder.title || "הזמנה", items, updatedAt: Date.now() }
+            : d
+        )
+      );
+      showToast("הטיוטה עודכנה");
+    } else {
+      const draft = {
+        id: genId(),
+        createdAt: Date.now(),
+        by: currentUser?.name || "",
+        supplierId: pendingOrder.supplierId,
+        title: pendingOrder.title || "הזמנה",
+        items,
+      };
+      persistDrafts([draft, ...drafts]);
+      showToast("ההזמנה נשמרה כטיוטה");
+    }
+    setPendingOrder(null);
+    setEditingDraftId(null);
+  }
+  function loadDraft(draft) {
+    const items = draft.items.map((it) => ({
+      product: products.find((p) => p.id === it.productId) || { id: it.productId, name: it.name, unit: it.unit, price: it.price },
+      qty: it.qty,
+    }));
+    setEditingDraftId(draft.id);
+    setPendingOrder({ items, supplierId: draft.supplierId, title: draft.title || "הזמנה", isRequest: !mayApprove, sourceLabel: draft.title || "הזמנה" });
+  }
+  function deleteDraft(id) { persistDrafts(drafts.filter((d) => d.id !== id)); }
+  // Close the review sheet without saving, and forget which draft we were editing.
+  function closePendingSheet() { setPendingOrder(null); setEditingDraftId(null); }
+  // Edit a line inside the review sheet (used for both new orders and loaded drafts).
+  function updatePendingQty(productId, nextQty) {
+    setPendingOrder((po) => {
+      if (!po) return po;
+      const q = Math.max(0, Math.round(Number(nextQty) || 0));
+      return { ...po, items: po.items.map((it) => (it.product.id === productId ? { ...it, qty: q } : it)) };
+    });
+  }
+  function removePendingItem(productId) {
+    setPendingOrder((po) => {
+      if (!po) return po;
+      return { ...po, items: po.items.filter((it) => it.product.id !== productId) };
+    });
+  }
+  // Reorder a line in the review sheet before sending, so the message to the supplier
+  // comes out in the order the user wants.
+  function movePendingItem(index, dir) {
+    setPendingOrder((po) => {
+      if (!po) return po;
+      const items = [...po.items];
+      const j = index + dir;
+      if (j < 0 || j >= items.length) return po;
+      const tmp = items[index];
+      items[index] = items[j];
+      items[j] = tmp;
+      return { ...po, items };
+    });
+  }
+  const parshiot = useParshiot();
+
+  // The menu you plan is normally for the coming week, so that's the default.
+  const targetWeekStart = menuWeek === "next" ? nextWeekStartIso() : weekStartIso();
+  const targetShabbat = shabbatOfWeek(targetWeekStart);
+  const autoParsha = parshiot.find((p) => p.date === targetShabbat)?.title || "";
+  const parshaTitle = parshaOverride.trim() || autoParsha;
+  const { holidays } = useHebrewHolidays();
+
+  function dateForWeekdayIndex(idx) {
+    const d = parseIsoLocal(targetWeekStart);
+    d.setDate(d.getDate() + idx);
+    return d;
+  }
+  function holidayForDate(d) {
+    const iso = isoLocalDate(d);
+    return holidays.find((h) => h.date.slice(0, 10) === iso);
+  }
+
+  useEffect(() => {
+    // Keep only quantities the user actually typed for items still low on stock.
+    // Don't auto-fill any suggested amount - boxes stay empty until the user enters a number.
+    setQtys((prev) => {
+      const next = {};
+      lowStock.forEach((p) => { if (prev[p.id] != null) next[p.id] = prev[p.id]; });
+      return next;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lowStock.length]);
+
+  // Deliberately no auto-selection: the user decides what actually goes on the order.
+  // (Previously every low-stock item was pre-ticked, which made it easy to send things
+  // nobody meant to order.) The "סמן הכל" button is there when you do want them all.
+
+  function toggleMenuItem(id) {
+    setSelectedMenuIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  }
+
+  async function setWeekSlot(day, slot, dishType, menuItemId) {
+    const daySlots = weeklyMenu[day] || {};
+    const slotTypes = daySlots[slot] || {};
+    const next = {
+      ...weeklyMenu,
+      [day]: { ...daySlots, [slot]: { ...slotTypes, [dishType]: menuItemId || null } },
+    };
+    await persistWeeklyMenu(next);
+
+    // Auto-check: is this exact dish already planned in another meal on the same day?
+    // (e.g. the same side dish in both lunch and dinner). Warns without blocking.
+    if (menuItemId) {
+      const otherSlot = MEAL_SLOTS.find(([sk]) => {
+        if (sk === slot) return false;
+        const sel = next[day]?.[sk] || {};
+        return Object.values(sel).includes(menuItemId);
+      });
+      if (otherSlot) {
+        const nm = menuItems.find((m) => m.id === menuItemId)?.name || "המנה";
+        showToast(`⚠️ "${nm}" כבר מתוכננת היום ב${otherSlot[1]}`);
+      }
+    }
+  }
+
+  // Compute what's needed for the selected menu items (x portions) minus current stock
+  const menuNeeds = (() => {
+    const needed = {}; // productId -> total qty needed
+    menuItems
+      .filter((m) => selectedMenuIds.includes(m.id))
+      .forEach((m) => {
+        m.ingredients.forEach((ing) => {
+          needed[ing.productId] = (needed[ing.productId] || 0) + ing.qty * Number(portions || 1);
+        });
+      });
+    return Object.entries(needed)
+      .map(([productId, totalNeeded]) => {
+        const product = products.find((p) => p.id === productId);
+        if (!product) return null;
+        const deficit = Math.max(0, totalNeeded - Number(product.quantity));
+        return { product, totalNeeded, deficit };
+      })
+      .filter(Boolean);
+  })();
+
+  // Compute needs for the entire week's plan (every filled slot/dish-type, once each, times weekPortions)
+  const weekNeeds = (() => {
+    const needed = {};
+    const chosenDishNames = [];
+    WEEK_DAYS.forEach(([dayKey]) => {
+      MEAL_SLOTS.forEach(([slotKey]) => {
+        dishTypesForSlot(dishTypes, slotKey).forEach((dt) => {
+          const menuItemId = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+          if (!menuItemId) return;
+          const m = menuItems.find((mi) => mi.id === menuItemId);
+          if (!m) return;
+          chosenDishNames.push(m.name);
+          m.ingredients.forEach((ing) => {
+            needed[ing.productId] = (needed[ing.productId] || 0) + ing.qty * Number(weekPortions || 1);
+          });
+        });
+      });
+    });
+    const rows = Object.entries(needed)
+      .map(([productId, totalNeeded]) => {
+        const product = products.find((p) => p.id === productId);
+        if (!product) return null;
+        const deficit = Math.max(0, totalNeeded - Number(product.quantity));
+        return { product, totalNeeded, deficit };
+      })
+      .filter(Boolean);
+    return { rows, chosenDishNames };
+  })();
+
+  function getQty(store, product, deficit) {
+    return store[product.id] ?? deficit;
+  }
+
+  function togglePicked(id) {
+    setPickedIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  }
+
+  /* The order = the needs you actually ticked + anything you added manually.
+     Nothing is ticked by default: a product only ships if you chose it. */
+  function buildOrderRows(needs, qtyStore) {
+    const rows = needs
+      .filter((n) => pickedIds.includes(n.product.id))
+      .map((n) => ({ product: n.product, qty: getQty(qtyStore, n.product, n.deficit) }));
+
+    Object.entries(orderExtras).forEach(([pid, qty]) => {
+      if (rows.some((r) => r.product.id === pid)) return; // already covered by the menu
+      const product = products.find((p) => p.id === pid);
+      if (product && Number(qty) > 0) rows.push({ product, qty: Number(qty) });
+    });
+
+    // Free-text products that aren't in the catalog at all.
+    adHocItems.forEach((it) => {
+      if (Number(it.qty) > 0) {
+        rows.push({
+          product: {
+            id: it.id,
+            name: it.name,
+            unit: "",
+            price: 0,
+            quantity: 0,
+            supplierId: it.supplierId && it.supplierId !== "__unassigned__" ? it.supplierId : null,
+          },
+          qty: Number(it.qty),
+        });
+      }
+    });
+
+    return rows.filter((r) => Number(r.qty) > 0);
+  }
+
+  function groupRowsBySupplier(rows) {
+    const groups = {};
+    rows.forEach((r) => {
+      // A supplier chosen at order time wins over the product's default supplier.
+      const key = supplierOverrides[r.product.id] || r.product.supplierId || "__unassigned__";
+      (groups[key] = groups[key] || []).push(r);
+    });
+    return groups;
+  }
+
+
+  function buildStockMessage() {
+    const lines = products
+      .filter((p) => selectedForOrder.includes(p.id))
+      .map((p) => ({ p, qty: qtys[p.id] ?? 1 }))
+      .filter(({ qty }) => Number(qty) > 0)
+      .map(({ p, qty }) => `- ${qty} ${p.unit} ${p.name}`);
+    return lines.join("\n");
+  }
+
+  const ORDER_SUBJECT = `הזמנת מלאי — ${todayStr()}`;
+
+  function resolvedPhone() {
+    if (selectedSupplierId === "__manual__") return manualPhone;
+    const s = suppliers.find((s) => s.id === selectedSupplierId);
+    return s?.phone || manualPhone;
+  }
+
+  function resolvedEmail() {
+    if (selectedSupplierId === "__manual__") return manualEmail;
+    const s = suppliers.find((s) => s.id === selectedSupplierId);
+    return s?.email || manualEmail;
+  }
+
+  async function sendOrder() {
+    if (selectedForOrder.length === 0) {
+      if (showToast) showToast("סמן קודם לפחות מוצר אחד לשליחה");
+      return;
+    }
+    const items = products
+      .filter((p) => selectedForOrder.includes(p.id))
+      .map((p) => ({ product: p, qty: qtys[p.id] ?? 1 }))
+      .filter(({ qty }) => Number(qty) > 0);
+
+    if (items.length === 0) {
+      showToast("אין מוצרים עם כמות גדולה מאפס");
+      return;
+    }
+    // Same rule as the menu modes: only a manager sends straight to the supplier.
+    // Anyone else raises a request for approval. (This used to bypass approval.)
+    setPendingOrder({
+      items,
+      title: "הזמנה",
+      supplierId: selectedSupplierId === "__manual__" ? "__unassigned__" : selectedSupplierId,
+      isRequest: !mayApprove,
+      sourceLabel: "הזמנה",
+    });
+  }
+
+  // Group a set of rows (product + qty) by the product's assigned supplier.
+  // Rows for products with no assigned supplier fall under "__unassigned__".
+
+
+  /** Non-managers can't push an order to a supplier - they file it for approval instead. */
+  async function submitOrderRequest(items, supplierId, sourceLabel) {
+    const rows = items
+      .map(({ product, qty }) => ({
+        productId: product.id,
+        name: product.name,
+        unit: product.unit,
+        qty: Number(qty),
+        supplierId: product.supplierId || supplierId || "",
+      }))
+      .filter((r) => r.qty > 0);
+
+    if (rows.length === 0) {
+      showToast("אין מוצרים עם כמות לשליחה");
+      return;
+    }
+
+    const request = {
+      id: genId(),
+      createdAt: Date.now(),
+      createdById: currentUser.id,
+      createdByName: currentUser.name,
+      status: "pending",
+      source: sourceLabel,
+      suggestedSupplierId: supplierId && supplierId !== "__unassigned__" ? supplierId : "",
+      items: rows,
+    };
+
+    await persistOrderRequests([...(orderRequests || []), request]);
+    if (notifyManagers) {
+      await notifyManagers(`📦 ${currentUser.name} שלח בקשת הזמנה (${rows.length} מוצרים) - ממתינה לאישורך`, { tab: "admin", section: "orderrequests" });
+    }
+    showToast("הבקשה נשלחה למנהל לאישור ✓");
+  }
+
+  /* Shared by "לפי מנות בודדות" and "לפי תפריט שבועי": manually added products
+     that the menu calculation knows nothing about (ketchup, napkins, a one-off). */
+  function ExtrasPanel() {
+    const extraRows = Object.entries(orderExtras)
+      .map(([pid, qty]) => ({ product: products.find((p) => p.id === pid), qty }))
+      .filter((r) => r.product);
+
+    const pickable = products
+      .filter((p) => !orderExtras[p.id])
+      .filter((p) => !extraSearch || p.name.includes(extraSearch));
+
+    return (
+      <div className="mb-4">
+        <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>
+          ➕ תוספות להזמנה (מחוץ לתפריט)
+        </div>
+
+        {extraRows.length > 0 && (
+          <div className="flex flex-col gap-2 mb-2">
+            {extraRows.map(({ product, qty }) => (
+              <ShelfTag key={product.id} accent={C.mustard}>
+                <div className="flex justify-between items-center text-sm">
+                  <div>
+                    <div className="font-bold" style={{ color: C.ink }}>{product.name}</div>
+                    <div className="text-xs" style={{ color: C.steel }}>
+                      יש במלאי {product.quantity} {product.unit}
+                    </div>
+                    <select
+                      value={supplierOverrides[product.id] || product.supplierId || "__unassigned__"}
+                      onChange={(e) => setSupplierOverrides((o) => ({ ...o, [product.id]: e.target.value }))}
+                      onClick={(e) => e.stopPropagation()}
+                      className="text-xs mt-1 p-1 rounded-lg border"
+                      style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink, maxWidth: 170 }}
+                    >
+                      <option value="__unassigned__">ספק כללי</option>
+                      {suppliers.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={Number(qty) === 0 ? "" : qty}
+                      onChange={(e) =>
+                        setOrderExtras((cur) => ({ ...cur, [product.id]: Math.max(0, Number(e.target.value) || 0) }))
+                      }
+                      className="w-16 text-center p-2 rounded-2xl border"
+                      style={{ borderColor: C.kraftDark }}
+                    />
+                    <button
+                      onClick={() =>
+                        setOrderExtras((cur) => {
+                          const next = { ...cur };
+                          delete next[product.id];
+                          return next;
+                        })
+                      }
+                      className="px-2 py-1 rounded-xl text-xs font-bold"
+                      style={{ background: C.stamp, color: "#fff" }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              </ShelfTag>
+            ))}
+          </div>
+        )}
+
+        {/* Ad-hoc products - free text, not in the catalog */}
+        {adHocItems.length > 0 && (
+          <div className="flex flex-col gap-2 mb-2">
+            {adHocItems.map((it) => (
+              <ShelfTag key={it.id} accent={C.sage}>
+                <div className="flex justify-between items-center text-sm">
+                  <div>
+                    <div className="font-bold" style={{ color: C.ink }}>{it.name}</div>
+                    <div className="text-xs" style={{ color: C.steel }}>מוצר חדש (לא במלאי)</div>
+                    <select
+                      value={it.supplierId || "__unassigned__"}
+                      onChange={(e) => setAdHocItems((cur) => cur.map((x) => (x.id === it.id ? { ...x, supplierId: e.target.value } : x)))}
+                      className="text-xs mt-1 p-1 rounded-lg border"
+                      style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink, maxWidth: 170 }}
+                    >
+                      <option value="__unassigned__">ספק כללי</option>
+                      {suppliers.map((s) => (
+                        <option key={s.id} value={s.id}>{s.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      value={Number(it.qty) === 0 ? "" : it.qty}
+                      onChange={(e) => setAdHocItems((cur) => cur.map((x) => (x.id === it.id ? { ...x, qty: Math.max(0, Number(e.target.value) || 0) } : x)))}
+                      className="w-16 text-center p-2 rounded-2xl border"
+                      style={{ borderColor: C.kraftDark }}
+                    />
+                    <button
+                      onClick={() => setAdHocItems((cur) => cur.filter((x) => x.id !== it.id))}
+                      className="px-2 py-1 rounded-xl text-xs font-bold"
+                      style={{ background: C.stamp, color: "#fff" }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              </ShelfTag>
+            ))}
+          </div>
+        )}
+
+        {/* Add a brand-new product by name */}
+        <div className="flex gap-2 mb-2">
+          <input
+            value={adHocName}
+            onChange={(e) => setAdHocName(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && adHocName.trim()) {
+                setAdHocItems((cur) => [...cur, { id: genId(), name: adHocName.trim(), qty: 1, supplierId: "__unassigned__" }]);
+                setAdHocName("");
+              }
+            }}
+            placeholder="שם מוצר חדש שלא קיים במלאי"
+            className="flex-1 p-2 rounded-2xl border text-sm"
+            style={{ borderColor: C.kraftDark }}
+          />
+          <button
+            onClick={() => {
+              if (!adHocName.trim()) return;
+              setAdHocItems((cur) => [...cur, { id: genId(), name: adHocName.trim(), qty: 1, supplierId: "__unassigned__" }]);
+              setAdHocName("");
+            }}
+            className="px-4 rounded-2xl font-bold text-sm"
+            style={{ background: C.sage, color: "#fff" }}
+          >
+            הוסף
+          </button>
+        </div>
+
+        <button
+          onClick={() => setExtrasOpen(true)}
+          className="w-full py-2 rounded-2xl font-bold text-sm"
+          style={{ background: C.kraft, color: C.mustard, border: `1.5px dashed ${C.mustard}` }}
+        >
+          ➕ הוסף מוצר קיים שלא בתפריט
+        </button>
+
+        <button
+          onClick={clearOrderDraft}
+          className="w-full py-1 mt-2 text-xs font-bold"
+          style={{ background: "transparent", color: C.steel }}
+        >
+          🗑️ נקה את כל ההזמנה
+        </button>
+
+        {extrasOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-end"
+            style={{ background: "rgba(35,31,61,0.5)" }}
+            onClick={() => setExtrasOpen(false)}
+          >
+            <div
+              className="w-full wh-body"
+              style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "80vh", overflowY: "auto", padding: 16 }}
+              onClick={(e) => e.stopPropagation()}
+              dir="rtl"
+            >
+              <div className="flex justify-between items-center mb-3">
+                <div className="wh-display font-bold" style={{ color: C.ink }}>הוסף מוצר להזמנה</div>
+                <button onClick={() => setExtrasOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
+                  סיימתי
+                </button>
+              </div>
+
+              <input
+                value={extraSearch}
+                onChange={(e) => setExtraSearch(e.target.value)}
+                placeholder="חיפוש מוצר..."
+                className="w-full p-3 rounded-2xl border mb-3"
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
+                autoFocus
+              />
+
+              {pickable.length === 0 ? (
+                <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין מוצרים תואמים</p>
+              ) : (
+                <div className="flex flex-col gap-2">
+                  {pickable.map((p) => {
+                    // Suggest topping back up to twice the threshold, like the stock screen does.
+                    const suggested = Math.max(1, Number(p.threshold) * 2 - Number(p.quantity));
+                    return (
+                      <button
+                        key={p.id}
+                        onClick={() => {
+                          setOrderExtras((cur) => ({ ...cur, [p.id]: suggested }));
+                          setExtraSearch("");
+                        }}
+                        className="flex justify-between items-center p-3 rounded-2xl text-right"
+                        style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}
+                      >
+                        <div>
+                          <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
+                          <div className="text-xs" style={{ color: C.steel }}>
+                            {p.category || "ללא קטגוריה"} · יש {p.quantity} {p.unit}
+                          </div>
+                        </div>
+                        <span className="text-lg font-bold" style={{ color: C.sage }}>+</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  /* Every send path funnels through here first. Shows exactly what's going out,
+     to whom, on which channel, with the real message text - then sends. */
+  function OrderSummarySheet() {
+    if (!pendingOrder) return null;
+    const { items, supplierId, title, isRequest } = pendingOrder;
+
+    const supplierName =
+      supplierId && supplierId !== "__unassigned__"
+        ? suppliers.find((s) => s.id === supplierId)?.name || "ספק"
+        : "ספק כללי";
+
+    let dest = "";
+    if (supplierId && supplierId !== "__unassigned__") {
+      const sup = suppliers.find((s) => s.id === supplierId);
+      dest = channel === "email" ? sup?.email || "" : sup?.phone || "";
+    } else {
+      dest = channel === "email" ? resolvedEmail() : resolvedPhone();
+    }
+
+    const liveItems = items.filter(({ qty }) => Number(qty) > 0);
+    const total = liveItems.reduce((sum, { product, qty }) => sum + Number(product.price || 0) * Number(qty), 0);
+    const itemLines = liveItems.map(({ product, qty }) => `- ${qty} ${product.unit} ${(product.orderName && product.orderName.trim()) || product.name}`).join("\n");
+    const noteText = !isRequest && orderNote.trim() ? orderNote.trim() : "";
+    const messageText = [noteText, itemLines].filter(Boolean).join("\n\n");
+    const isEmpty = liveItems.length === 0;
+    const missingDest = !isRequest && !dest;
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={closePendingSheet}>
+        <div
+          className="w-full wh-body"
+          style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "88vh", overflowY: "auto", padding: 16 }}
+          onClick={(e) => e.stopPropagation()}
+          dir="rtl"
+        >
+          <div className="flex justify-between items-start mb-3">
+            <div>
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>
+                {editingDraftId ? "עריכת טיוטה" : isRequest ? "סיכום בקשת הזמנה" : "סיכום הזמנה"}
+              </div>
+              <div className="text-xs" style={{ color: C.steel }}>{title}</div>
+            </div>
+            <button onClick={closePendingSheet} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
+              ביטול
+            </button>
+          </div>
+
+          {/* Where it's going */}
+          <ShelfTag accent={missingDest ? C.stamp : C.accent} style={{ marginBottom: 12 }}>
+            <div className="flex justify-between text-sm">
+              <span style={{ color: C.steel }}>ספק:</span>
+              <b style={{ color: C.ink }}>{supplierName}</b>
+            </div>
+            {!isRequest && (
+              <>
+                <div className="flex justify-between text-sm mt-1">
+                  <span style={{ color: C.steel }}>יעד:</span>
+                  <b style={{ color: missingDest ? C.stamp : C.ink, direction: "ltr" }}>
+                    {dest || "לא הוגדר!"}
+                  </b>
+                </div>
+              </>
+            )}
+            {isRequest && (
+              <p className="text-xs mt-2" style={{ color: C.steel }}>
+                הבקשה תישלח למנהל לאישור. היא לא יוצאת לספק עדיין.
+              </p>
+            )}
+          </ShelfTag>
+
+          {missingDest && (
+            <ShelfTag accent={C.stamp} style={{ marginBottom: 12 }}>
+              <p className="text-sm font-bold" style={{ color: C.stamp }}>
+                אין {channel === "email" ? "מייל" : "טלפון"} ל{supplierName}
+              </p>
+              <p className="text-xs" style={{ color: C.steel }}>
+                הוסף בניהול ← הגדרות ← ספקים, או החלף ערוץ.
+              </p>
+            </ShelfTag>
+          )}
+
+          {/* Line by line - editable: change quantity or remove a product before sending/saving */}
+          <div className="rounded-2xl overflow-hidden mb-3" style={{ border: `1px solid ${C.kraftDark}` }}>
+            <div className="flex items-center text-xs font-bold px-3 py-2" style={{ background: C.brand, color: "#fff" }}>
+              <span className="flex-1">מוצר</span>
+              <span style={{ width: 118, textAlign: "center" }}>כמות</span>
+              <span style={{ width: 56, textAlign: "left" }}>מחיר</span>
+              <span style={{ width: 28 }} />
+            </div>
+            {items.map(({ product, qty }, i) => (
+              <div
+                key={product.id}
+                className="flex items-center px-2 py-2 text-sm"
+                style={{ background: i % 2 ? "rgba(0,0,0,0.03)" : C.kraft, borderTop: `1px solid ${C.kraftDark}`, opacity: Number(qty) > 0 ? 1 : 0.45 }}
+              >
+                <div className="flex flex-col" style={{ marginLeft: 2 }}>
+                  <button
+                    onClick={() => movePendingItem(i, -1)}
+                    disabled={i === 0}
+                    title="העלה"
+                    style={{ fontSize: 11, lineHeight: 1, color: i === 0 ? C.kraftDark : C.ink, opacity: i === 0 ? 0.4 : 1, padding: "1px 3px" }}
+                  >
+                    ▲
+                  </button>
+                  <button
+                    onClick={() => movePendingItem(i, 1)}
+                    disabled={i === items.length - 1}
+                    title="הורד"
+                    style={{ fontSize: 11, lineHeight: 1, color: i === items.length - 1 ? C.kraftDark : C.ink, opacity: i === items.length - 1 ? 0.4 : 1, padding: "1px 3px" }}
+                  >
+                    ▼
+                  </button>
+                </div>
+                <span className="flex-1 font-bold px-1" style={{ color: C.ink }}>{product.name}</span>
+                <div className="flex items-center gap-1" style={{ width: 118, justifyContent: "center" }}>
+                  <button
+                    onClick={() => updatePendingQty(product.id, Number(qty) - 1)}
+                    className="rounded-full font-bold flex items-center justify-center"
+                    style={{ width: 26, height: 26, background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                  >
+                    −
+                  </button>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    value={Number(qty) === 0 ? "" : qty}
+                    onChange={(e) => updatePendingQty(product.id, e.target.value)}
+                    className="rounded-xl text-center font-bold"
+                    style={{ width: 40, height: 28, border: `1px solid ${C.kraftDark}`, color: C.ink, background: C.kraft }}
+                  />
+                  <button
+                    onClick={() => updatePendingQty(product.id, Number(qty) + 1)}
+                    className="rounded-full font-bold flex items-center justify-center"
+                    style={{ width: 26, height: 26, background: C.brand, color: "#fff", flexShrink: 0 }}
+                  >
+                    +
+                  </button>
+                </div>
+                <span style={{ width: 56, textAlign: "left", color: C.steel, fontSize: 12 }}>
+                  ₪{(Number(product.price || 0) * Number(qty)).toFixed(0)}
+                </span>
+                <button
+                  onClick={() => removePendingItem(product.id)}
+                  title="הסר מההזמנה"
+                  className="rounded-full flex items-center justify-center"
+                  style={{ width: 24, height: 24, background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            {isEmpty && (
+              <div className="px-3 py-3 text-xs text-center" style={{ color: C.stamp, borderTop: `1px solid ${C.kraftDark}` }}>
+                ההזמנה ריקה - הוסף מוצר או העלה כמות
+              </div>
+            )}
+            <div className="flex px-3 py-2 text-sm font-bold" style={{ background: "rgba(124,92,252,0.15)", borderTop: `2px solid ${C.ink}` }}>
+              <span className="flex-1" style={{ color: C.ink }}>סה"כ {liveItems.length} מוצרים</span>
+              <span style={{ color: C.ink }}>₪{total.toFixed(0)}</span>
+            </div>
+          </div>
+
+          {/* Add a product to this order/draft right here */}
+          <div className="mb-3" style={{ position: "relative" }}>
+            <input
+              value={sheetAddSearch}
+              onChange={(e) => setSheetAddSearch(e.target.value)}
+              placeholder="➕ הוסף מוצר להזמנה..."
+              className="w-full p-2 rounded-2xl border text-sm"
+              style={{ borderColor: C.mustard, background: C.kraft }}
+            />
+            {(() => {
+              const term = sheetAddSearch.trim();
+              if (!term) return null;
+              const inOrder = new Set(items.map((it) => it.product.id));
+              const matches = products.filter((p) => (p.name || "").trim().startsWith(term) && !inOrder.has(p.id)).slice(0, 6);
+              if (matches.length === 0) return null;
+              return (
+                <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 30, background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 200, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
+                  {matches.map((p) => (
+                    <button key={p.id} onClick={() => addProductToPending(p)} className="w-full text-right px-3 py-2 text-sm" style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: C.kraft }}>
+                      {p.name}
+                    </button>
+                  ))}
+                </div>
+              );
+            })()}
+          </div>
+
+          {!isRequest && (
+            <div className="mb-3">
+              <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>פתיח ההודעה (נשלח בראש ההזמנה)</label>
+              <textarea
+                value={orderNote}
+                onChange={(e) => setOrderNote(e.target.value)}
+                rows={2}
+                placeholder="למשל: שלום, הזמנה לשבוע:"
+                className="w-full p-2 rounded-2xl border text-sm"
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
+              />
+            </div>
+          )}
+
+          {!isEmpty && (
+            <details className="mb-3" open>
+              <summary className="text-xs font-bold cursor-pointer" style={{ color: C.accent }}>
+                👁️ תצוגה מקדימה — {isRequest ? "כך תיראה ההזמנה" : "ההודעה שתישלח"}
+              </summary>
+              <pre
+                className="text-xs mt-2 p-3 rounded-2xl"
+                style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, color: C.ink, whiteSpace: "pre-wrap", fontFamily: "inherit" }}
+              >
+                {messageText}
+              </pre>
+            </details>
+          )}
+
+          {isRequest ? (
+            <button
+              onClick={() => {
+                const p = pendingOrder;
+                const sendItems = p.items.filter(({ qty }) => Number(qty) > 0);
+                setPendingOrder(null);
+                setEditingDraftId(null);
+                submitOrderRequest(sendItems, p.supplierId, p.sourceLabel);
+              }}
+              disabled={isEmpty}
+              className="w-full py-3 rounded-2xl wh-display font-bold"
+              style={{ background: isEmpty ? C.kraftDark : C.accent, color: "#fff", opacity: isEmpty ? 0.6 : 1 }}
+            >
+              📤 שלח בקשה לאישור
+            </button>
+          ) : (
+            <>
+              {/* Choose where it goes, right above the send icons. */}
+              <div className="mb-3 p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>איש קשר / יעד</label>
+                <select
+                  value={supplierId === "__unassigned__" ? "__manual__" : supplierId}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v === "__manual__") {
+                      setSelectedSupplierId("__manual__");
+                      setPendingOrder((po) => (po ? { ...po, supplierId: "__unassigned__" } : po));
+                    } else {
+                      setSelectedSupplierId(v);
+                      setPendingOrder((po) => (po ? { ...po, supplierId: v } : po));
+                    }
+                  }}
+                  className="p-2 rounded-2xl border w-full"
+                  style={{ borderColor: C.kraftDark, background: C.kraft }}
+                >
+                  {suppliers.map((s) => (
+                    <option key={s.id} value={s.id}>{s.name}</option>
+                  ))}
+                  <option value="__manual__">יעד אחר (הזנה ידנית)</option>
+                </select>
+                {(supplierId === "__unassigned__" || suppliers.length === 0) && (
+                  <div className="flex flex-col gap-2 mt-2">
+                    <input
+                      value={manualPhone}
+                      onChange={(e) => setManualPhone(e.target.value)}
+                      placeholder="טלפון ליעד (וואטסאפ/SMS): 972501234567"
+                      className="p-2 rounded-2xl border w-full"
+                      style={{ borderColor: C.kraftDark, direction: "ltr" }}
+                    />
+                    <input
+                      value={manualEmail}
+                      onChange={(e) => setManualEmail(e.target.value)}
+                      type="email"
+                      placeholder="מייל ליעד (אופציונלי)"
+                      className="p-2 rounded-2xl border w-full"
+                      style={{ borderColor: C.kraftDark, direction: "ltr" }}
+                    />
+                  </div>
+                )}
+              </div>
+
+              <div className="text-xs font-bold text-center mb-2" style={{ color: C.steel }}>
+                שלח ל{supplierName} דרך:
+              </div>
+              <div className="flex gap-4 justify-center flex-wrap mb-1">
+                {(() => {
+                  const iconBtn = (bg, emoji, label, onClick, dark) => (
+                    <button
+                      onClick={onClick}
+                      disabled={isEmpty}
+                      title={label}
+                      style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, opacity: isEmpty ? 0.5 : 1, background: "transparent", border: "none", cursor: "pointer" }}
+                    >
+                      <span style={{ width: 50, height: 50, borderRadius: "50%", background: bg, color: dark ? C.brand : C.kraft, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, boxShadow: "0 2px 8px rgba(0,0,0,0.22)" }}>{emoji}</span>
+                      <span style={{ fontSize: 11, color: C.steel, fontWeight: 700 }}>{label}</span>
+                    </button>
+                  );
+                  const sendVia = (ch) => () => {
+                    const p = pendingOrder;
+                    const sendItems = p.items.filter(({ qty }) => Number(qty) > 0);
+                    setPendingOrder(null);
+                    setEditingDraftId(null);
+                    doSendGroupOrder(sendItems, p.title, p.supplierId, ch);
+                  };
+                  const waGroup = async () => {
+                    try { await navigator.clipboard.writeText(messageText); showToast("ההזמנה הועתקה - הדבק בקבוצה"); } catch (e) {}
+                    logOrderToHistory(liveItems, title, supplierId, "whatsapp");
+                    if (supplierId) setSentSuppliers((cur) => (cur.includes(supplierId) ? cur : [...cur, supplierId]));
+                    window.open(settings.whatsappGroupLink.trim(), "_blank");
+                    closePendingSheet();
+                  };
+                  return (
+                    <>
+                      {iconBtn("#25D366", "💬", "וואטסאפ", sendVia("whatsapp"))}
+                      {(settings?.whatsappGroupLink || "").trim() ? iconBtn("#128C7E", "👥", "קבוצה", waGroup) : null}
+                      {iconBtn(C.mustard, "✉️", "SMS", sendVia("sms"), true)}
+                      {iconBtn(C.steel, "📧", "מייל", sendVia("email"))}
+                    </>
+                  );
+                })()}
+              </div>
+            </>
+          )}
+
+          <button
+            onClick={saveDraftFromPending}
+            className="w-full py-2 mt-3 rounded-2xl wh-display font-bold text-sm"
+            style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+          >
+            💾 שמור כטיוטה
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  /* Opens the review sheet. Nothing leaves the app until the user confirms there. */
+  function sendGroupOrder(items, title, supplierId) {
+    if (!items || items.length === 0) {
+      showToast("לא נבחרו מוצרים להזמנה");
+      return;
+    }
+    setPendingOrder({ items, title, supplierId, isRequest: false });
+  }
+
+  // Record a sent order into the history. Used by every send path (channel + WhatsApp).
+  // Duplicate a past order into the review sheet: edit, add products, and send again.
+  function reorderFromHistory(o) {
+    const items = (o.items || [])
+      .map((it) => {
+        const product = products.find((p) => p.name === it.name)
+          || { id: "hist-" + genId(), name: it.name, unit: it.unit || "", price: Number(it.price) || 0, quantity: 0 };
+        return { product, qty: Number(it.qty) || 1 };
+      })
+      .filter((r) => Number(r.qty) > 0);
+    if (items.length === 0) { showToast("אין פריטים לשכפול"); return; }
+    const supplierId = o.supplierId || "__unassigned__";
+    setSelectedSupplierId(supplierId !== "__unassigned__" && suppliers.some((s) => s.id === supplierId) ? supplierId : "__manual__");
+    setEditingDraftId(null);
+    setPendingOrder({ items, title: o.supplierName || "הזמנה", supplierId, isRequest: !mayApprove, sourceLabel: "שכפול מהיסטוריה" });
+  }
+
+  function logOrderToHistory(items, title, supplierId, channelUsed) {
+    if (!recordOrder) return;
+    const supName = supplierId && supplierId !== "__unassigned__"
+      ? suppliers.find((s) => s.id === supplierId)?.name || "ספק"
+      : "ספק כללי";
+    recordOrder({
+      kind: "order",
+      title: title || "הזמנה",
+      channel: channelUsed || channel,
+      supplierId: supplierId || null,
+      supplierName: supName,
+      by: currentUser?.name || "",
+      items: items.map(({ product, qty }) => ({ name: product.name, unit: product.unit, qty, price: Number(product.price || 0) })),
+      total: items.reduce((sum, { product, qty }) => sum + Number(product.price || 0) * Number(qty), 0),
+    });
+  }
+
+  function doSendGroupOrder(items, title, supplierId, channelOverride) {
+    const ch = channelOverride || channel;
+    const lines = items.map(({ product, qty }) => `- ${qty} ${product.unit} ${(product.orderName && product.orderName.trim()) || product.name}`);
+    const body = orderNote.trim() ? `${orderNote.trim()}\n\n${lines.join("\n")}` : lines.join("\n");
+    let phone = "";
+    let email = "";
+    if (supplierId && supplierId !== "__unassigned__") {
+      const s = suppliers.find((s) => s.id === supplierId);
+      phone = s?.phone || "";
+      email = s?.email || "";
+    } else {
+      phone = resolvedPhone();
+      email = resolvedEmail();
+    }
+    const res = sendViaChannel(ch, {
+      phone,
+      email,
+      text: body,
+      subject: title ? `${title} — ${todayStr()}` : ORDER_SUBJECT,
+    });
+    if (!res.ok) {
+      if (showToast) showToast(res.error);
+      return;
+    }
+    if (supplierId) setSentSuppliers((cur) => (cur.includes(supplierId) ? cur : [...cur, supplierId]));
+    logOrderToHistory(items, title, supplierId, ch);
+  }
+
+  /* WhatsApp can't render the print table, so the menu goes out as plain text
+     with *bold* day headers. Days with nothing scheduled are skipped. */
+  function weeklyMenuText() {
+    const title = parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי";
+    const lines = [`*${title}*`, weekLabel(targetWeekStart), ""];
+    let hasAny = false;
+
+    WEEK_DAYS.forEach(([dayKey, dayLabel], idx) => {
+      const d = parseIsoLocal(targetWeekStart);
+      d.setDate(d.getDate() + idx);
+      const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+
+      const dayLines = [];
+      MEAL_SLOTS.forEach(([slotKey, slotLabel]) => {
+        const slotLines = dishTypesForSlot(dishTypes, slotKey)
+          .map((dt) => {
+            const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+            const m = menuItems.find((mi) => mi.id === id);
+            return m ? `   ${dt.name}: ${m.name}` : null;
+          })
+          .filter(Boolean);
+        if (slotLines.length) {
+          dayLines.push(`ארוחת ${slotLabel}:`);
+          dayLines.push(...slotLines);
+        }
+      });
+
+      if (dayLines.length) {
+        hasAny = true;
+        lines.push(`*${dayLabel} · ${dateStr}*`);
+        lines.push(...dayLines);
+        lines.push("");
+      }
+    });
+
+    return hasAny ? lines.join("\n").trim() : "";
+  }
+
+  function sendWeeklyMenuWhatsApp() {
+    const text = weeklyMenuText();
+    if (!text) return showToast("לא שובצו מנות לשבוע הזה");
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+  }
+
+  async function sendWeeklyMenuToGroup() {
+    const text = weeklyMenuText();
+    if (!text) return showToast("לא שובצו מנות לשבוע הזה");
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast("התפריט הועתק - פותח את הקבוצה, החזק בתיבת ההודעה והדבק");
+    } catch (e) {
+      showToast("פותח את הקבוצה - העתק את התפריט ידנית");
+    }
+    window.open(settings.whatsappGroupLink.trim(), "_blank");
+  }
+
+  function buildWeeklyMenuImage() {
+    return renderWeeklyMenuPng({
+      title: parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי",
+      subtitle: weekLabel(targetWeekStart),
+      days: WEEK_DAYS,
+      types: dishTypes || [],
+      slots: MEAL_SLOTS,
+      weeklyMenu,
+      menuItems,
+      weekStart: targetWeekStart,
+    });
+  }
+
+  /* Shares the menu as a picture. navigator.share must run inside the user
+     gesture, so the image is built synchronously before any await. */
+  async function sendWeeklyMenuImage() {
+    let dataUrl = "";
+    try {
+      dataUrl = buildWeeklyMenuImage();
+    } catch (e) {
+      console.error("could not draw the menu image", e);
+      return showToast("שגיאה ביצירת התמונה - נסה 'שלח תפריט בוואטסאפ' כטקסט");
+    }
+    if (!dataUrl) return showToast("לא שובצו מנות לשבוע הזה");
+
+    const caption = `${parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי"} · ${weekLabel(targetWeekStart)}`;
+    let file = null;
+    try {
+      file = dataUrlToFile(dataUrl, "weekly-menu.png");
+    } catch (e) {
+      console.error("could not build file from the drawn image", e);
+    }
+
+    // canShare often reports false inside an installed PWA even when sharing works,
+    // so try richest-first and only use it to skip payloads it explicitly rejects.
+    if (file && navigator.share) {
+      const attempts = [
+        { files: [file], text: caption, title: caption },
+        { files: [file], text: caption },
+        { files: [file] },
+      ];
+      for (const payload of attempts) {
+        if (navigator.canShare && !navigator.canShare(payload)) continue;
+        try {
+          await navigator.share(payload);
+          return;
+        } catch (e) {
+          if (e && e.name === "AbortError") return; // user closed the share sheet
+          console.error("share attempt failed", payload, e);
+        }
+      }
+    }
+
+    // No share support: download the picture and open WhatsApp for manual attaching.
+    if (!navigator.share) showToast("הדפדפן לא תומך בשיתוף - התמונה תרד לצירוף ידני");
+    downloadDataUrl(dataUrl, "weekly-menu.png");
+    window.open(`https://wa.me/?text=${encodeURIComponent(caption)}`, "_blank");
+    showToast("התמונה ירדה - צרף אותה בוואטסאפ ידנית");
+  }
+
+  /* Print layout mirrors the Excel sheet this replaced:
+     rows = dish types (מנה עיקרית / תוספת / ירקנית), columns = days.
+     One table per meal slot. */
+  function printWeeklyMenu() {
+    const days = WEEK_DAYS;
+
+    function tableFor(slotKey, slotLabel) {
+      const types = dishTypesForSlot(dishTypes, slotKey);
+      const pal = slotKey === "dinner"
+        ? { strong: "#F6D2A6", weak: "#FCEBD4", head: "#DE9542" }   // ערב - warm
+        : { strong: "#BBD9F2", weak: "#E6F1FB", head: "#3E8FCB" };  // צהריים - cool blue
+      const header = days
+        .map(([, label], idx) => {
+          const d = parseIsoLocal(targetWeekStart);
+          d.setDate(d.getDate() + idx);
+          const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+          return `<th style="background:${pal.head};color:#fff">${label}<div class="date">${dateStr}</div></th>`;
+        })
+        .join("");
+
+      const body = types
+        .map((dt, ri) => {
+          const rowBg = ri % 2 === 0 ? pal.strong : pal.weak;
+          const cells = days
+            .map(([dayKey]) => {
+              const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+              const m = menuItems.find((mi) => mi.id === id);
+              return `<td style="background:${rowBg}">${m ? m.name : ""}</td>`;
+            })
+            .join("");
+          return `<tr><th class="rowhead" style="background:${rowBg}">${dt.name}</th>${cells}</tr>`;
+        })
+        .join("");
+
+      // Skip a meal slot entirely if nothing was planned for it.
+      const anything = days.some(([dayKey]) =>
+        types.some((dt) => weeklyMenu[dayKey]?.[slotKey]?.[dt.id])
+      );
+      if (!anything) return "";
+
+      return `
+        <h2 style="color:${pal.head}">ארוחת ${slotLabel}</h2>
+        <table>
+          <thead><tr><th class="corner" style="background:${pal.head}"></th>${header}</tr></thead>
+          <tbody>${body}</tbody>
+        </table>`;
+    }
+
+    const tables = MEAL_SLOTS.map(([k, l]) => tableFor(k, l)).join("");
+
+    const html = `
+      <!doctype html>
+      <html lang="he" dir="rtl">
+        <head>
+          <meta charset="UTF-8" />
+          <title>תפריט שבועי</title>
+          <style>
+            @page { size: A4 landscape; margin: 12mm; }
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            body { font-family: Arial, sans-serif; padding: 8px; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            h1 { text-align: center; font-size: 22px; margin: 0 0 4px; }
+            .sub { text-align: center; font-size: 12px; color: #666; margin-bottom: 18px; }
+            h2 { font-size: 16px; margin: 18px 0 6px; }
+            table { width: 100%; border-collapse: collapse; margin-bottom: 10px; page-break-inside: avoid; }
+            th, td { border: 1px solid #444; padding: 8px 6px; text-align: center; font-size: 14px; }
+            thead th { color: #fff; font-size: 15px; }
+            .date { font-size: 10px; font-weight: normal; opacity: 0.85; }
+            .rowhead { text-align: right; font-weight: bold; width: 110px; }
+          </style>
+        </head>
+        <body>
+          <h1>${parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי"}</h1>
+          <div class="sub">${weekLabel(targetWeekStart)}</div>
+          ${tables || '<p style="text-align:center">לא שובצו מנות לשבוע הזה</p>'}
+          <script>window.onload = () => window.print();</script>
+        </body>
+      </html>
+    `;
+    const win = window.open("", "_blank");
+    win.document.write(html);
+    win.document.close();
+  }
+
+  // Save a readable copy of the current week's menu into a separate archive,
+  // so it can be looked back on week to week. Never touches the live menu or dish types.
+  async function saveCurrentMenu() {
+    const slots = MEAL_SLOTS.map(([slotKey, slotLabel]) => ({
+      slotKey,
+      slotLabel,
+      rows: dishTypesForSlot(dishTypes, slotKey).map((dt) => ({
+        dishType: dt.name,
+        cells: WEEK_DAYS.map(([dayKey, dayLabel]) => {
+          const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+          const m = menuItems.find((mi) => mi.id === id);
+          return { day: dayLabel, name: m ? m.name : "" };
+        }),
+      })),
+    })).filter((s) => s.rows.some((r) => r.cells.some((c) => c.name)));
+
+    if (slots.length === 0) { showToast("אין תפריט מלא לשמירה"); return; }
+
+    const snap = {
+      id: genId(),
+      savedAt: Date.now(),
+      weekLabel: weekLabel(targetWeekStart),
+      parsha: parshaTitle || "",
+      slots,
+      menu: weeklyMenu,
+    };
+    await persistSavedMenus([snap, ...(savedMenus || [])].slice(0, 100));
+    showToast("התפריט נשמר בהיסטוריית התפריטים");
+  }
+  async function deleteSavedMenu(id) {
+    await persistSavedMenus((savedMenus || []).filter((s) => s.id !== id));
+    showToast("התפריט נמחק מההיסטוריה");
+  }
+
+
+  return (
+    <div>
+      {drafts.length > 0 && (
+        <details className="mb-4">
+          <summary className="text-sm font-bold cursor-pointer" style={{ color: C.accent }}>💾 טיוטות שמורות ({drafts.length})</summary>
+          <div className="mt-2 flex flex-col gap-2">
+            {drafts.map((d) => (
+              <div key={d.id} className="flex items-center gap-2 p-2 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                <div className="flex-1">
+                  <div className="text-sm font-bold" style={{ color: C.ink }}>{d.items.length} מוצרים · {new Date(d.updatedAt || d.createdAt).toLocaleDateString("he-IL")}</div>
+                  <div className="text-xs" style={{ color: C.steel }}>{d.by}{d.updatedAt ? " · עודכן" : ""}</div>
+                </div>
+                <button onClick={() => loadDraft(d)} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>ערוך</button>
+                <button onClick={() => deleteDraft(d.id)} className="px-3 py-1 rounded-2xl text-sm" style={{ background: C.kraft, color: C.ink }}>מחק</button>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      <div className="flex gap-2 mb-4 overflow-x-auto pb-1">
+        <button
+          onClick={() => setOrderMode("stock")}
+          className="px-3 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
+          style={{ background: orderMode === "stock" ? C.brand : C.kraft, color: orderMode === "stock" ? "#fff" : C.ink }}
+        >
+          לפי סף מלאי
+        </button>
+        <button
+          onClick={() => setOrderMode("week")}
+          className="px-3 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
+          style={{ background: orderMode === "week" ? C.brand : C.kraft, color: orderMode === "week" ? "#fff" : C.ink }}
+        >
+          לפי תפריט שבועי
+        </button>
+        <button
+          onClick={() => setOrderMode("history")}
+          className="px-3 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
+          style={{ background: orderMode === "history" ? C.brand : C.kraft, color: orderMode === "history" ? "#fff" : C.ink }}
+        >
+          📜 היסטוריה
+        </button>
+      </div>
+
+      {orderMode !== "history" && (selectedForOrder.length > 0 || pickedIds.length > 0 || Object.keys(orderExtras).length > 0 || adHocItems.length > 0) && (
+        <button
+          onClick={() => { if (window.confirm("לאפס את כל ההזמנה? כל הסימונים והכמויות יימחקו.")) { clearOrderDraft(); setSentSuppliers([]); showToast("ההזמנה אופסה"); } }}
+          className="w-full py-2 mb-4 rounded-2xl text-sm font-bold"
+          style={{ background: C.kraft, color: C.stamp, border: `1.5px solid ${C.stamp}` }}
+        >
+          🗑️ אפס הזמנה (מחק הכל)
+        </button>
+      )}
+
+      {orderMode !== "history" && (
+        <div className="rounded-2xl p-3 mb-4" style={{ background: C.kraft, border: `1px dashed ${C.kraftDark}` }}>
+          <button onClick={() => setRemOpen((v) => !v)} className="w-full flex justify-between items-center text-sm font-bold" style={{ color: C.ink }}>
+            <span>🔔 תזכורת הזמנה / מוצר ליום מסוים</span>
+            <span>{remOpen ? "▲" : "▼"}</span>
+          </button>
+          {remOpen && (
+            <div className="mt-3 flex flex-col gap-2">
+              <div style={{ position: "relative" }}>
+                <input
+                  value={remProduct}
+                  onChange={(e) => setRemProduct(e.target.value)}
+                  placeholder="מוצר ספציפי (אופציונלי) — ריק = תזכורת הזמנה כללית"
+                  className="w-full p-2 rounded-2xl border text-sm"
+                  style={{ borderColor: C.kraftDark, background: C.kraft }}
+                />
+                {(() => {
+                  const term = remProduct.trim();
+                  if (!term) return null;
+                  if (products.some((p) => (p.name || "").trim() === term)) return null;
+                  const matches = products.filter((p) => (p.name || "").trim().startsWith(term)).slice(0, 6);
+                  if (matches.length === 0) return null;
+                  return (
+                    <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 20, background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 180, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
+                      {matches.map((p) => (
+                        <button key={p.id} onClick={() => setRemProduct(p.name)} className="w-full text-right px-3 py-2 text-sm" style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: C.kraft }}>
+                          {p.name}
+                        </button>
+                      ))}
+                    </div>
+                  );
+                })()}
+              </div>
+              <div className="flex gap-2">
+                <input type="date" value={remDate} onChange={(e) => setRemDate(e.target.value)} className="flex-1 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }} />
+                <input type="time" value={remTime} onChange={(e) => setRemTime(e.target.value)} className="w-28 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }} />
+              </div>
+              <input
+                value={remNote}
+                onChange={(e) => setRemNote(e.target.value)}
+                placeholder="הערה (אופציונלי) — כמות, ספק וכו׳"
+                className="w-full p-2 rounded-2xl border text-sm"
+                style={{ borderColor: C.kraftDark }}
+              />
+              <button onClick={createOrderReminder} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+                ➕ צור תזכורת
+              </button>
+              <p className="text-xs" style={{ color: C.steel }}>ההתראה תישלח אליך בתאריך ובשעה שקבעת.</p>
+
+              {orderReminders.length > 0 && (
+                <div className="mt-2 flex flex-col gap-1">
+                  <div className="text-xs font-bold" style={{ color: C.steel }}>תזכורות קרובות:</div>
+                  {orderReminders.map((t) => (
+                    <div key={t.id} className="flex justify-between items-center text-sm p-2 rounded-xl" style={{ background: C.kraft }}>
+                      <span style={{ color: C.ink }}>
+                        {t.title.replace(/^🛒 (להזמין: )?/, "")}
+                        {t.followUpAt ? <span style={{ color: C.steel }}> · {new Date(t.followUpAt).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" })} {new Date(t.followUpAt).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}</span> : null}
+                      </span>
+                      <button onClick={() => deleteOrderReminder(t.id)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {orderMode === "history" && (
+        <div className="flex flex-col gap-3">
+          {(!orderHistory || orderHistory.length === 0) ? (
+            <ShelfTag accent={C.steel}>
+              <p className="text-sm text-center" style={{ color: C.steel }}>עדיין אין הזמנות בהיסטוריה.</p>
+            </ShelfTag>
+          ) : (
+            orderHistory.map((o) => (
+              <ShelfTag key={o.id} accent={C.sage}>
+                <div className="flex justify-between items-start gap-2">
+                  <div>
+                    <div className="font-bold text-sm" style={{ color: C.ink }}>{o.supplierName || "ספק"}</div>
+                    <div className="text-xs" style={{ color: C.steel }}>
+                      {new Date(o.createdAt).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                      {o.by ? ` · ${o.by}` : ""}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm font-bold text-left" style={{ color: C.ink, whiteSpace: "nowrap" }}>
+                      {(o.items?.length || 0)} פריטים{o.total ? ` · ₪${Math.round(o.total)}` : ""}
+                    </div>
+                    <button
+                      onClick={() => {
+                        if (typeof window !== "undefined" && !window.confirm("למחוק את ההזמנה מההיסטוריה?")) return;
+                        deleteOrderHistoryEntry && deleteOrderHistoryEntry(o.id);
+                      }}
+                      title="מחק מההיסטוריה"
+                      className="rounded-full flex items-center justify-center"
+                      style={{ width: 26, height: 26, background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                    >
+                      🗑️
+                    </button>
+                  </div>
+                </div>
+                {Array.isArray(o.items) && o.items.length > 0 && (
+                  <details className="mt-2">
+                    <summary className="text-xs font-bold cursor-pointer" style={{ color: C.accent }}>הצג פריטים</summary>
+                    <div className="mt-1">
+                      {o.items.map((it, idx) => (
+                        <div key={idx} className="flex justify-between text-xs py-1" style={{ color: C.ink, borderTop: idx ? `1px solid ${C.kraft}` : "none" }}>
+                          <span>{it.name}</span>
+                          <span style={{ color: C.steel }}>{it.qty} {it.unit || ""}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </details>
+                )}
+                <button
+                  onClick={() => reorderFromHistory(o)}
+                  className="w-full mt-2 py-2 rounded-2xl font-bold text-sm"
+                  style={{ background: C.accent, color: "#fff" }}
+                >
+                  🔁 שכפל, ערוך ושלח שוב
+                </button>
+              </ShelfTag>
+            ))
+          )}
+        </div>
+      )}
+
+      {!mayApprove && orderMode !== "history" && (
+        <ShelfTag accent={C.accent} style={{ marginBottom: 16 }}>
+          <div className="text-sm font-bold mb-1" style={{ color: C.ink }}>📤 מצב בקשות הזמנה</div>
+          <p className="text-xs" style={{ color: C.steel }}>
+            הרכב את ההזמנה ושלח אותה לאישור המנהל. הוא יאשר וישלח לספק.
+          </p>
+          {myPending.length > 0 && (
+            <div className="mt-2 flex flex-col gap-1">
+              {myPending.map((r) => (
+                <div key={r.id} className="text-xs p-2 rounded-xl" style={{ background: C.paper, color: C.ink }}>
+                  ⏳ ממתינה לאישור · {r.items.length} מוצרים · {r.source} ·{" "}
+                  {new Date(r.createdAt).toLocaleDateString("he-IL")}
+                </div>
+              ))}
+            </div>
+          )}
+        </ShelfTag>
+      )}
+
+      {!mayApprove && (
+      <div className="mb-4">
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+          {mayApprove ? "שלח הזמנה לספק" : "ספק מוצע (המנהל יוכל לשנות)"}
+        </label>
+        <select
+          value={selectedSupplierId}
+          onChange={(e) => setSelectedSupplierId(e.target.value)}
+          className="p-2 rounded-2xl border w-full mb-3"
+          style={{ borderColor: C.kraftDark }}
+        >
+          {suppliers.map((s) => (
+            <option key={s.id} value={s.id}>{s.name}</option>
+          ))}
+          <option value="__manual__">יעד אחר (הזנה ידנית)</option>
+        </select>
+
+        {mayApprove && (selectedSupplierId === "__manual__" || suppliers.length === 0) && (
+          <div className="flex flex-col gap-2 mt-2">
+            <input
+              value={manualPhone}
+              onChange={(e) => setManualPhone(e.target.value)}
+              placeholder="טלפון ליעד (לוואטסאפ/SMS): 972501234567"
+              className="p-2 rounded-2xl border w-full"
+              style={{ borderColor: C.kraftDark, direction: "ltr" }}
+            />
+            <input
+              value={manualEmail}
+              onChange={(e) => setManualEmail(e.target.value)}
+              type="email"
+              placeholder="מייל ליעד (אופציונלי): supplier@example.com"
+              className="p-2 rounded-2xl border w-full"
+              style={{ borderColor: C.kraftDark, direction: "ltr" }}
+            />
+          </div>
+        )}
+
+        {mayApprove && selectedSupplierId !== "__manual__" && suppliers.length > 0 && (() => {
+          const s = suppliers.find((x) => x.id === selectedSupplierId);
+          if (!s) return null;
+          if (s.phone || s.email) return null;
+          return (
+            <p className="text-xs mt-2" style={{ color: C.stamp }}>
+              לספק "{s.name}" לא שמור טלפון או מייל - הוסף במסך ניהול ← ספקים.
+            </p>
+          );
+        })()}
+      </div>
+      )}
+
+      {orderMode === "stock" && (() => {
+        const baseList = orderSupplierFilter === "all"
+          ? lowStock
+          : orderSupplierFilter === "__all_products__"
+            ? products
+            : products.filter((p) => (p.supplierId || "__unassigned__") === orderSupplierFilter);
+        const filteredLowStock = orderSearch
+          ? baseList.filter((p) => p.name.includes(orderSearch))
+          : baseList;
+        const supplierOptionsInList = Array.from(new Set(products.map((p) => p.supplierId || "__unassigned__")));
+
+        return lowStock.length === 0 && orderSupplierFilter === "all" && !orderSearch ? (
+          <ShelfTag accent={C.sage}>
+            <p style={{ color: C.sage }} className="font-bold text-center">כל המלאי תקין ✓</p>
+          </ShelfTag>
+        ) : (
+          <>
+            <div className="flex gap-2 mb-3">
+              <input
+                value={orderSearch}
+                onChange={(e) => setOrderSearch(e.target.value)}
+                placeholder="חיפוש מוצר..."
+                className="flex-1 p-2 rounded-2xl border"
+                style={{ borderColor: C.kraftDark }}
+              />
+              <select
+                value={orderSupplierFilter}
+                onChange={(e) => setOrderSupplierFilter(e.target.value)}
+                className="flex-1 p-2 rounded-2xl border text-sm"
+                style={{ borderColor: C.kraftDark }}
+              >
+                <option value="all">מתחת לסף בלבד</option>
+                <option value="__all_products__">כל המוצרים</option>
+                {supplierOptionsInList.map((sid) => (
+                  <option key={sid} value={sid}>
+                    {sid === "__unassigned__" ? "ללא ספק משויך" : suppliers.find((s) => s.id === sid)?.name || "ספק"}
+                  </option>
+                ))}
+              </select>
+            </div>
+            {orderSupplierFilter !== "all" && (
+              <p className="text-xs mb-2" style={{ color: C.steel }}>
+                {orderSupplierFilter === "__all_products__"
+                  ? "מוצגים כאן כל המוצרים (גם מה שיש ממנו מספיק) - סמן ✔ והקלד כמות רק למה שבאמת רוצה להזמין."
+                  : "מוצג כאן כל המלאי של הספק הזה (גם מה שיש ממנו מספיק) - סמן ✔ והקלד כמות רק למה שבאמת רוצה להזמין."}
+              </p>
+            )}
+
+            {filteredLowStock.length === 0 ? (
+              <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין מוצרים תואמים לחיפוש/סינון</p>
+            ) : (
+              <>
+                <div className="flex gap-2 mb-2">
+                  <button
+                    onClick={() => setSelectedForOrder((cur) => Array.from(new Set([...cur, ...filteredLowStock.map((p) => p.id)])))}
+                    className="text-xs font-bold px-3 py-1 rounded-full"
+                    style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                  >
+                    סמן הכל
+                  </button>
+                  <button
+                    onClick={() => setSelectedForOrder((cur) => cur.filter((id) => !filteredLowStock.some((p) => p.id === id)))}
+                    className="text-xs font-bold px-3 py-1 rounded-full"
+                    style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                  >
+                    בטל סימון
+                  </button>
+                  <button
+                    onClick={() => setShowOnlyMarked((v) => !v)}
+                    className="text-xs font-bold px-3 py-1 rounded-full"
+                    style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+                  >
+                    {showOnlyMarked ? "הצג הכל" : `מה מסומן (${selectedForOrder.length})`}
+                  </button>
+                  <span className="text-xs self-center" style={{ color: C.steel }}>
+                    {selectedForOrder.length} מסומנים
+                  </span>
+                </div>
+                <div className="flex flex-col gap-3 mb-4">
+                  {filteredLowStock.filter((p) => !showOnlyMarked || selectedForOrder.includes(p.id)).map((p) => {
+                    const isLow = Number(p.quantity) <= Number(p.threshold);
+                    const checked = selectedForOrder.includes(p.id);
+                    return (
+                      <ShelfTag key={p.id} accent={isLow ? C.stamp : C.sage}>
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() =>
+                                setSelectedForOrder((cur) =>
+                                  cur.includes(p.id) ? cur.filter((id) => id !== p.id) : [...cur, p.id]
+                                )
+                              }
+                            />
+                            <div>
+                              <div className="wh-display font-bold" style={{ color: C.ink }}>{p.name}</div>
+                              <div className="text-xs" style={{ color: C.steel }}>יש במלאי: {p.quantity} {p.unit} (סף: {p.threshold})</div>
+                            </div>
+                          </div>
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            placeholder="כמות"
+                            value={qtys[p.id] == null || Number(qtys[p.id]) === 0 ? "" : qtys[p.id]}
+                            onChange={(e) => setQtys((q) => ({ ...q, [p.id]: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)) }))}
+                            className="w-16 text-center p-2 rounded-2xl border"
+                            style={{ borderColor: C.kraftDark }}
+                          />
+                        </div>
+                      </ShelfTag>
+                    );
+                  })}
+                </div>
+              </>
+            )}
+            {mayApprove ? (
+              <button
+                onClick={sendOrder}
+                className="w-full py-3 rounded-2xl wh-display font-bold"
+                style={{ background: mayApprove ? C.sage : C.accent, color: "#fff" }}
+              >
+                {mayApprove
+                  ? `📤 שלח הזמנה`
+                  : "📤 שלח בקשה לאישור מנהל"}
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  const items = products
+                    .filter((p) => selectedForOrder.includes(p.id))
+                    .map((p) => ({ product: p, qty: qtys[p.id] ?? 1 }));
+                  submitOrderRequest(items, selectedSupplierId, "הזמנה");
+                }}
+                className="w-full py-3 rounded-2xl wh-display font-bold"
+                style={{ background: C.accent, color: "#fff" }}
+              >
+                📤 שלח בקשת הזמנה לאישור המנהל
+              </button>
+            )}
+          </>
+        );
+      })()}
+
+      {orderMode === "menu" && (
+        menuItems.length === 0 ? (
+          <ShelfTag accent={C.steel}>
+            <p className="text-sm text-center" style={{ color: C.steel }}>
+              אין עדיין מנות בתפריט. הוסף מנות במסך ניהול ← תפריט.
+            </p>
+          </ShelfTag>
+        ) : (
+          <>
+            <div className="mb-3">
+              <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>כמה מנות מוגשות</label>
+              <input
+                type="number"
+                value={portions}
+                onChange={(e) => setPortions(Math.max(1, Number(e.target.value)))}
+                className="w-24 p-2 rounded-2xl border text-center"
+                style={{ borderColor: C.kraftDark }}
+              />
+            </div>
+            <div className="flex flex-col gap-2 mb-4">
+              {menuItems.map((m) => {
+                const active = selectedMenuIds.includes(m.id);
+                const col = categoryColor(m.category);
+                return (
+                  <button
+                    key={m.id}
+                    onClick={() => toggleMenuItem(m.id)}
+                    className="text-right p-3 rounded-2xl"
+                    style={{ background: active ? col : C.kraft, color: active ? "#fff" : C.ink, border: `1.5px solid ${col}` }}
+                  >
+                    <div className="font-bold">{m.name}</div>
+                    <div className="text-xs opacity-80">{m.category}</div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {selectedMenuIds.length > 0 && (
+              <>
+                <div className="flex justify-between items-center mb-2">
+                  <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>מה חסר לפי החישוב</div>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => setPickedIds(menuNeeds.map((n) => n.product.id))}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      סמן הכל
+                    </button>
+                    <button
+                      onClick={() => setPickedIds([])}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      נקה
+                    </button>
+                    <button
+                      onClick={() => setShowOnlyMarked((v) => !v)}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      {showOnlyMarked ? "הצג הכל" : "מה מסומן"}
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs mb-2" style={{ color: C.steel }}>
+                  סמן ✔ מה נכנס להזמנה. {pickedIds.filter((id) => menuNeeds.some((n) => n.product.id === id)).length} מסומנים.
+                </p>
+                <div className="flex flex-col gap-2 mb-4">
+                  {menuNeeds.filter((n) => !showOnlyMarked || pickedIds.includes(n.product.id)).map((n) => {
+                    const supplierName = n.product.supplierId
+                      ? suppliers.find((s) => s.id === n.product.supplierId)?.name
+                      : null;
+                    const picked = pickedIds.includes(n.product.id);
+                    return (
+                      <ShelfTag key={n.product.id} accent={picked ? (n.deficit > 0 ? C.stamp : C.sage) : C.kraftDark}>
+                        <div className="flex justify-between items-center text-sm">
+                          <div className="flex items-center gap-2">
+                            <input type="checkbox" checked={picked} onChange={() => togglePicked(n.product.id)} />
+                            <div>
+                              <div style={{ color: C.ink }} className="font-bold">{n.product.name}</div>
+                              <div style={{ color: C.steel }} className="text-xs">
+                                צריך {n.totalNeeded} · יש {n.product.quantity}
+                              </div>
+                              <select
+                                value={supplierOverrides[n.product.id] || n.product.supplierId || "__unassigned__"}
+                                onChange={(e) => setSupplierOverrides((o) => ({ ...o, [n.product.id]: e.target.value }))}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-xs mt-1 p-1 rounded-lg border"
+                                style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink, maxWidth: 170 }}
+                              >
+                                <option value="__unassigned__">ספק כללי</option>
+                                {suppliers.map((s) => (
+                                  <option key={s.id} value={s.id}>{s.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                          <input
+                            type="number"
+                            value={getQty(menuQtys, n.product, n.deficit) === 0 ? "" : getQty(menuQtys, n.product, n.deficit)}
+                            onChange={(e) =>
+                              setMenuQtys((q) => ({ ...q, [n.product.id]: e.target.value === "" ? 0 : Number(e.target.value) }))
+                            }
+                            className="w-16 text-center p-2 rounded-2xl border"
+                            style={{ borderColor: C.kraftDark }}
+                          />
+                        </div>
+                      </ShelfTag>
+                    );
+                  })}
+                </div>
+
+                {ExtrasPanel()}
+
+                {sentSuppliers.length > 0 && (
+                  <div className="text-xs text-center mb-2 p-2 rounded-xl" style={{ background: "rgba(87,180,94,0.15)", color: C.sage }}>
+                    ✓ כבר נשלח ({sentSuppliers.length}) — <button onClick={() => setSentSuppliers([])} style={{ textDecoration: "underline", color: C.accent, fontWeight: 700 }}>הצג שוב לשליחה חוזרת</button>
+                  </div>
+                )}
+                {Object.entries(groupRowsBySupplier(buildOrderRows(menuNeeds, menuQtys))).filter(([supplierId]) => !sentSuppliers.includes(supplierId)).map(([supplierId, items]) => {
+                  const supplierName = supplierId === "__unassigned__" ? "ספק כללי" : suppliers.find((s) => s.id === supplierId)?.name || "ספק";
+                  return (
+                    <button
+                      key={supplierId}
+                      onClick={() =>
+                        mayApprove
+                          ? sendGroupOrder(items, "📋 הזמנה לפי תפריט", supplierId)
+                          : setPendingOrder({ items, title: "לפי מנות בודדות", supplierId, isRequest: true, sourceLabel: "לפי מנות בודדות" })
+                      }
+                      className="w-full py-3 mb-2 rounded-2xl wh-display font-bold"
+                      style={{ background: mayApprove ? C.sage : C.accent, color: "#fff" }}
+                    >
+                      {mayApprove
+                        ? `📤 שלח ל${supplierName} (${items.length} מוצרים)`
+                        : `📤 בקש אישור ל${supplierName} (${items.length} מוצרים)`}
+                    </button>
+                  );
+                })}
+              </>
+            )}
+          </>
+        )
+      )}
+
+      {orderMode === "week" && (
+        menuItems.length === 0 ? (
+          <ShelfTag accent={C.steel}>
+            <p className="text-sm text-center" style={{ color: C.steel }}>
+              קודם הוסף מנות במסך ניהול ← תפריט, ואז תוכל לשבץ אותן כאן ללוח השבועי.
+            </p>
+          </ShelfTag>
+        ) : (
+          <>
+            <HebrewCalendarWidget />
+            <div className="mb-3">
+              <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מספר מנות/סועדים (לכל ארוחה משובצת)</label>
+              <input
+                type="number"
+                value={weekPortions}
+                onChange={(e) => setWeekPortions(Math.max(1, Number(e.target.value)))}
+                className="w-24 p-2 rounded-2xl border text-center mb-2"
+                style={{ borderColor: C.kraftDark }}
+              />
+              <div className="p-3 rounded-2xl mb-2" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+                  התפריט הוא עבור
+                </label>
+                <div className="flex gap-2 mb-2">
+                  <button
+                    onClick={() => setMenuWeek("next")}
+                    className="flex-1 py-1.5 rounded-xl text-xs font-bold"
+                    style={{ background: menuWeek === "next" ? C.brand : C.paper, color: menuWeek === "next" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+                  >
+                    שבוע הבא
+                  </button>
+                  <button
+                    onClick={() => setMenuWeek("this")}
+                    className="flex-1 py-1.5 rounded-xl text-xs font-bold"
+                    style={{ background: menuWeek === "this" ? C.brand : C.paper, color: menuWeek === "this" ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+                  >
+                    השבוע הזה
+                  </button>
+                </div>
+
+                <div className="text-center py-2 mb-2 rounded-xl" style={{ background: C.paper }}>
+                  <div className="text-xs" style={{ color: C.steel }}>כותרת ההדפסה:</div>
+                  <div className="wh-display font-black text-base" style={{ color: C.ink }}>
+                    {parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי"}
+                  </div>
+                  <div className="text-xs" style={{ color: C.steel }}>{weekLabel(targetWeekStart)}</div>
+                </div>
+
+                <input
+                  value={parshaOverride}
+                  onChange={(e) => setParshaOverride(e.target.value)}
+                  placeholder={autoParsha ? `לדריסה ידנית (כרגע: ${autoParsha})` : "שם הפרשה (לא נטען אוטומטית)"}
+                  className="w-full p-2 rounded-xl border text-sm"
+                  style={{ borderColor: C.kraftDark }}
+                />
+                <p className="text-xs mt-1" style={{ color: C.steel }}>
+                  {autoParsha
+                    ? "הפרשה נטענת אוטומטית. השדה הזה רק אם רוצים לשנות (למשל שבת חול המועד)."
+                    : "לא הצלחתי לטעון את הפרשה - הזן ידנית."}
+                </p>
+              </div>
+
+              <button
+                onClick={printWeeklyMenu}
+                className="w-full py-3 rounded-2xl text-sm font-bold"
+                style={{ background: C.accent, color: "#fff" }}
+              >
+                🖨️ הדפס תפריט שבועי
+              </button>
+
+              <div className="flex gap-2 mt-2">
+                <button
+                  onClick={saveCurrentMenu}
+                  className="flex-1 py-3 rounded-2xl text-sm font-bold"
+                  style={{ background: C.sage, color: "#fff" }}
+                >
+                  💾 שמור עותק של התפריט
+                </button>
+                <button
+                  onClick={() => setSavedMenusOpen(true)}
+                  className="flex-1 py-3 rounded-2xl text-sm font-bold"
+                  style={{ background: C.kraft, color: C.ink }}
+                >
+                  📚 תפריטים שמורים{savedMenus?.length ? ` (${savedMenus.length})` : ""}
+                </button>
+              </div>
+
+              <button
+                onClick={sendWeeklyMenuImage}
+                className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
+                style={{ background: "#25D366", color: "#fff" }}
+              >
+                🖼️ שלח תפריט כתמונה
+              </button>
+
+              <button
+                onClick={sendWeeklyMenuWhatsApp}
+                className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
+                style={{ background: C.kraft, color: "#128C7E", border: "1px solid #128C7E" }}
+              >
+                💬 שלח כטקסט במקום
+              </button>
+
+              {(settings?.whatsappGroupLink || "").trim() && (
+                <button
+                  onClick={sendWeeklyMenuToGroup}
+                  className="w-full py-3 mt-2 rounded-2xl text-sm font-bold"
+                  style={{ background: "#128C7E", color: "#fff" }}
+                >
+                  👥 שלח לקבוצה הקבועה (הדבקה ידנית)
+                </button>
+              )}
+            </div>
+
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={() => setWeekView("grid")}
+                className="flex-1 py-2 rounded-2xl text-sm font-bold"
+                style={{ background: weekView === "grid" ? C.brand : C.kraft, color: weekView === "grid" ? "#fff" : C.ink }}
+              >
+                📊 טבלה
+              </button>
+              <button
+                onClick={() => setWeekView("days")}
+                className="flex-1 py-2 rounded-2xl text-sm font-bold"
+                style={{ background: weekView === "days" ? C.brand : C.kraft, color: weekView === "days" ? "#fff" : C.ink }}
+              >
+                📅 יום-יום
+              </button>
+            </div>
+
+            {weekView === "grid" && (
+              <>
+                <p className="text-xs mb-3" style={{ color: C.steel }}>
+                  לחץ על תא כדי לבחור מנה. אפשר להחליק לצדדים כדי לראות את כל הימים.
+                </p>
+                {MEAL_SLOTS.map(([slotKey, slotLabel]) => (
+                  <WeeklyMenuGrid
+                    key={slotKey}
+                    weeklyMenu={weeklyMenu}
+                    setWeekSlot={setWeekSlot}
+                    menuItems={menuItems}
+                    dishTypes={dishTypes}
+                    persistDishTypes={persistDishTypes}
+                    slotKey={slotKey}
+                    slotLabel={slotLabel}
+                    weekStart={targetWeekStart}
+                  />
+                ))}
+              </>
+            )}
+
+            {weekView === "days" && (
+            <div className="flex flex-col gap-2 mb-4">
+              {WEEK_DAYS.map(([dayKey, dayLabel], dayIdx) => {
+                const dateObj = dateForWeekdayIndex(dayIdx);
+                const holiday = holidayForDate(dateObj);
+                const dateStr = dateObj.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+                return (
+                <ShelfTag key={dayKey} accent={holiday ? C.stamp : C.accent}>
+                  <div className="flex justify-between items-center mb-2">
+                    <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>{dayLabel} · {dateStr}</div>
+                    {holiday && (
+                      <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: C.stamp, color: "#fff" }}>
+                        🕎 {holiday.title}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    {MEAL_SLOTS.map(([slotKey, slotLabel]) => {
+                      const slotSelections = weeklyMenu[dayKey]?.[slotKey] || {};
+                      const chosenNames = dishTypesForSlot(dishTypes, slotKey).map((dt) => {
+                        const id = slotSelections[dt.id];
+                        return id ? menuItems.find((m) => m.id === id)?.name : null;
+                      }).filter(Boolean);
+                      return (
+                        <button
+                          key={slotKey}
+                          onClick={() => setOpenPicker({ dayKey, dayLabel, slotKey, slotLabel })}
+                          className="text-right p-3 rounded-2xl"
+                          style={{ background: C.kraft, border: `1.5px solid ${C.kraftDark}` }}
+                        >
+                          <div className="text-xs font-bold mb-1" style={{ color: C.accent }}>{slotLabel}</div>
+                          <div className="text-sm" style={{ color: C.ink }}>
+                            {chosenNames.length > 0 ? chosenNames.join(" · ") : "לחץ לבחירת מנות"}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </ShelfTag>
+                );
+              })}
+            </div>
+            )}
+
+            {openPicker && (
+              <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.5)" }} onClick={() => setOpenPicker(null)}>
+                <div
+                  className="w-full wh-body"
+                  style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "85vh", overflowY: "auto", padding: 16 }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <div className="flex justify-between items-center mb-3">
+                    <div className="wh-display font-bold" style={{ color: C.ink }}>
+                      {openPicker.dayLabel} · {openPicker.slotLabel}
+                    </div>
+                    <button onClick={() => setOpenPicker(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
+                      סיימתי
+                    </button>
+                  </div>
+                  {dishTypesForSlot(dishTypes, openPicker.slotKey).length === 0 && (
+                    <p className="text-sm text-center py-4" style={{ color: C.steel }}>
+                      אין עדיין שורות לארוחה הזו - הוסף שורות בתצוגת הטבלה (רשת).
+                    </p>
+                  )}
+                  {dishTypesForSlot(dishTypes, openPicker.slotKey).map((dt) => {
+                    const options = menuItems.filter((m) => m.dishType === dt.id);
+                    const currentId = weeklyMenu[openPicker.dayKey]?.[openPicker.slotKey]?.[dt.id] || "";
+                    return (
+                      <div key={dt.id} className="mb-4">
+                        <div className="text-sm font-bold mb-2" style={{ color: C.accent }}>{dt.name}</div>
+                        {options.length === 0 ? (
+                          <p className="text-xs" style={{ color: C.steel }}>אין עדיין מנות מהסוג הזה - הוסף במסך ניהול ← תפריט</p>
+                        ) : (
+                          <div className="flex flex-col gap-2">
+                            <button
+                              onClick={() => setWeekSlot(openPicker.dayKey, openPicker.slotKey, dt.id, "")}
+                              className="text-right p-2 rounded-2xl text-sm"
+                              style={{
+                                background: currentId === "" ? C.brand : C.kraft,
+                                color: currentId === "" ? "#fff" : C.steel,
+                                border: `1px solid ${C.kraftDark}`,
+                              }}
+                            >
+                              — ללא —
+                            </button>
+                            {options.map((m) => (
+                              <button
+                                key={m.id}
+                                onClick={() => setWeekSlot(openPicker.dayKey, openPicker.slotKey, dt.id, m.id)}
+                                className="text-right p-2 rounded-2xl text-sm font-bold"
+                                style={{
+                                  background: currentId === m.id ? categoryColor(m.category) : C.kraft,
+                                  color: currentId === m.id ? "#fff" : C.ink,
+                                  border: `1.5px solid ${categoryColor(m.category)}`,
+                                }}
+                              >
+                                {m.name}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {weekNeeds.chosenDishNames.length > 0 && (
+              <>
+                <div className="flex justify-between items-center mb-2">
+                  <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>מה חסר לכל השבוע</div>
+                  <div className="flex gap-1">
+                    <button
+                      onClick={() => setPickedIds(weekNeeds.rows.map((n) => n.product.id))}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      סמן הכל
+                    </button>
+                    <button
+                      onClick={() => setPickedIds([])}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      נקה
+                    </button>
+                    <button
+                      onClick={() => setShowOnlyMarked((v) => !v)}
+                      className="text-xs font-bold px-2 py-1 rounded-full"
+                      style={{ background: showOnlyMarked ? C.ink : C.mustard, color: showOnlyMarked ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      {showOnlyMarked ? "הצג הכל" : "מה מסומן"}
+                    </button>
+                  </div>
+                </div>
+                <p className="text-xs mb-2" style={{ color: C.steel }}>
+                  סמן ✔ מה נכנס להזמנה. {pickedIds.filter((id) => weekNeeds.rows.some((n) => n.product.id === id)).length} מסומנים.
+                </p>
+                <div className="flex flex-col gap-2 mb-4">
+                  {weekNeeds.rows.filter((n) => !showOnlyMarked || pickedIds.includes(n.product.id)).map((n) => {
+                    const supplierName = n.product.supplierId
+                      ? suppliers.find((s) => s.id === n.product.supplierId)?.name
+                      : null;
+                    const picked = pickedIds.includes(n.product.id);
+                    return (
+                      <ShelfTag key={n.product.id} accent={picked ? (n.deficit > 0 ? C.stamp : C.sage) : C.kraftDark}>
+                        <div className="flex justify-between items-center text-sm">
+                          <div className="flex items-center gap-2">
+                            <input type="checkbox" checked={picked} onChange={() => togglePicked(n.product.id)} />
+                            <div>
+                              <div style={{ color: C.ink }} className="font-bold">{n.product.name}</div>
+                              <div style={{ color: C.steel }} className="text-xs">
+                                צריך {n.totalNeeded} · יש {n.product.quantity}
+                              </div>
+                              <select
+                                value={supplierOverrides[n.product.id] || n.product.supplierId || "__unassigned__"}
+                                onChange={(e) => setSupplierOverrides((o) => ({ ...o, [n.product.id]: e.target.value }))}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-xs mt-1 p-1 rounded-lg border"
+                                style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink, maxWidth: 170 }}
+                              >
+                                <option value="__unassigned__">ספק כללי</option>
+                                {suppliers.map((s) => (
+                                  <option key={s.id} value={s.id}>{s.name}</option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                          <input
+                            type="number"
+                            value={getQty(weekQtys, n.product, n.deficit) === 0 ? "" : getQty(weekQtys, n.product, n.deficit)}
+                            onChange={(e) =>
+                              setWeekQtys((q) => ({ ...q, [n.product.id]: e.target.value === "" ? 0 : Number(e.target.value) }))
+                            }
+                            className="w-16 text-center p-2 rounded-2xl border"
+                            style={{ borderColor: C.kraftDark }}
+                          />
+                        </div>
+                      </ShelfTag>
+                    );
+                  })}
+                </div>
+
+                {ExtrasPanel()}
+
+                {sentSuppliers.length > 0 && (
+                  <div className="text-xs text-center mb-2 p-2 rounded-xl" style={{ background: "rgba(87,180,94,0.15)", color: C.sage }}>
+                    ✓ כבר נשלח ({sentSuppliers.length}) — <button onClick={() => setSentSuppliers([])} style={{ textDecoration: "underline", color: C.accent, fontWeight: 700 }}>הצג שוב לשליחה חוזרת</button>
+                  </div>
+                )}
+                {Object.entries(groupRowsBySupplier(buildOrderRows(weekNeeds.rows, weekQtys))).filter(([supplierId]) => !sentSuppliers.includes(supplierId)).map(([supplierId, items]) => {
+                  const supplierName = supplierId === "__unassigned__" ? "ספק כללי" : suppliers.find((s) => s.id === supplierId)?.name || "ספק";
+                  return (
+                    <button
+                      key={supplierId}
+                      onClick={() =>
+                        mayApprove
+                          ? sendGroupOrder(items, "📅 הזמנה לפי תפריט שבועי", supplierId)
+                          : setPendingOrder({ items, title: "לפי תפריט שבועי", supplierId, isRequest: true, sourceLabel: "לפי תפריט שבועי" })
+                      }
+                      className="w-full py-3 mb-2 rounded-2xl wh-display font-bold"
+                      style={{ background: mayApprove ? C.sage : C.accent, color: "#fff" }}
+                    >
+                      {mayApprove
+                        ? `📤 שלח ל${supplierName} (${items.length} מוצרים)`
+                        : `📤 בקש אישור ל${supplierName} (${items.length} מוצרים)`}
+                    </button>
+                  );
+                })}
+              </>
+            )}
+          </>
+        )
+      )}
+
+      {OrderSummarySheet()}
+
+      {savedMenusOpen && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setSavedMenusOpen(false)}>
+          <div
+            dir="rtl"
+            onClick={(e) => e.stopPropagation()}
+            style={{ background: C.paper, width: "100%", maxWidth: 640, maxHeight: "90vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}
+          >
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>📚 תפריטים שמורים</div>
+              <button onClick={() => setSavedMenusOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+
+            {(!savedMenus || savedMenus.length === 0) ? (
+              <p className="text-sm text-center py-6" style={{ color: C.steel }}>עדיין לא שמרת תפריטים. לחץ "💾 שמור עותק של התפריט" כדי לשמור את תפריט השבוע.</p>
+            ) : (
+              <div className="flex flex-col gap-3">
+                {savedMenus.map((snap) => (
+                  <div key={snap.id} className="rounded-2xl p-3" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                    <div className="flex justify-between items-center mb-1">
+                      <div className="font-bold text-sm" style={{ color: C.ink }}>
+                        {snap.parsha ? `תפריט ${snap.parsha}` : "תפריט"} · {snap.weekLabel}
+                      </div>
+                      <button
+                        onClick={() => { if (typeof window !== "undefined" && !window.confirm("למחוק את התפריט השמור?")) return; deleteSavedMenu(snap.id); }}
+                        title="מחק"
+                        className="rounded-full flex items-center justify-center"
+                        style={{ width: 26, height: 26, background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                      >🗑️</button>
+                    </div>
+                    <div className="text-xs mb-2" style={{ color: C.steel }}>נשמר: {new Date(snap.savedAt).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", year: "2-digit", hour: "2-digit", minute: "2-digit" })}</div>
+                    <details>
+                      <summary className="text-xs font-bold cursor-pointer" style={{ color: C.accent }}>הצג תפריט</summary>
+                      <div className="mt-2" style={{ overflowX: "auto" }}>
+                        {(snap.slots || []).map((slot) => {
+                          const pal = slot.slotKey === "dinner"
+                            ? { strong: "#F6D2A6", weak: "#FCEBD4", head: "#DE9542" }
+                            : { strong: "#BBD9F2", weak: "#E6F1FB", head: "#3E8FCB" };
+                          const dayLabels = (slot.rows[0]?.cells || []).map((c) => c.day);
+                          return (
+                            <div key={slot.slotKey} className="mb-3">
+                              <div className="font-bold text-sm mb-1" style={{ color: pal.head }}>ארוחת {slot.slotLabel}</div>
+                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                                <thead>
+                                  <tr>
+                                    <th style={{ background: pal.head, color: "#fff", border: `1px solid ${C.kraftDark}`, padding: "4px 6px" }}></th>
+                                    {dayLabels.map((d, i) => (
+                                      <th key={i} style={{ background: pal.head, color: "#fff", border: `1px solid ${C.kraftDark}`, padding: "4px 6px", whiteSpace: "nowrap" }}>{d}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {slot.rows.map((row, ri) => {
+                                    const bg = ri % 2 === 0 ? pal.strong : pal.weak;
+                                    return (
+                                      <tr key={ri}>
+                                        <th style={{ background: bg, color: C.ink, border: `1px solid ${C.kraftDark}`, padding: "4px 6px", textAlign: "right", fontWeight: 700 }}>{row.dishType}</th>
+                                        {row.cells.map((c, ci) => (
+                                          <td key={ci} style={{ background: bg, color: C.ink, border: `1px solid ${C.kraftDark}`, padding: "4px 6px", textAlign: "center" }}>{c.name}</td>
+                                        ))}
+                                      </tr>
+                                    );
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </details>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Tasks Tab ---------- */
+/* ---------- Task detail: comment thread + follow-up reminder ---------- */
+const FOLLOWUP_PRESETS = [
+  ["מחר", 1],
+  ["עוד יומיים", 2],
+  ["עוד 3 ימים", 3],
+  ["עוד שבוע", 7],
+];
+
+function daysFromNow(n) {
+  const d = new Date();
+  d.setDate(d.getDate() + n);
+  d.setHours(9, 0, 0, 0); // 09:00 - a sane hour to be nudged
+  return d.getTime();
+}
+function fmtDateTime(ts) {
+  return new Date(ts).toLocaleString("he-IL", {
+    day: "numeric",
+    month: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+function fmtRelative(ts) {
+  const days = Math.round((ts - Date.now()) / 86400000);
+  if (days < 0) return `באיחור ${Math.abs(days)} ימים`;
+  if (days === 0) return "היום";
+  if (days === 1) return "מחר";
+  return `בעוד ${days} ימים`;
+}
+// Combine a date string ("2026-08-10") + time string ("14:30") into a local timestamp.
+// Returns null if no date was chosen. Defaults to 09:00 when time is missing.
+function combineDateTime(dateStr, timeStr) {
+  if (!dateStr) return null;
+  const parts = (timeStr || "09:00").split(":");
+  const h = parseInt(parts[0], 10);
+  const m = parseInt(parts[1], 10);
+  const d = new Date(dateStr);
+  d.setHours(Number.isFinite(h) ? h : 9, Number.isFinite(m) ? m : 0, 0, 0);
+  return d.getTime();
+}
+
+function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
+  const [comment, setComment] = useState("");
+  const [customDate, setCustomDate] = useState("");
+  const [customTime, setCustomTime] = useState("09:00");
+
+  const comments = task.comments || [];
+  const assignee = users.find((u) => u.id === task.assignedToId);
+  const cat = catById(task.categoryId);
+
+  async function addComment() {
+    const text = comment.trim();
+    if (!text) return;
+    const entry = {
+      id: genId(),
+      userId: currentUser.id,
+      userName: currentUser.name,
+      text,
+      createdAt: Date.now(),
+    };
+    await onSave({ ...task, comments: [...comments, entry] });
+    setComment("");
+  }
+
+  async function setFollowUp(ts) {
+    await onSave({
+      ...task,
+      followUpAt: ts,
+      // A new date means it should fire again, even if a previous one already did.
+      followUpFiredAt: null,
+    });
+  }
+
+  async function clearFollowUp() {
+    await onSave({ ...task, followUpAt: null, followUpFiredAt: null });
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.5)" }} onClick={onClose}>
+      <div
+        className="w-full wh-body"
+        style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "90vh", overflowY: "auto", padding: 16 }}
+        onClick={(e) => e.stopPropagation()}
+        dir="rtl"
+      >
+        <div className="flex justify-between items-start mb-3">
+          <div className="flex-1">
+            <div className="wh-display font-black text-lg" style={{ color: C.ink }}>{task.title}</div>
+            <div className="text-xs mt-1" style={{ color: C.steel }}>
+              {cat && `${cat.icon || "📋"} ${cat.name} · `}
+              {assignee?.name || "לא משויך"}
+              {task.location && ` · 📍 ${task.location}`}
+            </div>
+          </div>
+          <button onClick={onClose} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
+            סגור
+          </button>
+        </div>
+
+        {task.description && (
+          <p className="text-sm mb-4 p-3 rounded-2xl" style={{ background: C.kraft, color: C.steel }}>
+            {task.description}
+          </p>
+        )}
+
+        {/* ---- Follow-up reminder ---- */}
+        <ShelfTag accent={task.followUpAt ? C.mustard : C.kraftDark} style={{ marginBottom: 16 }}>
+          <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>⏰ תזכורת המשך</div>
+
+          {task.followUpAt ? (
+            <>
+              <div className="text-sm mb-2" style={{ color: C.ink }}>
+                נקבעה ל-<b>{fmtDateTime(task.followUpAt)}</b>{" "}
+                <span style={{ color: task.followUpAt < Date.now() ? C.stamp : C.steel }}>
+                  ({fmtRelative(task.followUpAt)})
+                </span>
+              </div>
+              {task.followUpFiredAt && (
+                <div className="text-xs mb-2" style={{ color: C.sage }}>✓ ההתראה כבר נשלחה</div>
+              )}
+              <button onClick={clearFollowUp} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+                בטל תזכורת
+              </button>
+            </>
+          ) : (
+            <>
+              <p className="text-xs mb-2" style={{ color: C.steel }}>
+                תקבל התראה בתאריך ובשעה שתבחר, כדי לבדוק מה קרה עם המשימה.
+              </p>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {FOLLOWUP_PRESETS.map(([label, days]) => (
+                  <button
+                    key={label}
+                    onClick={() => setFollowUp(daysFromNow(days))}
+                    className="px-3 py-1.5 rounded-full text-xs font-bold"
+                    style={{ background: C.kraft, color: C.mustard, border: `1.5px solid ${C.mustard}` }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <div className="flex gap-2 mb-2">
+                <input
+                  type="date"
+                  value={customDate}
+                  onChange={(e) => setCustomDate(e.target.value)}
+                  className="flex-1 p-2 rounded-2xl border text-sm"
+                  style={{ borderColor: C.kraftDark }}
+                />
+                <input
+                  type="time"
+                  value={customTime}
+                  onChange={(e) => setCustomTime(e.target.value)}
+                  className="p-2 rounded-2xl border text-sm"
+                  style={{ borderColor: C.kraftDark, width: 110 }}
+                />
+              </div>
+              <button
+                onClick={() => {
+                  const ts = combineDateTime(customDate, customTime);
+                  if (!ts) return;
+                  setFollowUp(ts);
+                }}
+                className="w-full py-2 rounded-2xl font-bold text-sm"
+                style={{ background: C.mustard, color: C.ink }}
+              >
+                קבע תזכורת
+              </button>
+            </>
+          )}
+        </ShelfTag>
+
+        {/* ---- Comment thread ---- */}
+        <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>
+          💬 הערות והמשך טיפול {comments.length > 0 && `(${comments.length})`}
+        </div>
+
+        <div className="flex flex-col gap-2 mb-3">
+          {comments.length === 0 && (
+            <p className="text-xs text-center py-4" style={{ color: C.steel }}>
+              אין עדיין הערות. כתוב כאן מה קרה, מה נעשה, ומה נשאר.
+            </p>
+          )}
+          {comments.map((c) => {
+            const mine = c.userId === currentUser.id;
+            return (
+              <div
+                key={c.id}
+                className="p-3 rounded-2xl"
+                style={{
+                  background: mine ? "rgba(124,92,252,0.15)" : C.kraft,
+                  border: `1px solid ${C.kraftDark}`,
+                }}
+              >
+                <div className="flex justify-between items-baseline mb-1">
+                  <span className="text-xs font-bold" style={{ color: C.ink }}>{c.userName}</span>
+                  <span className="text-xs" style={{ color: C.steel }}>{fmtDateTime(c.createdAt)}</span>
+                </div>
+                <div className="text-sm" style={{ color: C.ink, whiteSpace: "pre-wrap" }}>{c.text}</div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex gap-2">
+          <textarea
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            placeholder="מה קרה? מה נעשה? מה נשאר לעשות?"
+            rows={2}
+            className="flex-1 p-3 rounded-2xl border text-sm"
+            style={{ borderColor: C.kraftDark }}
+          />
+          <button
+            onClick={addComment}
+            disabled={!comment.trim()}
+            className="px-4 rounded-2xl font-bold"
+            style={{
+              background: comment.trim() ? C.sage : C.kraft,
+              color: comment.trim() ? "#fff" : C.steel,
+            }}
+          >
+            הוסף
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const MAP_STATUS = {
+  ok: { label: "רגיל", color: "#E5E7EB", text: "#231F3D" },
+  clean: { label: "לניקוי", color: "#EF4444", text: "#fff" },
+  progress: { label: "בטיפול", color: "#F59E0B", text: "#fff" },
+  done: { label: "נוקה", color: "#22C55E", text: "#fff" },
+};
+
+function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, showToast, notifyManagers, notifyUser, onOpenTask, users, taskCategories, locations }) {
+  const [activeBuilding, setActiveBuilding] = useState(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
+  const [selectedLocs, setSelectedLocs] = useState([]);
+  const [sheetRoom, setSheetRoom] = useState(null);
+  const [taskFormRoom, setTaskFormRoom] = useState(null);
+  const [newBuilding, setNewBuilding] = useState("");
+  const [buildingChoice, setBuildingChoice] = useState("");
+  const [newLabel, setNewLabel] = useState("");
+  const [reorderMode, setReorderMode] = useState(false);
+  const [dragOrder, setDragOrder] = useState(null); // working copy while dragging
+  const [dragId, setDragId] = useState(null);       // room being dragged
+  const [dragBuilding, setDragBuilding] = useState(null); // building being dragged
+  const dragIdRef = useRef(null);
+  const dragBRef = useRef(null);
+  const orderRef = useRef(null);
+  useEffect(() => { dragIdRef.current = dragId; }, [dragId]);
+  useEffect(() => { dragBRef.current = dragBuilding; }, [dragBuilding]);
+  useEffect(() => { orderRef.current = dragOrder; }, [dragOrder]);
+
+  // Open tasks that belong to a room: linked by id, by stamped roomId, or by matching location.
+  function openTasksForRoom(room) {
+    const roomLoc = `${room.building || "כללי"} · ${room.label}`;
+    const seen = new Set();
+    return (tasks || []).filter((t) => {
+      if (t.status === "done") return false;
+      const match = t.roomId === room.id || t.id === room.taskId || t.location === roomLoc;
+      if (!match || seen.has(t.id)) return false;
+      seen.add(t.id);
+      return true;
+    });
+  }
+
+  async function markTaskDoneFromRoom(taskId) {
+    let base = tasks;
+    try {
+      const latest = await loadKey(KEYS.tasks, null);
+      if (Array.isArray(latest)) base = latest;
+    } catch (e) {}
+    await persistTasks(base.map((t) => (t.id === taskId ? { ...t, status: "done", completedAt: Date.now(), statusAt: Date.now() } : t)));
+  }
+
+  // Create a full task (any kind, not just cleaning) tied to a room.
+  async function createRoomTask(payload, room) {
+    const { notifyNow, ...rest } = payload;
+    const created = {
+      ...rest,
+      id: genId(),
+      roomId: room.id,
+      status: "open",
+      comments: [],
+      createdAt: Date.now(),
+      createdBy: currentUser?.name || "",
+      createdById: currentUser?.id || "",
+    };
+    await persistTasks([created, ...(tasks || [])]);
+    setTaskFormRoom(null);
+    if (notifyNow) {
+      if (payload.assignedToId && notifyUser) {
+        notifyUser(payload.assignedToId, `משימה חדשה: ${payload.title}`, { tab: "tasks", taskId: created.id });
+      }
+      if (notifyManagers) {
+        notifyManagers(`🛠️ נפתחה משימה: ${room.building || "כללי"} ${room.label} — ${payload.title}`, { tab: "tasks", taskId: created.id });
+      }
+    }
+    showToast("המשימה נוצרה");
+  }
+
+  // Drag-to-reorder (pointer based, works on touch). Rooms reorder within a building;
+  // dragging a building's side-label reorders whole buildings.
+  function startDrag(e, room) {
+    if (!reorderMode) return;
+    e.preventDefault();
+    setDragId(room.id);
+    setDragBuilding(null);
+    setDragOrder((mapRooms || []).slice());
+  }
+  function startDragBuilding(e, b) {
+    if (!reorderMode) return;
+    e.preventDefault();
+    setDragBuilding(b);
+    setDragId(null);
+    setDragOrder((mapRooms || []).slice());
+  }
+  // Rebuild the rooms array so buildings follow a new order (rooms within each kept).
+  function moveBuildingBlock(list, fromB, toB) {
+    if (fromB === toB) return list;
+    const order = [];
+    list.forEach((r) => { const b = r.building || "כללי"; if (!order.includes(b)) order.push(b); });
+    const fi = order.indexOf(fromB), ti = order.indexOf(toB);
+    if (fi < 0 || ti < 0) return list;
+    order.splice(fi, 1);
+    order.splice(ti, 0, fromB);
+    const byB = {};
+    list.forEach((r) => { const b = r.building || "כללי"; (byB[b] = byB[b] || []).push(r); });
+    const out = [];
+    order.forEach((b) => (byB[b] || []).forEach((r) => out.push(r)));
+    return out;
+  }
+  const dragging = dragId || dragBuilding;
+  useEffect(() => {
+    if (!dragging) return;
+    function onMove(ev) {
+      const p = ev.touches ? ev.touches[0] : ev;
+      if (!p) return;
+      const el = document.elementFromPoint(p.clientX, p.clientY);
+      if (!el || !el.closest) return;
+      if (dragBRef.current) {
+        const bl = el.closest("[data-building]");
+        if (!bl) return;
+        const overB = bl.getAttribute("data-building");
+        const fromB = dragBRef.current;
+        if (!overB || overB === fromB) return;
+        setDragOrder(moveBuildingBlock(orderRef.current || [], fromB, overB));
+      } else {
+        const tile = el.closest("[data-room-id]");
+        if (!tile) return;
+        const overId = tile.getAttribute("data-room-id");
+        const did = dragIdRef.current;
+        if (!overId || overId === did) return;
+        const list = (orderRef.current || []).slice();
+        const from = list.findIndex((r) => r.id === did);
+        const to = list.findIndex((r) => r.id === overId);
+        if (from < 0 || to < 0) return;
+        if ((list[from].building || "כללי") !== (list[to].building || "כללי")) return; // same building only
+        const [moved] = list.splice(from, 1);
+        list.splice(to, 0, moved);
+        setDragOrder(list);
+      }
+    }
+    function onUp() {
+      const list = orderRef.current;
+      setDragId(null);
+      setDragBuilding(null);
+      if (list) persistMapRooms(list);
+      setDragOrder(null);
+    }
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+    };
+  }, [dragging]);
+
+  const displayRooms = dragOrder || mapRooms || [];
+  // Buildings in first-appearance order (so a custom room order stays stable).
+  const buildingOrder = [];
+  displayRooms.forEach((r) => { const b = r.building || "כללי"; if (!buildingOrder.includes(b)) buildingOrder.push(b); });
+
+  const buildings = Array.from(new Set((mapRooms || []).map((r) => r.building || "כללי"))).sort((a, b) => a.localeCompare(b, "he"));
+  const building = activeBuilding && buildings.includes(activeBuilding) ? activeBuilding : buildings[0];
+  const roomsHere = (mapRooms || []).filter((r) => (r.building || "כללי") === building);
+
+  // If a room is linked to a task that got marked done, show it as "done" (green).
+  function effStatus(room) {
+    if (room.taskId) {
+      const t = (tasks || []).find((x) => x.id === room.taskId);
+      if (t && t.status === "done") return "done";
+    }
+    return room.status || "ok";
+  }
+
+  async function setRoomStatus(room, status) {
+    await persistMapRooms((mapRooms || []).map((r) => (r.id === room.id ? { ...r, status, statusAt: Date.now() } : r)));
+    setSheetRoom((cur) => (cur && cur.id === room.id ? { ...cur, status } : cur));
+  }
+
+  async function addRoom() {
+    let b;
+    if (buildingChoice && buildingChoice !== "__new__") b = buildingChoice;
+    else b = newBuilding.trim();
+    if (!b) b = "כללי";
+    const l = newLabel.trim();
+    if (!l) { showToast("הזן מספר/שם חדר"); return; }
+    const room = { id: genId(), building: b, label: l };
+    await persistMapRooms([...(mapRooms || []), room]);
+    setNewLabel("");
+    setActiveBuilding(b);
+    showToast(`החדר נוסף ל${b}`);
+  }
+
+  async function deleteRoom(id) {
+    await persistMapRooms((mapRooms || []).filter((r) => r.id !== id));
+    setSheetRoom(null);
+  }
+
+  // Which locations are already on the map (by building|label), to avoid duplicates.
+  const existingKeys = new Set((mapRooms || []).map((r) => `${r.building || "כללי"}|${r.label}`));
+  function locKey(l) { return `${l.group || "כללי"}|${l.name}`; }
+
+  async function importSelectedLocations() {
+    const toAdd = (locations || [])
+      .filter((l) => selectedLocs.includes(l.id) && !existingKeys.has(locKey(l)))
+      .map((l) => ({ id: genId(), building: l.group || "כללי", label: l.name, status: "ok", statusAt: Date.now() }));
+    if (toAdd.length === 0) { showToast("לא נבחרו חדרים חדשים"); return; }
+    await persistMapRooms([...(mapRooms || []), ...toAdd]);
+    setSelectedLocs([]);
+    setImportOpen(false);
+    showToast(`נוספו ${toAdd.length} חדרים מהמקומות`);
+  }
+
+  async function createTaskForRoom(room) {
+    const title = `ניקיון: ${room.building || "כללי"} · ${room.label}`;
+    const task = {
+      id: genId(),
+      title,
+      description: "",
+      location: `${room.building || "כללי"} · ${room.label}`,
+      roomId: room.id,
+      assignedToId: "",
+      priority: "normal",
+      status: "open",
+      comments: [],
+      createdAt: Date.now(),
+      createdBy: currentUser?.name || "",
+      createdById: currentUser?.id || "",
+    };
+    await persistTasks([task, ...(tasks || [])]);
+    await persistMapRooms((mapRooms || []).map((r) => (r.id === room.id ? { ...r, status: "clean", statusAt: Date.now(), taskId: task.id } : r)));
+    if (notifyManagers) notifyManagers(`🧹 נפתחה משימת ניקיון: ${room.building || "כללי"} ${room.label}`, { tab: "tasks", taskId: task.id });
+    setSheetRoom(null);
+    showToast("נוצרה משימה והחדר סומן לניקוי");
+  }
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-3">
+        <div className="wh-display font-black text-lg" style={{ color: C.ink }}>🗺️ מפת המוסד</div>
+        <div className="flex gap-2">
+          {displayRooms.length > 0 && (
+            <button onClick={() => setReorderMode((v) => !v)} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: reorderMode ? C.sage : C.kraft, color: reorderMode ? "#fff" : C.ink }}>
+              {reorderMode ? "✓ סיום סידור" : "↕️ סדר"}
+            </button>
+          )}
+          <button onClick={() => setImportOpen(true)} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
+            📍 מהמקומות
+          </button>
+          <button onClick={() => { setBuildingChoice(buildingOrder[0] || "__new__"); setNewBuilding(""); setAddOpen(true); }} className="px-3 py-2 rounded-2xl text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
+            ➕ הוסף חדר
+          </button>
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="flex gap-3 flex-wrap mb-3">
+        <div className="flex items-center gap-1 text-xs" style={{ color: C.steel }}>
+          <span style={{ width: 14, height: 14, borderRadius: 4, background: "#EF4444", border: `1px solid ${C.kraftDark}`, display: "inline-block" }} />
+          יש משימה פתוחה
+        </div>
+        <div className="flex items-center gap-1 text-xs" style={{ color: C.steel }}>
+          <span style={{ width: 14, height: 14, borderRadius: 4, background: "#E5E7EB", border: `1px solid ${C.kraftDark}`, display: "inline-block" }} />
+          פנוי
+        </div>
+      </div>
+
+      {buildings.length === 0 ? (
+        <ShelfTag accent={C.steel}>
+          <p className="text-sm text-center" style={{ color: C.steel }}>עדיין אין חדרים. לחץ "➕ הוסף חדר" כדי להתחיל.</p>
+        </ShelfTag>
+      ) : (
+        <>
+          {reorderMode && (
+            <p className="text-xs mb-2 p-2 rounded-xl text-center" style={{ background: C.kraft, color: C.ink }}>
+              גרור חדר כדי לסדר בתוך הבניין, או גרור את שם הבניין (בצד) כדי להעביר בניין שלם. לסיום לחץ "✓ סיום סידור".
+            </p>
+          )}
+          {/* One scroll: every building is a row — name on the side, its rooms flowing next to it. */}
+          {buildingOrder.map((b) => {
+            const rooms = displayRooms.filter((r) => (r.building || "כללי") === b);
+            return (
+              <div key={b} style={{ display: "flex", gap: 8, alignItems: "flex-start", marginBottom: 14 }}>
+                <div
+                  data-building={b}
+                  onPointerDown={reorderMode ? (e) => startDragBuilding(e, b) : undefined}
+                  style={{
+                    width: 54, flexShrink: 0, fontWeight: 900, fontSize: 13,
+                    color: dragBuilding === b ? "#fff" : C.accent,
+                    textAlign: "center", background: dragBuilding === b ? C.accent : C.kraft,
+                    borderRadius: 10, padding: "8px 4px", wordBreak: "break-word", lineHeight: 1.2,
+                    touchAction: reorderMode ? "none" : "auto",
+                    cursor: reorderMode ? "grab" : "default",
+                    boxShadow: dragBuilding === b ? `0 0 0 2px ${C.ink}` : "none",
+                    opacity: dragBuilding && dragBuilding !== b ? 0.6 : 1,
+                  }}
+                >
+                  {reorderMode ? "⠿ " : ""}{b}
+                </div>
+                <div style={{ flex: 1, display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(58px, 1fr))", gap: 6 }}>
+                  {rooms.map((room) => {
+                    const openCount = openTasksForRoom(room).length;
+                    const hasOpen = openCount > 0;
+                    const isDragging = dragId === room.id;
+                    return (
+                      <button
+                        key={room.id}
+                        data-room-id={room.id}
+                        onClick={reorderMode ? undefined : () => setSheetRoom(room)}
+                        onPointerDown={reorderMode ? (e) => startDrag(e, room) : undefined}
+                        style={{
+                          position: "relative",
+                          background: hasOpen ? "#EF4444" : "#E5E7EB",
+                          color: hasOpen ? "#fff" : "#231F3D",
+                          border: `1px solid ${C.kraftDark}`,
+                          borderRadius: 12, padding: "8px 4px", fontWeight: 800, fontSize: 13,
+                          minHeight: 44, display: "flex", alignItems: "center", justifyContent: "center", textAlign: "center",
+                          touchAction: reorderMode ? "none" : "auto",
+                          opacity: isDragging ? 0.5 : 1,
+                          boxShadow: isDragging ? `0 0 0 2px ${C.ink}` : "none",
+                          cursor: reorderMode ? "grab" : "pointer",
+                        }}
+                      >
+                        {reorderMode && <span style={{ position: "absolute", top: 2, right: 4, fontSize: 11, opacity: 0.7 }}>⠿</span>}
+                        {openCount > 0 && !reorderMode && (
+                          <span style={{ position: "absolute", top: -6, left: -6, minWidth: 18, height: 18, borderRadius: 9, background: C.stamp, color: "#fff", fontSize: 11, fontWeight: 900, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 4px", border: "2px solid #fff" }}>
+                            {openCount}
+                          </span>
+                        )}
+                        {room.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </>
+      )}
+
+      {/* Add room sheet */}
+      {addOpen && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setAddOpen(false)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 520, borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}>
+            <div className="wh-display font-black text-lg mb-3" style={{ color: C.ink }}>➕ הוסף חדר</div>
+            <label className="text-xs font-bold" style={{ color: C.steel }}>בחר בניין</label>
+            {buildingOrder.length > 0 && (
+              <select
+                value={buildingChoice}
+                onChange={(e) => setBuildingChoice(e.target.value)}
+                className="w-full p-3 rounded-2xl border mb-3 mt-1"
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
+              >
+                {buildingOrder.map((b) => <option key={b} value={b}>{b}</option>)}
+                <option value="__new__">➕ בניין חדש…</option>
+              </select>
+            )}
+            {(buildingChoice === "__new__" || buildingOrder.length === 0) && (
+              <input
+                value={newBuilding}
+                onChange={(e) => setNewBuilding(e.target.value)}
+                placeholder="שם/מספר בניין חדש"
+                autoFocus
+                className="w-full p-3 rounded-2xl border mb-3 mt-1"
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
+              />
+            )}
+            <label className="text-xs font-bold" style={{ color: C.steel }}>מספר / שם חדר</label>
+            <input
+              value={newLabel}
+              onChange={(e) => setNewLabel(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") addRoom(); }}
+              placeholder="למשל 509"
+              className="w-full p-3 rounded-2xl border mb-3 mt-1"
+              style={{ borderColor: C.kraftDark, background: C.kraft }}
+            />
+            <div className="flex gap-2">
+              <button onClick={addRoom} className="flex-1 py-3 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>הוסף חדר</button>
+              <button onClick={() => setAddOpen(false)} className="px-4 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+            <p className="text-xs mt-2" style={{ color: C.steel }}>אפשר להוסיף כמה חדרים ברצף לאותו בניין — הבניין נשאר נבחר.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Import from locations sheet */}
+      {importOpen && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setImportOpen(false)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 560, maxHeight: "88vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}>
+            <div className="flex justify-between items-center mb-2">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>📍 הוספה מרשימת המקומות</div>
+              <button onClick={() => setImportOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+            {(!locations || locations.length === 0) ? (
+              <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין מקומות מוגדרים. הוסף אותם בניהול ← מקומות.</p>
+            ) : (
+              <>
+                {Array.from(new Set(locations.map((l) => l.group || "כללי"))).sort((a, b) => a.localeCompare(b, "he")).map((grp) => {
+                  const inGroup = locations.filter((l) => (l.group || "כללי") === grp);
+                  const selectableIds = inGroup.filter((l) => !existingKeys.has(locKey(l))).map((l) => l.id);
+                  const allSelected = selectableIds.length > 0 && selectableIds.every((id) => selectedLocs.includes(id));
+                  return (
+                    <div key={grp} className="mb-3">
+                      <div className="flex justify-between items-center mb-1">
+                        <div className="font-bold text-sm" style={{ color: C.accent }}>{grp}</div>
+                        {selectableIds.length > 0 && (
+                          <button
+                            onClick={() => setSelectedLocs((cur) => allSelected ? cur.filter((id) => !selectableIds.includes(id)) : Array.from(new Set([...cur, ...selectableIds])))}
+                            className="text-xs font-bold px-2 py-1 rounded-full"
+                            style={{ background: C.kraft, color: C.ink }}
+                          >
+                            {allSelected ? "בטל הכל" : "בחר הכל"}
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {inGroup.map((l) => {
+                          const already = existingKeys.has(locKey(l));
+                          const sel = selectedLocs.includes(l.id);
+                          return (
+                            <button
+                              key={l.id}
+                              disabled={already}
+                              onClick={() => setSelectedLocs((cur) => sel ? cur.filter((id) => id !== l.id) : [...cur, l.id])}
+                              className="px-3 py-1.5 rounded-full text-sm font-bold"
+                              style={{
+                                background: already ? "#E5E7EB" : sel ? C.sage : C.kraft,
+                                color: already ? C.steel : sel ? "#fff" : C.ink,
+                                border: `1px solid ${C.kraftDark}`,
+                                opacity: already ? 0.6 : 1,
+                              }}
+                            >
+                              {already ? "✓ " : sel ? "✓ " : ""}{l.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })}
+                <button onClick={importSelectedLocations} className="w-full py-3 rounded-2xl font-bold sticky bottom-0" style={{ background: C.sage, color: "#fff" }}>
+                  הוסף {selectedLocs.length > 0 ? `(${selectedLocs.length})` : ""} חדרים נבחרים
+                </button>
+                <p className="text-xs mt-2 text-center" style={{ color: C.steel }}>חדרים אפורים כבר קיימים במפה.</p>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Room status sheet */}
+      {sheetRoom && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setSheetRoom(null)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 520, borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}>
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>{sheetRoom.building || "כללי"} · {sheetRoom.label}</div>
+              <button onClick={() => setSheetRoom(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+
+            {(() => {
+              const openTasks = openTasksForRoom(sheetRoom);
+              return (
+                <div className="mb-3">
+                  <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>
+                    משימות פתוחות על החדר {openTasks.length > 0 ? `(${openTasks.length})` : ""}
+                  </div>
+                  {openTasks.length === 0 ? (
+                    <p className="text-sm py-2 px-3 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, color: C.steel }}>
+                      אין משימות פתוחות על החדר.
+                    </p>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      {openTasks.map((t) => (
+                        <div key={t.id} className="flex items-center gap-2 p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                          <button
+                            onClick={() => { setSheetRoom(null); onOpenTask && onOpenTask(t.id); }}
+                            className="flex-1 text-right"
+                            style={{ background: "none", border: "none", cursor: "pointer" }}
+                          >
+                            <div className="text-sm font-bold" style={{ color: C.accent, textDecoration: "underline" }}>{t.title}</div>
+                            {t.assignedToId ? null : <div className="text-xs" style={{ color: C.steel }}>לא משויך</div>}
+                          </button>
+                          <button
+                            onClick={() => markTaskDoneFromRoom(t.id)}
+                            className="px-3 py-1.5 rounded-full text-xs font-bold"
+                            style={{ background: C.sage, color: "#fff" }}
+                          >
+                            ✓ בוצע
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            <button onClick={() => { const r = sheetRoom; setSheetRoom(null); setTaskFormRoom(r); }} className="w-full py-3 rounded-2xl font-bold mb-2" style={{ background: C.accent, color: "#fff" }}>
+              ➕ צור משימה לחדר
+            </button>
+            <button onClick={() => createTaskForRoom(sheetRoom)} className="w-full py-2 rounded-2xl font-bold text-sm mb-2" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+              🧹 ניקיון מהיר
+            </button>
+            <button onClick={() => { if (typeof window !== "undefined" && !window.confirm("למחוק את החדר מהמפה?")) return; deleteRoom(sheetRoom.id); }} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>
+              🗑️ מחק חדר
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Full task form for a room — any kind of task, not just cleaning */}
+      {taskFormRoom && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setTaskFormRoom(null)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 560, maxHeight: "90vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}>
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-black text-lg" style={{ color: C.ink }}>➕ משימה חדשה — {taskFormRoom.building || "כללי"} · {taskFormRoom.label}</div>
+              <button onClick={() => setTaskFormRoom(null)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+            </div>
+            <NewTaskForm
+              users={users || []}
+              locations={locations}
+              taskCategories={taskCategories}
+              lockedLocationLabel={`${taskFormRoom.building || "כללי"} · ${taskFormRoom.label}`}
+              onSubmit={(payload) => createRoomTask(payload, taskFormRoom)}
+              onCancel={() => setTaskFormRoom(null)}
+            />
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUser, locations, taskCategories, focusTaskId, onFocusConsumed, newTaskSignal }) {
+  const [showNew, setShowNew] = useState(false);
+  useEffect(() => {
+    // Opened via the header "add task" button or the home-screen shortcut.
+    if (newTaskSignal) setShowNew(true);
+  }, [newTaskSignal]);
+  const [filter, setFilter] = useState("open");
+  const [employeeFilter, setEmployeeFilter] = useState("all");
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [editingTask, setEditingTask] = useState(null);
+  const [detailTask, setDetailTask] = useState(null);
+  const [resolveTask, setResolveTask] = useState(null); // task being closed → prompt for issue/fix
+  const [resIssue, setResIssue] = useState("");
+  const [resFix, setResFix] = useState("");
+
+  const cats = taskCategories || [];
+  const catById = (id) => cats.find((c) => c.id === id);
+
+  /* Arrived here by tapping a notification: open that task, and clear any filter
+     that would have hidden it (e.g. it's already done, or in another category). */
+  useEffect(() => {
+    if (!focusTaskId) return;
+    const t = tasks.find((x) => x.id === focusTaskId);
+    if (t) {
+      setFilter("all");
+      setEmployeeFilter("all");
+      setCategoryFilter("all");
+      setDetailTask(t);
+    } else {
+      showToast("המשימה לא נמצאה - ייתכן שנמחקה");
+    }
+    if (onFocusConsumed) onFocusConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusTaskId]);
+
+  // Every task mutation reads the freshest list from the server first, so a change made
+  // on another device (e.g. a worker closing a task) is never overwritten by this device's
+  // older in-memory copy. This is the main guard against "closed tasks reopening".
+  async function freshTasks() {
+    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) return latest; } catch (e) {}
+    return tasks;
+  }
+
+  async function saveTask(updated) {
+    const base = await freshTasks();
+    const next = base.map((t) => (t.id === updated.id ? updated : t));
+    await persistTasks(next);
+    setDetailTask(updated);
+  }
+
+  // Everything below operates on what this user is *allowed* to see, not on the full list.
+  const permitted = visibleTasksFor(currentUser, tasks);
+  const restricted = permitted.length !== tasks.length;
+
+  const visible = permitted
+    .filter((t) => (filter === "all" ? true : filter === "open" ? t.status !== "done" : t.status === "done"))
+    .filter((t) => (employeeFilter === "all" ? true : t.assignedToId === employeeFilter))
+    .filter((t) => (categoryFilter === "all" ? true : t.categoryId === categoryFilter))
+    .sort((a, b) => b.createdAt - a.createdAt);
+
+  async function saveEdit(updated) {
+    const base = await freshTasks();
+    const original = base.find((t) => t.id === updated.id);
+    const next = base.map((t) => (t.id === updated.id ? { ...t, ...updated } : t));
+    await persistTasks(next);
+    setEditingTask(null);
+    showToast("המשימה עודכנה");
+    if (notifyUser && original && updated.assignedToId !== original.assignedToId) {
+      notifyUser(updated.assignedToId, `שויכה אליך משימה: ${updated.title}`, { tab: "tasks", taskId: updated.id });
+    }
+  }
+
+  async function updateStatus(task, status, resolution) {
+    // Closing/reopening writes the whole task list, and last-writer-wins. If we build
+    // it from a stale in-memory copy, another device's save can revert this change (the
+    // task "reopens"). So read the freshest list first, then apply only this one task.
+    let base = tasks;
+    try {
+      const latest = await loadKey(KEYS.tasks, null);
+      if (Array.isArray(latest)) base = latest;
+    } catch (e) { /* offline - fall back to in-memory */ }
+    const res = resolution && (resolution.issue?.trim() || resolution.fix?.trim())
+      ? { issue: (resolution.issue || "").trim(), fix: (resolution.fix || "").trim(), at: Date.now(), by: currentUser?.name || "" }
+      : null;
+    const next = base.map((t) =>
+      t.id === task.id
+        ? { ...t, status, completedAt: status === "done" ? Date.now() : null, statusAt: Date.now(), ...(res ? { resolution: res } : {}) }
+        : t
+    );
+    await persistTasks(next);
+  }
+
+  async function reassign(task, assignedToId) {
+    const base = await freshTasks();
+    const next = base.map((t) => (t.id === task.id ? { ...t, assignedToId } : t));
+    await persistTasks(next);
+    if (notifyUser && assignedToId !== task.assignedToId) {
+      notifyUser(assignedToId, `שויכה אליך משימה: ${task.title}`, { tab: "tasks", taskId: task.id });
+    }
+  }
+
+  async function deleteTask(task) {
+    const base = await freshTasks();
+    const next = base.filter((t) => t.id !== task.id);
+    await persistTasks(next);
+    showToast("המשימה נמחקה");
+  }
+
+  async function addTask(newTask) {
+    const { notifyNow, ...rest } = newTask;
+    const created = { ...rest, id: genId(), createdAt: Date.now(), createdBy: currentUser.name, createdById: currentUser.id, status: "open", comments: [] };
+    const next = [...(await freshTasks()), created];
+    await persistTasks(next);
+    setShowNew(false);
+    showToast("המשימה נוצרה");
+    if (notifyNow && newTask.assignedToId && notifyUser) notifyUser(newTask.assignedToId, `משימה חדשה: ${newTask.title}`, { tab: "tasks", taskId: created.id });
+  }
+
+  async function notifyWhatsapp(task, mode = "share") {
+    const user = users.find((u) => u.id === task.assignedToId);
+    if (!user || !user.phone) {
+      showToast("לא הוגדר מספר טלפון לעובד זה");
+      return;
+    }
+    const priorityLabel = { low: "נמוכה", normal: "רגילה", urgent: "דחופה" }[task.priority] || "רגילה";
+    const cat = catById(task.categoryId);
+    const text = `🛠️ משימה/תקלה חדשה\nכותרת: ${task.title}${cat ? `\nקטגוריה: ${cat.name}` : ""}${task.location ? `\nמקום: ${task.location}` : ""}\nפירוט: ${task.description || "—"}\nעדיפות: ${priorityLabel}`;
+
+    // Prefer the location photo if the task itself has none.
+    const loc = (locations || []).find((l) => l.id === task.locationId);
+    const photo = task.imageData || loc?.imageData || null;
+
+    const waUrl = `https://wa.me/${user.phone.replace(/\D/g, "")}?text=${encodeURIComponent(text)}`;
+
+    // "chat" mode: open this employee's chat directly. WhatsApp's wa.me protocol
+    // has no media parameter, so this is always text-only - by design.
+    if (mode === "chat") {
+      window.open(waUrl, "_blank");
+      return;
+    }
+
+    if (!photo) {
+      showToast("למשימה הזו אין תמונה מצורפת - נשלח טקסט בלבד");
+      window.open(waUrl, "_blank");
+      return;
+    }
+
+    // IMPORTANT: navigator.share() must be invoked inside the user gesture.
+    // dataUrlToFile is synchronous so the gesture survives.
+    let file = null;
+    try {
+      file = dataUrlToFile(photo, "task.jpg");
+    } catch (e) {
+      console.error("could not build file from image data", e);
+      showToast("שגיאה: לא ניתן לקרוא את התמונה השמורה");
+    }
+
+    // Don't trust navigator.canShare here: inside an installed PWA (WebAPK) it often
+    // reports false for files even though the share actually works. The real test is
+    // to just try it. We attempt richest-first, then progressively simpler payloads.
+    if (file && navigator.share) {
+      const attempts = [
+        { files: [file], text, title: "משימה" },
+        { files: [file], text },
+        { files: [file] },
+      ];
+      for (const payload of attempts) {
+        // Skip a payload the browser can explicitly reject up front, but never let
+        // a *missing* canShare stop us.
+        if (navigator.canShare && !navigator.canShare(payload)) continue;
+        try {
+          await navigator.share(payload);
+          if (!payload.text) {
+            try { await navigator.clipboard.writeText(text); } catch (_) {}
+            showToast("התמונה שותפה. הטקסט הועתק - הדבק כהערה");
+          }
+          return; // success
+        } catch (e) {
+          if (e && e.name === "AbortError") return; // user closed the sheet
+          console.error("share attempt failed", payload, e);
+          // try the next, simpler payload
+        }
+      }
+    }
+
+    // Nothing worked (or no share support): download the photo + copy the text,
+    // then open the chat so the image can be attached manually.
+    if (!navigator.share) {
+      showToast("הדפדפן לא תומך בשיתוף - התמונה תרד לצירוף ידני");
+    }
+    try { await navigator.clipboard.writeText(text); } catch (_) {}
+    downloadDataUrl(photo, `task-${task.id}.jpg`);
+    window.open(waUrl, "_blank");
+    showToast("התמונה ירדה והטקסט הועתק - צרף את התמונה בוואטסאפ ידנית");
+  }
+
+  return (
+    <div>
+      <div className="flex justify-between items-center mb-3">
+        <h2 className="wh-display font-black text-lg" style={{ color: C.ink }}>משימות ותיקונים</h2>
+        <button
+          onClick={() => setShowNew(true)}
+          className="px-3 py-2 rounded-2xl text-sm font-bold"
+          style={{ background: C.brand, color: "#fff" }}
+        >
+          + משימה חדשה
+        </button>
+      </div>
+
+      <div className="flex gap-2 mb-4 items-center flex-wrap">
+        {[["open", "פתוחות"], ["done", "סגורות"], ["all", "הכל"]].map(([val, label]) => (
+          <button
+            key={val}
+            onClick={() => setFilter(val)}
+            className="px-3 py-1 rounded-2xl text-sm font-bold"
+            style={{
+              background: filter === val ? C.brand : C.kraft,
+              color: filter === val ? "#fff" : C.ink,
+            }}
+          >
+            {label}
+          </button>
+        ))}
+        {(isManager(currentUser) || restricted === false || (currentUser.permissions?.taskScope || "own") !== "own") && (
+          <select
+            value={employeeFilter}
+            onChange={(e) => setEmployeeFilter(e.target.value)}
+            className="px-2 py-1 rounded-2xl text-sm border"
+            style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}
+          >
+            <option value="all">כל העובדים</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>{u.name}</option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {restricted && (
+        <p className="text-xs mb-3 px-1" style={{ color: C.steel }}>
+          {(currentUser.permissions?.taskScope || "own") === "own"
+            ? "מוצגות המשימות שהוקצו לך."
+            : "מוצגות המשימות שלך והקטגוריות שנפתחו לך."}
+        </p>
+      )}
+
+      {cats.length > 0 && (
+        <div className="flex gap-2 overflow-x-auto pb-2 mb-3">
+          <button
+            onClick={() => setCategoryFilter("all")}
+            className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
+            style={{
+              background: categoryFilter === "all" ? C.brand : C.kraft,
+              color: categoryFilter === "all" ? "#fff" : C.ink,
+              border: `1px solid ${C.kraftDark}`,
+            }}
+          >
+            כל הקטגוריות
+          </button>
+          {cats.map((c) => {
+            const col = categoryColor(c.name);
+            const active = categoryFilter === c.id;
+            const count = permitted.filter(
+              (t) => t.categoryId === c.id && (filter === "all" ? true : filter === "open" ? t.status !== "done" : t.status === "done")
+            ).length;
+            return (
+              <button
+                key={c.id}
+                onClick={() => setCategoryFilter(c.id)}
+                className="px-3 py-1.5 rounded-full text-sm font-bold whitespace-nowrap"
+                style={{
+                  background: active ? col : C.kraft,
+                  color: active ? "#fff" : col,
+                  border: `1.5px solid ${col}`,
+                }}
+              >
+                {c.icon || "📋"} {c.name}{count > 0 ? ` (${count})` : ""}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {showNew && (
+        <NewTaskForm users={users} onSubmit={addTask} onCancel={() => setShowNew(false)} locations={locations} taskCategories={cats} />
+      )}
+
+      {detailTask && (
+        <TaskDetail
+          task={tasks.find((t) => t.id === detailTask.id) || detailTask}
+          users={users}
+          currentUser={currentUser}
+          catById={catById}
+          onSave={saveTask}
+          onClose={() => setDetailTask(null)}
+        />
+      )}
+
+      {editingTask && (
+        <EditTaskForm
+          task={editingTask}
+          users={users}
+          locations={locations}
+          taskCategories={cats}
+          onSubmit={saveEdit}
+          onCancel={() => setEditingTask(null)}
+        />
+      )}
+
+      {resolveTask && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setResolveTask(null)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 480, borderRadius: "20px 20px 0 0", padding: 18, margin: "0 auto" }}>
+            <div className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>סגירת משימה</div>
+            <div className="text-sm mb-3" style={{ color: C.steel }}>{resolveTask.title}</div>
+
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מה הייתה התקלה?</label>
+            <textarea value={resIssue} onChange={(e) => setResIssue(e.target.value)} rows={2} placeholder="תיאור התקלה (אופציונלי)" className="w-full p-2 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>איך תוקן / מה נעשה?</label>
+            <textarea value={resFix} onChange={(e) => setResFix(e.target.value)} rows={2} placeholder="תיאור הפתרון (אופציונלי)" className="w-full p-2 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => { const t = resolveTask; setResolveTask(null); updateStatus(t, "done", { issue: resIssue, fix: resFix }); showToast("המשימה נסגרה ✓"); }}
+                className="flex-1 py-2.5 rounded-2xl font-bold text-sm"
+                style={{ background: C.sage, color: "#fff" }}
+              >
+                ✓ שמור וסגור
+              </button>
+              <button
+                onClick={() => { const t = resolveTask; setResolveTask(null); updateStatus(t, "done"); }}
+                className="px-4 py-2.5 rounded-2xl font-bold text-sm"
+                style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+              >
+                סגור בלי פירוט
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {visible.length === 0 && (
+          <p className="text-sm text-center py-8" style={{ color: C.steel }}>אין משימות להצגה</p>
+        )}
+        {visible.map((t) => {
+          const assignee = users.find((u) => u.id === t.assignedToId);
+          const accent = t.priority === "urgent" ? C.stamp : t.priority === "low" ? C.sage : C.mustard;
+          return (
+            <ShelfTag key={t.id} accent={accent}>
+              <div className="flex justify-between items-start">
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <div className="wh-display font-bold" style={{ color: C.ink }}>{t.title}</div>
+                    {(() => {
+                      const cat = catById(t.categoryId);
+                      if (!cat) return null;
+                      const col = categoryColor(cat.name);
+                      return (
+                        <span
+                          className="text-xs px-2 py-0.5 rounded-full font-bold whitespace-nowrap"
+                          style={{ background: col, color: "#fff" }}
+                        >
+                          {cat.icon || "📋"} {cat.name}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                  {t.description && <div className="text-sm mt-1" style={{ color: C.steel }}>{t.description}</div>}
+                  {t.location && (
+                    <div className="text-xs mt-1 font-bold" style={{ color: C.ink }}>📍 {t.location}</div>
+                  )}
+                  {t.imageData ? (
+                    <img src={t.imageData} alt="" className="mt-2 rounded-2xl" style={{ maxHeight: 120, maxWidth: 180 }} />
+                  ) : (
+                    (() => {
+                      const loc = (locations || []).find((l) => l.id === t.locationId);
+                      return loc?.imageData ? (
+                        <img src={loc.imageData} alt="" className="mt-2 rounded-2xl" style={{ maxHeight: 120, maxWidth: 180 }} />
+                      ) : null;
+                    })()
+                  )}
+                  <div className="text-xs mt-2" style={{ color: C.steel }}>
+                    שויך ל: <b style={{ color: C.ink }}>{assignee?.name || "לא משויך"}</b> · נוצר ע"י {t.createdBy}
+                    {t.createdAt && <> · 🕐 {fmtStamp(t.createdAt)}</>}
+                  </div>
+
+                  {t.followUpAt && t.status !== "done" && (
+                    <div
+                      className="text-xs mt-2 inline-block px-2 py-1 rounded-full font-bold"
+                      style={{
+                        background: t.followUpAt < Date.now() ? C.stamp : C.mustard,
+                        color: t.followUpAt < Date.now() ? "#fff" : C.ink,
+                      }}
+                    >
+                      ⏰ {t.followUpAt < Date.now() ? "היה אמור: " : "נקבע ל-"}{fmtDateTime(t.followUpAt)} ({fmtRelative(t.followUpAt)})
+                    </div>
+                  )}
+
+                  {(t.comments || []).length > 0 && (
+                    <div className="text-xs mt-2 p-2 rounded-xl" style={{ background: C.paper, color: C.steel }}>
+                      <b style={{ color: C.ink }}>{t.comments[t.comments.length - 1].userName}:</b>{" "}
+                      {t.comments[t.comments.length - 1].text.slice(0, 80)}
+                      {t.comments[t.comments.length - 1].text.length > 80 && "..."}
+                    </div>
+                  )}
+                </div>
+                <span
+                  className="text-xs px-2 py-1 rounded-2xl font-bold whitespace-nowrap"
+                  style={{ background: t.status === "done" ? C.sage : C.kraftDark, color: t.status === "done" ? "#fff" : C.ink }}
+                >
+                  {t.status === "done" ? "סגור" : t.status === "in_progress" ? "בטיפול" : "פתוח"}
+                </span>
+              </div>
+              <div className="flex gap-2 mt-3 flex-wrap">
+                {t.status !== "in_progress" && t.status !== "done" && (
+                  <button onClick={() => updateStatus(t, "in_progress")} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.mustard, color: "#fff" }}>
+                    התחל טיפול
+                  </button>
+                )}
+                {t.status !== "done" && (
+                  <button onClick={() => { setResolveTask(t); setResIssue(""); setResFix(""); }} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>
+                    סמן כסגור
+                  </button>
+                )}
+                {t.status === "done" && (
+                  <button onClick={() => updateStatus(t, "open")} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: "transparent", color: C.steel, border: `1.5px solid ${C.kraftDark}` }}>
+                    ↩︎ החזר לפתוחה
+                  </button>
+                )}
+                <button
+                  onClick={() => setDetailTask(t)}
+                  className="px-3 py-1 rounded-2xl text-sm font-bold"
+                  style={{ background: C.mustard, color: C.ink }}
+                >
+                  💬 פרטים
+                  {(t.comments || []).length > 0 && ` (${(t.comments || []).length})`}
+                </button>
+                <button
+                  onClick={() => setEditingTask(t)}
+                  className="px-3 py-1 rounded-2xl text-sm font-bold"
+                  style={{ background: C.accent, color: "#fff" }}
+                >
+                  ✏️ ערוך
+                </button>
+                {(() => {
+                  const loc = (locations || []).find((l) => l.id === t.locationId);
+                  const hasPhoto = !!(t.imageData || loc?.imageData);
+                  return (
+                    <>
+                      <button
+                        onClick={() => notifyWhatsapp(t, "chat")}
+                        className="px-3 py-1 rounded-2xl text-sm font-bold"
+                        style={{ background: "#25D366", color: "#fff" }}
+                      >
+                        💬 שלח לצ'אט
+                      </button>
+                      {hasPhoto && (
+                        <button
+                          onClick={() => notifyWhatsapp(t, "share")}
+                          className="px-3 py-1 rounded-2xl text-sm font-bold"
+                          style={{ background: C.accent, color: "#fff" }}
+                        >
+                          🖼️ שתף עם תמונה
+                        </button>
+                      )}
+                    </>
+                  );
+                })()}
+                <button
+                  onClick={() => { if (window.confirm("למחוק את המשימה הזו?")) deleteTask(t); }}
+                  className="px-3 py-1 rounded-2xl text-sm font-bold"
+                  style={{ background: C.stamp, color: "#fff" }}
+                >
+                  מחק
+                </button>
+              </div>
+              {t.status === "done" && t.resolution && (t.resolution.issue || t.resolution.fix) && (
+                <div className="mt-2 p-2 rounded-xl text-xs" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, color: C.ink }}>
+                  {t.resolution.issue && <div><b>תקלה:</b> {t.resolution.issue}</div>}
+                  {t.resolution.fix && <div><b>טופל:</b> {t.resolution.fix}</div>}
+                  <div style={{ color: C.steel, marginTop: 2 }}>
+                    {t.resolution.by ? `נסגר ע"י ${t.resolution.by}` : ""}
+                    {t.resolution.at ? ` · ${new Date(t.resolution.at).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" })}` : ""}
+                  </div>
+                </div>
+              )}
+            </ShelfTag>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Convert a data URL to a File *synchronously*.
+ * This matters: navigator.share() only works inside a user gesture, and awaiting
+ * fetch(dataUrl) first would break the gesture chain and make the share fail.
+ */
+/* Renders the weekly menu as a PNG mirroring the print layout (rows = dish types,
+   columns = days, right-to-left). Drawn straight onto a canvas so the app needs
+   no extra npm dependency - the whole feature stays inside this file. */
+function renderWeeklyMenuPng({ title, subtitle, days, types, slots, weeklyMenu, menuItems, weekStart }) {
+  const S = 2;                 // supersample so text stays sharp on phone screens
+  const PAD = 30;
+  const LABEL_W = 140;
+  const COL_W = 155;
+  const HEAD_H = 58;
+  const ROW_PAD = 18;
+  const LINE_H = 20;
+  const TITLE_BLOCK = 84;
+  const SLOT_H = 44;
+  const TABLE_GAP = 28;
+
+  const FONT_TITLE = "bold 26px Arial, sans-serif";
+  const FONT_SUB = "15px Arial, sans-serif";
+  const FONT_SLOT = "bold 19px Arial, sans-serif";
+  const FONT_DAY = "bold 17px Arial, sans-serif";
+  const FONT_DATE = "12px Arial, sans-serif";
+  const FONT_ROWHEAD = "bold 15px Arial, sans-serif";
+  const FONT_CELL = "15px Arial, sans-serif";
+
+  const BLUE = "#2E86C4";
+  const ROWHEAD_BG = "#D6E7F5";
+  const STRIPE = "#F5F9FD";
+  const BORDER = "#444444";
+
+  const width = PAD * 2 + LABEL_W + COL_W * days.length;
+  const meas = document.createElement("canvas").getContext("2d");
+
+  function wrapText(text, maxW, font) {
+    meas.font = font;
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    if (!words.length) return [];
+    const lines = [];
+    let cur = words[0];
+    for (let i = 1; i < words.length; i++) {
+      const test = `${cur} ${words[i]}`;
+      if (meas.measureText(test).width <= maxW) cur = test;
+      else { lines.push(cur); cur = words[i]; }
+    }
+    lines.push(cur);
+    return lines;
+  }
+
+  // ---- Plan the layout first so the canvas can be sized exactly. ----
+  const plan = [];
+  slots.forEach(([slotKey, slotLabel]) => {
+    const slotTypes = types.filter((dt) => !dt.slot || dt.slot === slotKey);
+    const used = days.some(([dayKey]) => slotTypes.some((dt) => weeklyMenu[dayKey]?.[slotKey]?.[dt.id]));
+    if (!used) return; // skip a meal nobody planned, same as the printout
+
+    const rows = slotTypes.map((dt) => {
+      const cells = days.map(([dayKey]) => {
+        const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+        const m = menuItems.find((mi) => mi.id === id);
+        return m ? wrapText(m.name, COL_W - 14, FONT_CELL) : [];
+      });
+      const headLines = wrapText(dt.name, LABEL_W - 16, FONT_ROWHEAD);
+      const maxLines = Math.max(1, headLines.length, ...cells.map((c) => c.length || 1));
+      return { headLines, cells, height: maxLines * LINE_H + ROW_PAD };
+    });
+
+    plan.push({ slotLabel, rows });
+  });
+
+  if (!plan.length) return "";
+
+  let height = PAD + TITLE_BLOCK;
+  plan.forEach((t) => {
+    height += SLOT_H + HEAD_H + t.rows.reduce((s, r) => s + r.height, 0) + TABLE_GAP;
+  });
+  height += PAD - TABLE_GAP;
+
+  // ---- Draw ----
+  const canvas = document.createElement("canvas");
+  canvas.width = width * S;
+  canvas.height = height * S;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(S, S);
+  try { ctx.direction = "rtl"; } catch (e) { /* older browsers ignore this */ }
+
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+
+  ctx.fillStyle = "#111111";
+  ctx.font = FONT_TITLE;
+  ctx.fillText(title, width / 2, PAD + 18);
+  ctx.fillStyle = "#666666";
+  ctx.font = FONT_SUB;
+  ctx.fillText(subtitle, width / 2, PAD + 48);
+
+  // Rightmost column is the dish-type label; days run right-to-left after it.
+  const labelX = width - PAD - LABEL_W;
+  const colX = (i) => width - PAD - LABEL_W - (i + 1) * COL_W;
+
+  function cellBox(x, y, w, h, bg) {
+    if (bg) { ctx.fillStyle = bg; ctx.fillRect(x, y, w, h); }
+    ctx.strokeStyle = BORDER;
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+  }
+
+  function drawLines(lines, cx, cy, font, color) {
+    ctx.font = font;
+    ctx.fillStyle = color;
+    const total = lines.length;
+    lines.forEach((ln, i) => {
+      ctx.fillText(ln, cx, cy - ((total - 1) * LINE_H) / 2 + i * LINE_H);
+    });
+  }
+
+  let y = PAD + TITLE_BLOCK;
+
+  plan.forEach((table) => {
+    ctx.textAlign = "right";
+    ctx.font = FONT_SLOT;
+    ctx.fillStyle = "#111111";
+    ctx.fillText(`ארוחת ${table.slotLabel}`, width - PAD, y + SLOT_H / 2);
+    ctx.textAlign = "center";
+    y += SLOT_H;
+
+    // header: empty corner over the label column, then a day per column
+    cellBox(labelX, y, LABEL_W, HEAD_H, BLUE);
+    days.forEach(([, label], i) => {
+      const d = parseIsoLocal(weekStart);
+      d.setDate(d.getDate() + i);
+      const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
+      const x = colX(i);
+      cellBox(x, y, COL_W, HEAD_H, BLUE);
+      ctx.fillStyle = "#FFFFFF";
+      ctx.font = FONT_DAY;
+      ctx.fillText(label, x + COL_W / 2, y + HEAD_H / 2 - 8);
+      ctx.font = FONT_DATE;
+      ctx.fillText(dateStr, x + COL_W / 2, y + HEAD_H / 2 + 12);
+    });
+    y += HEAD_H;
+
+    table.rows.forEach((row, rIdx) => {
+      const h = row.height;
+      cellBox(labelX, y, LABEL_W, h, ROWHEAD_BG);
+      ctx.textAlign = "right";
+      drawLines(row.headLines, width - PAD - 10, y + h / 2, FONT_ROWHEAD, "#111111");
+      ctx.textAlign = "center";
+
+      const stripe = rIdx % 2 === 1 ? STRIPE : "#FFFFFF";
+      row.cells.forEach((lines, i) => {
+        const x = colX(i);
+        cellBox(x, y, COL_W, h, stripe);
+        if (lines.length) drawLines(lines, x + COL_W / 2, y + h / 2, FONT_CELL, "#111111");
+      });
+      y += h;
+    });
+
+    y += TABLE_GAP;
+  });
+
+  return canvas.toDataURL("image/png");
+}
+
+function dataUrlToFile(dataUrl, filename) {
+  const [header, base64] = String(dataUrl).split(",");
+  const mime = (header.match(/:(.*?);/) || [])[1] || "image/jpeg";
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new File([bytes], filename, { type: mime });
+}
+
+function downloadDataUrl(dataUrl, filename) {
+  try {
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  } catch (e) {
+    console.error("download failed", e);
+    window.open(dataUrl, "_blank");
+  }
+}
+
+function resizeImageToDataUrl(file, maxDim = 900, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxDim) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        } else if (height > maxDim) {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL("image/jpeg", quality));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/* Draw/annotate on an image: opens the photo on a canvas and lets you mark it with a
+   finger/pen, then flattens the drawing onto the image and returns a new data URL. */
+function ImageAnnotator({ src, onSave, onCancel }) {
+  const canvasRef = useRef(null);
+  const imgRef = useRef(null);
+  const drawing = useRef(false);
+  const [color, setColor] = useState("#E4572E");
+  const COLORS = ["#E4572E", "#2660A4", "#2E8B57", "#111111", "#F4C542"];
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    const img = new Image();
+    img.onload = () => {
+      const maxDim = 1000;
+      let { width, height } = img;
+      if (width > height && width > maxDim) { height = Math.round((height * maxDim) / width); width = maxDim; }
+      else if (height > maxDim) { width = Math.round((width * maxDim) / height); height = maxDim; }
+      canvas.width = width;
+      canvas.height = height;
+      ctx.drawImage(img, 0, 0, width, height);
+      imgRef.current = img;
+    };
+    img.src = src;
+  }, [src]);
+
+  function posOf(e) {
+    const canvas = canvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const p = e.touches ? e.touches[0] : e;
+    return {
+      x: (p.clientX - rect.left) * (canvas.width / rect.width),
+      y: (p.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  }
+  function start(e) {
+    e.preventDefault();
+    drawing.current = true;
+    const ctx = canvasRef.current.getContext("2d");
+    const { x, y } = posOf(e);
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(3, Math.round(canvasRef.current.width / 130));
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+  }
+  function move(e) {
+    if (!drawing.current) return;
+    e.preventDefault();
+    const ctx = canvasRef.current.getContext("2d");
+    const { x, y } = posOf(e);
+    ctx.lineTo(x, y);
+    ctx.stroke();
+  }
+  function end() { drawing.current = false; }
+  function clearDrawing() {
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d");
+    if (imgRef.current) ctx.drawImage(imgRef.current, 0, 0, canvas.width, canvas.height);
+  }
+
+  return (
+    <div className="fixed inset-0 z-[60] flex flex-col" style={{ background: "rgba(0,0,0,0.9)", padding: 12 }}>
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        {COLORS.map((c) => (
+          <button key={c} onClick={() => setColor(c)} style={{ width: 30, height: 30, borderRadius: "50%", background: c, border: color === c ? "3px solid #fff" : "2px solid rgba(255,255,255,0.5)" }} />
+        ))}
+        <button onClick={clearDrawing} className="px-3 py-1.5 rounded-xl text-sm font-bold" style={{ background: "#fff", color: "#111", marginRight: "auto" }}>נקה ציור</button>
+      </div>
+      <div className="flex-1 flex items-center justify-center overflow-auto">
+        <canvas
+          ref={canvasRef}
+          onPointerDown={start}
+          onPointerMove={move}
+          onPointerUp={end}
+          onPointerLeave={end}
+          style={{ maxWidth: "100%", maxHeight: "70vh", touchAction: "none", borderRadius: 8, background: "#fff" }}
+        />
+      </div>
+      <div className="flex gap-2 mt-2">
+        <button onClick={() => onSave(canvasRef.current.toDataURL("image/jpeg", 0.7))} className="flex-1 py-3 rounded-2xl font-bold" style={{ background: "#2E8B57", color: "#fff" }}>✓ שמור סימון</button>
+        <button onClick={onCancel} className="px-6 py-3 rounded-2xl font-bold" style={{ background: "#fff", color: "#111" }}>ביטול</button>
+      </div>
+    </div>
+  );
+}
+
+/* Searchable location picker: a button that opens a bottom sheet with a search box and
+   grouped results. Replaces the long native <select> when there are many rooms. */
+function LocationPicker({ locations, value, onChange }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+
+  const selected = (locations || []).find((l) => l.id === value);
+
+  const groups = Object.entries(
+    (locations || [])
+      .filter((loc) => !q || loc.name.includes(q) || (loc.group || "").includes(q))
+      .reduce((acc, loc) => {
+        const g = loc.group || "אחר";
+        (acc[g] = acc[g] || []).push(loc);
+        return acc;
+      }, {})
+  );
+
+  return (
+    <>
+      <button
+        onClick={() => { setOpen(true); setQ(""); }}
+        className="p-2 rounded-2xl border w-full text-right flex justify-between items-center"
+        style={{ borderColor: C.kraftDark, background: C.kraft, color: selected ? C.ink : C.steel }}
+      >
+        <span>{selected ? `📍 ${selected.name}` : "בחר מקום (אופציונלי)"}</span>
+        <span style={{ color: C.steel }}>▾</span>
+      </button>
+
+      {open && (
+        <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.5)" }} onClick={() => setOpen(false)}>
+          <div
+            className="w-full wh-body"
+            style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "80vh", overflowY: "auto", padding: 16 }}
+            onClick={(e) => e.stopPropagation()}
+            dir="rtl"
+          >
+            <div className="flex justify-between items-center mb-3">
+              <div className="wh-display font-bold" style={{ color: C.ink }}>בחר מקום</div>
+              <button onClick={() => setOpen(false)} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>
+                סגור
+              </button>
+            </div>
+
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="חיפוש מקום או חדר... (למשל: 207, מטבח)"
+              className="w-full p-3 rounded-2xl border mb-3"
+              style={{ borderColor: C.kraftDark, background: C.kraft }}
+              autoFocus
+            />
+
+            <button
+              onClick={() => { onChange(""); setOpen(false); }}
+              className="w-full p-2.5 rounded-2xl text-sm font-bold mb-2 text-right"
+              style={{ background: C.kraft, color: C.steel, border: `1px solid ${C.kraftDark}` }}
+            >
+              — ללא מקום —
+            </button>
+
+            {groups.length === 0 && (
+              <p className="text-sm text-center py-6" style={{ color: C.steel }}>לא נמצא מקום תואם</p>
+            )}
+
+            {groups.map(([g, items]) => (
+              <div key={g} className="mb-3">
+                <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>{g}</div>
+                <div className="flex flex-col gap-1.5">
+                  {items.map((loc) => (
+                    <button
+                      key={loc.id}
+                      onClick={() => { onChange(loc.id); setOpen(false); }}
+                      className="p-2.5 rounded-2xl text-right font-bold text-sm flex items-center gap-2"
+                      style={{
+                        background: value === loc.id ? C.sage : C.kraft,
+                        color: value === loc.id ? "#fff" : C.ink,
+                        border: `1px solid ${value === loc.id ? C.sage : C.kraftDark}`,
+                      }}
+                    >
+                      {loc.imageData && <img src={loc.imageData} alt="" style={{ width: 32, height: 32, borderRadius: 8, objectFit: "cover" }} />}
+                      {value === loc.id && "✓ "}{loc.name}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCancel }) {
+  const [title, setTitle] = useState(task.title || "");
+  const [description, setDescription] = useState(task.description || "");
+  const [assignedToId, setAssignedToId] = useState(task.assignedToId || users[0]?.id || "");
+  const [priority, setPriority] = useState(task.priority || "normal");
+  const [categoryId, setCategoryId] = useState(task.categoryId || "");
+  const [locationId, setLocationId] = useState(task.locationId || "");
+  const [imageData, setImageData] = useState(task.imageData || null);
+  const [annotating, setAnnotating] = useState(false);
+
+  const locationGroups = Object.entries(
+    (locations || []).reduce((acc, loc) => {
+      const g = loc.group || "אחר";
+      (acc[g] = acc[g] || []).push(loc);
+      return acc;
+    }, {})
+  );
+
+  function submit() {
+    if (!title.trim()) return;
+    const loc = (locations || []).find((l) => l.id === locationId);
+    onSubmit({
+      id: task.id,
+      title: title.trim(),
+      description,
+      assignedToId,
+      priority,
+      categoryId,
+      locationId,
+      location: loc ? loc.name : "",
+      imageData,
+    });
+  }
+
+  const originalAssignee = users.find((u) => u.id === task.assignedToId);
+  const changedAssignee = assignedToId !== task.assignedToId;
+
+  return (
+    <ShelfTag accent={C.accent} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>עריכת משימה</div>
+
+      <input
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="כותרת"
+        className="p-2 rounded-2xl border"
+        style={{ borderColor: C.kraftDark }}
+        autoFocus
+      />
+      <textarea
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+        placeholder="פירוט"
+        className="p-2 rounded-2xl border"
+        style={{ borderColor: C.kraftDark }}
+        rows={2}
+      />
+
+      <div>
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>קטגוריה</label>
+        <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+          <option value="">ללא קטגוריה</option>
+          {(taskCategories || []).map((c) => (
+            <option key={c.id} value={c.id}>{c.icon || "📋"} {c.name}</option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שיוך לעובד</label>
+        <select value={assignedToId} onChange={(e) => setAssignedToId(e.target.value)} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+          {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+        </select>
+        {changedAssignee && (
+          <p className="text-xs mt-1" style={{ color: C.accent }}>
+            העברה מ{originalAssignee?.name || "לא משויך"} — תישלח לו התראה על המשימה.
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מקום</label>
+        <select value={locationId} onChange={(e) => setLocationId(e.target.value)} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+          <option value="">ללא מקום</option>
+          {locationGroups.map(([g, items]) => (
+            <optgroup key={g} label={g}>
+              {items.map((loc) => (
+                <option key={loc.id} value={loc.id}>{loc.name}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+
+      <select value={priority} onChange={(e) => setPriority(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
+        <option value="low">עדיפות נמוכה</option>
+        <option value="normal">עדיפות רגילה</option>
+        <option value="urgent">עדיפות דחופה</option>
+      </select>
+
+      <div>
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תמונה</label>
+        {imageData ? (
+          <div className="flex flex-col gap-2">
+            <img src={imageData} alt="" className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%", objectFit: "cover" }} />
+            <div className="flex gap-2 flex-wrap">
+              <button onClick={() => setAnnotating(true)} className="flex-1 text-center py-2 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
+                ✏️ סמן / צייר
+              </button>
+              <label className="flex-1 text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                🖼️ החלף מהגלריה
+                <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
+              </label>
+              <button onClick={() => setImageData(null)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>🗑️ הסר</button>
+            </div>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <label className="flex-1 block text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px dashed ${C.kraftDark}` }}>
+              🖼️ מהגלריה
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
+            </label>
+            <label className="flex-1 block text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px dashed ${C.kraftDark}` }}>
+              📷 מצלמה
+              <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
+            </label>
+          </div>
+        )}
+      </div>
+      {annotating && imageData && (
+        <ImageAnnotator src={imageData} onSave={(d) => { setImageData(d); setAnnotating(false); }} onCancel={() => setAnnotating(false)} />
+      )}
+
+      <div className="flex gap-2">
+        <button onClick={submit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
+          שמור שינויים
+        </button>
+        <button onClick={onCancel} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
+          ביטול
+        </button>
+      </div>
+    </ShelfTag>
+  );
+}
+
+function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, lockedLocationLabel }) {
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [assignedToId, setAssignedToId] = useState(users[0]?.id || "");
+  const [priority, setPriority] = useState("normal");
+  const [categoryId, setCategoryId] = useState("");
+  const [locationId, setLocationId] = useState("");
+  const [imageData, setImageData] = useState(null);
+  const [annotating, setAnnotating] = useState(false);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [remindDate, setRemindDate] = useState("");
+  const [remindTime, setRemindTime] = useState("09:00");
+  const [notifyNow, setNotifyNow] = useState(false);
+
+  async function handleImage(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImageBusy(true);
+    try {
+      const dataUrl = await resizeImageToDataUrl(file);
+      setImageData(dataUrl);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setImageBusy(false);
+    }
+  }
+
+  return (
+    <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+      <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="כותרת" className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }} autoFocus />
+      <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="פירוט (אופציונלי)" className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }} rows={2} />
+      {lockedLocationLabel ? (
+        <div className="p-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+          📍 {lockedLocationLabel}
+        </div>
+      ) : (
+        <>
+          <LocationPicker locations={locations} value={locationId} onChange={setLocationId} />
+          {locationId && (() => {
+            const loc = (locations || []).find((l) => l.id === locationId);
+            return loc?.imageData ? (
+              <img src={loc.imageData} alt="" className="rounded-2xl" style={{ maxHeight: 100 }} />
+            ) : null;
+          })()}
+        </>
+      )}
+      <select value={categoryId} onChange={(e) => setCategoryId(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
+        <option value="">בחר קטגוריה (אופציונלי)</option>
+        {(taskCategories || []).map((c) => (
+          <option key={c.id} value={c.id}>{c.icon || "📋"} {c.name}</option>
+        ))}
+      </select>
+      <select value={assignedToId} onChange={(e) => setAssignedToId(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
+        {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+      </select>
+      <select value={priority} onChange={(e) => setPriority(e.target.value)} className="p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
+        <option value="low">עדיפות נמוכה</option>
+        <option value="normal">עדיפות רגילה</option>
+        <option value="urgent">עדיפות דחופה</option>
+      </select>
+
+      <div>
+        <div className="flex gap-2 flex-wrap">
+          <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
+            🖼️ {imageData ? "החלף מהגלריה" : "מהגלריה"}
+            <input type="file" accept="image/*" onChange={handleImage} className="hidden" />
+          </label>
+          <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
+            📷 מצלמה
+            <input type="file" accept="image/*" capture="environment" onChange={handleImage} className="hidden" />
+          </label>
+          {imageData && (
+            <button onClick={() => setAnnotating(true)} className="inline-block px-3 py-2 rounded-full text-sm font-bold" style={{ background: C.accent, color: "#fff" }}>
+              ✏️ סמן / צייר
+            </button>
+          )}
+        </div>
+        {imageBusy && <p className="text-xs mt-1" style={{ color: C.steel }}>טוען תמונה...</p>}
+        {imageData && (
+          <div className="mt-2 relative inline-block">
+            <img src={imageData} alt="" className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%" }} />
+            <button
+              onClick={() => setImageData(null)}
+              className="absolute -top-2 -left-2 w-6 h-6 rounded-full font-bold text-xs"
+              style={{ background: C.stamp, color: "#fff" }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
+        {annotating && imageData && (
+          <ImageAnnotator src={imageData} onSave={(d) => { setImageData(d); setAnnotating(false); }} onCancel={() => setAnnotating(false)} />
+        )}
+      </div>
+
+      <div style={{ borderTop: `1px solid ${C.kraftDark}`, paddingTop: 10 }}>
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+          ⏰ תזכורת / משימה עתידית (אופציונלי)
+        </label>
+        <div className="flex gap-2">
+          <input
+            type="date"
+            value={remindDate}
+            onChange={(e) => setRemindDate(e.target.value)}
+            className="flex-1 p-2 rounded-2xl border text-sm"
+            style={{ borderColor: C.kraftDark }}
+          />
+          <input
+            type="time"
+            value={remindTime}
+            onChange={(e) => setRemindTime(e.target.value)}
+            className="p-2 rounded-2xl border text-sm"
+            style={{ borderColor: C.kraftDark, width: 110 }}
+          />
+        </div>
+        {remindDate && (
+          <p className="text-xs mt-1" style={{ color: C.steel }}>
+            ההתראה תישלח בתאריך ובשעה שנבחרו — לא עכשיו.
+          </p>
+        )}
+      </div>
+
+      <div style={{ borderTop: `1px solid ${C.kraftDark}`, paddingTop: 10 }}>
+        <label className="flex items-center gap-2 cursor-pointer">
+          <input type="checkbox" checked={notifyNow} onChange={(e) => setNotifyNow(e.target.checked)} style={{ width: 18, height: 18 }} />
+          <span className="text-sm font-bold" style={{ color: C.ink }}>🔔 התרע לעובד עכשיו (מיידי)</span>
+        </label>
+        <p className="text-xs mt-1" style={{ color: C.steel }}>
+          בלי סימון — לא תישלח התראה כרגע. אם קבעת תזכורת למעלה, ההתראה תישלח בזמן שנקבע.
+        </p>
+      </div>
+
+      <div className="flex gap-2">
+        <button
+          onClick={() => {
+            if (!title.trim()) return;
+            if (lockedLocationLabel) {
+              onSubmit({ title, description, assignedToId, priority, categoryId, location: lockedLocationLabel, locationId: "", imageData, followUpAt: combineDateTime(remindDate, remindTime), notifyNow });
+              return;
+            }
+            const loc = (locations || []).find((l) => l.id === locationId);
+            const locationLabel = loc ? `${loc.group || "אחר"} · ${loc.name}` : "";
+            onSubmit({ title, description, assignedToId, priority, categoryId, location: locationLabel, locationId, imageData, followUpAt: combineDateTime(remindDate, remindTime), notifyNow });
+          }}
+          className="flex-1 py-2 rounded-2xl font-bold"
+          style={{ background: C.brand, color: "#fff" }}
+        >
+          צור משימה
+        </button>
+        <button onClick={onCancel} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
+          ביטול
+        </button>
+      </div>
+    </ShelfTag>
+  );
+}
+
+/* ---------- Admin Tab ---------- */
+function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, orderHistory, unitTemplates, persistUnitTemplates, personalPurchases, persistPersonalPurchases }) {
+  const [section, setSection] = useState(initialSection || "products");
+
+  // A notification can deep-link straight into a specific admin screen. Sync whenever
+  // the requested section changes, and clear the parent flag on the next tick so the
+  // section state is committed first (avoids landing on the default "products").
+  useEffect(() => {
+    if (!initialSection) return;
+    setSection(initialSection);
+    const id = setTimeout(() => onSectionConsumed && onSectionConsumed(), 0);
+    return () => clearTimeout(id);
+  }, [initialSection]);
+  const [showNav, setShowNav] = useState(false);
+
+  const pendingCount = (orderRequests || []).filter((r) => r.status === "pending").length;
+
+  const allSections = [
+    ["orderrequests", "בקשות הזמנה"],
+    ["unitrequests", "בקשות מהמחסן"],
+    ["reqhistory", "היסטוריית בקשות"],
+    ["products", "מוצרים"],
+    ["users", "עובדים"],
+    ["menu", "תפריט"],
+    ["dishtypes", "סוגי מנות"],
+    ["taskcats", "קטגוריות משימות"],
+    ["locations", "מקומות"],
+    ["reminders", "תזכורות"],
+    ["analytics", "ניתוח"],
+    ["personal", "קניות פרטיות"],
+    ["settings", "ספקים"],
+    ["backup", "גיבוי ושחזור"],
+  ];
+  // A supervisor only sees the admin screens the manager granted them.
+  const sections = allSections.filter(([id]) => canSeeAdminSection(currentUser, id));
+
+  // If the current section became unavailable, fall back to the first allowed one.
+  useEffect(() => {
+    if (sections.length > 0 && !sections.some(([id]) => id === section)) {
+      setSection(sections[0][0]);
+    }
+  }, [sections.length, section]);
+
+  if (sections.length === 0) {
+    return <p className="text-sm text-center py-8" style={{ color: C.steel }}>אין לך הרשאות למסכי ניהול.</p>;
+  }
+
+  return (
+    <div>
+      <button
+        onClick={() => setShowNav(true)}
+        className="flex items-center gap-2 mb-4 px-3 py-2 rounded-2xl font-bold text-sm"
+        style={{ background: C.brand, color: "#fff" }}
+      >
+        ☰ {sections.find(([v]) => v === section)?.[1]}
+      </button>
+
+      {showNav && (
+        <>
+          <div className="fixed inset-0 z-40" style={{ background: "rgba(35,31,61,0.4)" }} onClick={() => setShowNav(false)} />
+          <div
+            className="fixed top-0 right-0 bottom-0 z-50 flex flex-col wh-body"
+            style={{ width: "72%", maxWidth: 280, background: C.paper, boxShadow: "-8px 0 24px rgba(35,31,61,0.25)", borderRadius: "24px 0 0 24px" }}
+          >
+            <div className="p-4" style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "24px 0 0 0" }}>
+              <div className="wh-display font-black text-lg" style={{ color: "#fff" }}>ניהול</div>
+            </div>
+            <div className="flex flex-col p-3 gap-2 flex-1 overflow-y-auto">
+              {sections.map(([val, label]) => (
+                <button
+                  key={val}
+                  onClick={() => { setSection(val); setShowNav(false); }}
+                  className="flex items-center justify-between text-right px-4 py-3 rounded-2xl wh-display text-sm font-bold"
+                  style={{ background: section === val ? C.ink : "transparent", color: section === val ? "#fff" : C.ink }}
+                >
+                  <span>{label}</span>
+                  {val === "orderrequests" && pendingCount > 0 && (
+                    <span className="rounded-full text-[10px] px-1.5 py-0.5 font-bold" style={{ background: C.stamp, color: "#fff" }}>
+                      {pendingCount}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+
+      {section === "products" && (
+        <ProductsAdmin products={products} persistProducts={persistProducts} showToast={showToast} settings={settings} persistSettings={persistSettings} />
+      )}
+      {section === "users" && (
+        <UsersAdmin users={users} updateUserProfile={updateUserProfile} deleteUserProfile={deleteUserProfile} showToast={showToast} currentUser={currentUser} settings={settings} persistSettings={persistSettings} taskCategories={taskCategories} />
+      )}
+      {section === "menu" && (
+        <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} persistProducts={persistProducts} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} dishTypes={dishTypes} />
+      )}
+      {section === "dishtypes" && (
+        <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} />
+      )}
+      {section === "orderrequests" && (
+        <OrderRequestsAdmin
+          orderRequests={orderRequests}
+          persistOrderRequests={persistOrderRequests}
+          settings={settings}
+          products={products}
+          showToast={showToast}
+          notifyUser={notifyUser}
+          currentUser={currentUser}
+        />
+      )}
+      {section === "unitrequests" && (
+        <UnitRequestsAdmin
+          unitRequests={unitRequests}
+          persistUnitRequests={persistUnitRequests}
+          products={products}
+          persistProducts={persistProducts}
+          logStockChange={logStockChange}
+          currentUser={currentUser}
+          showToast={showToast}
+          notifyUser={notifyUser}
+          unitTemplates={unitTemplates}
+          persistUnitTemplates={persistUnitTemplates}
+          users={users}
+          settings={settings}
+        />
+      )}
+      {section === "reqhistory" && (
+        <RequestsHistory orderRequests={orderRequests} unitRequests={unitRequests} settings={settings} />
+      )}
+      {section === "taskcats" && (
+        <TaskCategoriesAdmin taskCategories={taskCategories} persistTaskCategories={persistTaskCategories} showToast={showToast} />
+      )}
+      {section === "locations" && (
+        <LocationsAdmin locations={locations} persistLocations={persistLocations} showToast={showToast} />
+      )}
+      {section === "reminders" && (
+        <RemindersAdmin reminders={reminders} persistReminders={persistReminders} products={products} users={users} showToast={showToast} />
+      )}
+      {section === "analytics" && (
+        <AnalyticsAdmin products={products} stockLog={stockLog} tasks={tasks} orderHistory={orderHistory} unitRequests={unitRequests} users={users} />
+      )}
+      {section === "personal" && isManager(currentUser) && (
+        <PersonalPurchasesAdmin
+          products={products}
+          personalPurchases={personalPurchases}
+          persistPersonalPurchases={persistPersonalPurchases}
+          currentUser={currentUser}
+          users={users}
+          showToast={showToast}
+        />
+      )}
+      {section === "settings" && (
+        <SuppliersAdmin settings={settings} persistSettings={persistSettings} showToast={showToast} />
+      )}
+      {section === "backup" && isManager(currentUser) && (
+        <BackupAdmin currentUser={currentUser} showToast={showToast} />
+      )}
+    </div>
+  );
+}
+
+/* ---------- Backup & restore ----------
+   Reads/writes every data key through the same loadKey/saveKey helpers the rest of
+   the app uses, so it captures the real persisted state and will keep working
+   unchanged after we namespace the keys per-organization. Manager-only.
+   NOTE: user accounts and org membership live in the auth layer (Supabase profiles),
+   not in kv_store, so they are NOT part of this backup and are unaffected by data changes. */
+const BACKUP_KEYS = [
+  [KEYS.products, "מוצרים"],
+  [KEYS.tasks, "משימות"],
+  [KEYS.settings, "הגדרות"],
+  [KEYS.notifications, "התראות"],
+  [KEYS.menuItems, "פריטי תפריט"],
+  [KEYS.weeklyMenu, "תפריט שבועי"],
+  [KEYS.reminders, "תזכורות"],
+  [KEYS.stockLog, "יומן מלאי"],
+  [KEYS.orderHistory, "היסטוריית הזמנות"],
+  [KEYS.locations, "מקומות"],
+  [KEYS.dishTypes, "סוגי מנות"],
+  [KEYS.taskCategories, "קטגוריות משימות"],
+  [KEYS.orderRequests, "בקשות הזמנה"],
+  [KEYS.orderDrafts, "טיוטות הזמנה"],
+  [KEYS.unitRequests, "בקשות מהמחסן"],
+  [KEYS.unitTemplates, "תבניות מחסן"],
+  [KEYS.personalPurchases, "קניות פרטיות"],
+  [KEYS.messages, "צ'אט פנימי"],
+  [KEYS.chatReads, "סימוני קריאה"],
+];
+
+function countOf(v) {
+  if (Array.isArray(v)) return v.length;
+  if (v && typeof v === "object") return Object.keys(v).length;
+  return v == null ? 0 : 1;
+}
+
+function BackupAdmin({ currentUser, showToast }) {
+  const [busy, setBusy] = useState(false);
+  const [summary, setSummary] = useState(null);
+  const [legacyInfo, setLegacyInfo] = useState(null);
+  const fileRef = useRef(null);
+
+  async function handleExport() {
+    setBusy(true);
+    try {
+      const data = {};
+      const counts = [];
+      for (const [key, label] of BACKUP_KEYS) {
+        const v = await loadKey(key, null);
+        data[key] = v;
+        counts.push([label, countOf(v)]);
+      }
+      const payload = {
+        __format: "wh-mosad-backup",
+        __version: 1,
+        orgId: currentUser?.orgId || null,
+        exportedAt: new Date().toISOString(),
+        data,
+      };
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+      const tag = (currentUser?.orgId || "data").slice(0, 8);
+      a.href = url;
+      a.download = `gibuy-mosad-${tag}-${stamp}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setSummary({ when: new Date().toLocaleString("he-IL"), counts });
+      showToast && showToast("הגיבוי נוצר והורד ✓");
+    } catch (e) {
+      console.error("export failed", e);
+      showToast && showToast("שגיאה ביצירת הגיבוי");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleImportFile(e) {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // let the same file be picked again later
+    if (!file) return;
+
+    let payload;
+    try {
+      payload = JSON.parse(await file.text());
+    } catch (err) {
+      showToast && showToast("הקובץ אינו קובץ גיבוי תקין");
+      return;
+    }
+    if (!payload || payload.__format !== "wh-mosad-backup" || !payload.data) {
+      showToast && showToast("זה לא קובץ גיבוי של האפליקציה");
+      return;
+    }
+
+    const keys = Object.keys(payload.data);
+    const when = payload.exportedAt ? new Date(payload.exportedAt).toLocaleString("he-IL") : "לא ידוע";
+    const ok1 = window.confirm(
+      `שחזור גיבוי מתאריך ${when}.\n\nהפעולה תדרוס את כל הנתונים הנוכחיים ותחזיר את הנתונים מהקובץ (${keys.length} קטגוריות).\n\nלא ניתן לבטל. להמשיך?`
+    );
+    if (!ok1) return;
+    const ok2 = window.confirm("אישור אחרון — הנתונים הנוכחיים יימחקו ויוחלפו בגיבוי. להמשיך?");
+    if (!ok2) return;
+
+    setBusy(true);
+    try {
+      for (const key of keys) {
+        if (payload.data[key] === undefined) continue;
+        await saveKey(key, payload.data[key]);
+      }
+      showToast && showToast("השחזור הושלם. טוען מחדש...");
+      setTimeout(() => window.location.reload(), 900);
+    } catch (err) {
+      console.error("restore failed", err);
+      showToast && showToast("שגיאה בשחזור");
+      setBusy(false);
+    }
+  }
+
+  // One-time: pull the old, un-separated data (written before the per-org fix)
+  // into THIS organization. Run once, from the org that owns the data.
+  async function checkLegacy() {
+    setBusy(true);
+    try {
+      const counts = [];
+      let total = 0;
+      for (const [key, label] of BACKUP_KEYS) {
+        const v = await loadLegacyRaw(key);
+        const n = countOf(v);
+        total += n;
+        if (n > 0) counts.push([label, n]);
+      }
+      setLegacyInfo({ counts, total });
+      if (total === 0) showToast && showToast("לא נמצאו נתונים ישנים להעברה");
+    } catch (e) {
+      console.error("legacy check failed", e);
+      showToast && showToast("שגיאה בבדיקה");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleMigrateLegacy() {
+    const ok1 = window.confirm(
+      "העברת הנתונים הישנים (הלא-מופרדים) אל המוסד הנוכחי.\n\nהרץ פעם אחת בלבד, ומהמוסד שאליו הנתונים שייכים. הפעולה תדרוס את נתוני המוסד הנוכחי בנתונים הישנים.\n\nלהמשיך?"
+    );
+    if (!ok1) return;
+    setBusy(true);
+    try {
+      let moved = 0;
+      for (const [key] of BACKUP_KEYS) {
+        const v = await loadLegacyRaw(key);
+        if (v !== undefined) {
+          await saveKey(key, v);
+          moved++;
+        }
+      }
+      showToast && showToast(`הועברו ${moved} קטגוריות. טוען מחדש...`);
+      setTimeout(() => window.location.reload(), 900);
+    } catch (e) {
+      console.error("migration failed", e);
+      showToast && showToast("שגיאה בהעברה");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="wh-display font-black text-lg" style={{ color: C.ink }}>גיבוי ושחזור נתונים</h2>
+        <p className="text-sm mt-1" style={{ color: C.steel }}>
+          כאן ניתן להוריד עותק מלא של כל נתוני האפליקציה לקובץ, ולשחזר אותו במקרה הצורך.
+          מומלץ ליצור גיבוי לפני כל שינוי משמעותי.
+        </p>
+      </div>
+
+      {/* Export */}
+      <div className="rounded-2xl p-4" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+        <div className="font-bold text-sm mb-1" style={{ color: C.ink }}>הורדת גיבוי</div>
+        <p className="text-xs mb-3" style={{ color: C.steel }}>
+          יורד קובץ <span dir="ltr">JSON</span> עם כל הנתונים. שמור אותו במקום בטוח (למשל במייל לעצמך או ב-Drive).
+        </p>
+        <button
+          onClick={handleExport}
+          disabled={busy}
+          className="w-full py-3 rounded-2xl font-bold text-sm"
+          style={{ background: C.accent, color: "#fff", opacity: busy ? 0.6 : 1 }}
+        >
+          {busy ? "רגע..." : "צור גיבוי והורד"}
+        </button>
+
+        {summary && (
+          <div className="mt-3 rounded-xl p-3 text-xs" style={{ background: C.paper, color: C.steel }}>
+            <div className="font-bold mb-1" style={{ color: C.ink }}>גיבוי אחרון: {summary.when}</div>
+            {summary.counts.map(([label, n]) => (
+              <div key={label} className="flex justify-between py-0.5">
+                <span>{label}</span>
+                <span dir="ltr">{n}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* One-time migration of legacy (un-separated) data */}
+      <div className="rounded-2xl p-4" style={{ background: C.kraft, border: `1px solid ${C.mustard}` }}>
+        <div className="font-bold text-sm mb-1" style={{ color: C.ink }}>העברת נתונים קיימים למוסד זה</div>
+        <p className="text-xs mb-3" style={{ color: C.steel }}>
+          חד-פעמי. אם לפני העדכון הנתונים לא היו מופרדים בין מוסדות, לחץ כאן כדי לשייך את הנתונים הקיימים למוסד הזה.
+          הרץ פעם אחת בלבד, מהמוסד שאליו הנתונים שייכים.
+        </p>
+        <button
+          onClick={checkLegacy}
+          disabled={busy}
+          className="w-full py-2.5 rounded-2xl font-bold text-sm mb-2"
+          style={{ background: "transparent", color: C.ink, border: `1.5px solid ${C.mustard}`, opacity: busy ? 0.6 : 1 }}
+        >
+          בדוק אילו נתונים קיימים
+        </button>
+
+        {legacyInfo && (
+          <div className="rounded-xl p-3 text-xs mb-2" style={{ background: C.paper, color: C.steel }}>
+            {legacyInfo.total === 0 ? (
+              <div>לא נמצאו נתונים ישנים להעברה.</div>
+            ) : (
+              <>
+                <div className="font-bold mb-1" style={{ color: C.ink }}>נמצאו נתונים להעברה:</div>
+                {legacyInfo.counts.map(([label, n]) => (
+                  <div key={label} className="flex justify-between py-0.5">
+                    <span>{label}</span>
+                    <span dir="ltr">{n}</span>
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+        )}
+
+        {legacyInfo && legacyInfo.total > 0 && (
+          <button
+            onClick={handleMigrateLegacy}
+            disabled={busy}
+            className="w-full py-3 rounded-2xl font-bold text-sm"
+            style={{ background: C.mustard, color: C.ink, opacity: busy ? 0.6 : 1 }}
+          >
+            העבר את הנתונים האלה למוסד זה
+          </button>
+        )}
+      </div>
+
+      {/* Restore */}
+      <div className="rounded-2xl p-4" style={{ background: C.kraft, border: `1px solid ${C.stamp}` }}>
+        <div className="font-bold text-sm mb-1" style={{ color: C.stamp }}>שחזור מגיבוי</div>
+        <p className="text-xs mb-3" style={{ color: C.steel }}>
+          שחזור <b>ידרוס את כל הנתונים הנוכחיים</b> ויחליף אותם בתוכן הקובץ. השתמש בזה רק אם אתה בטוח.
+        </p>
+        <input
+          ref={fileRef}
+          type="file"
+          accept="application/json,.json"
+          onChange={handleImportFile}
+          style={{ display: "none" }}
+        />
+        <button
+          onClick={() => fileRef.current && fileRef.current.click()}
+          disabled={busy}
+          className="w-full py-3 rounded-2xl font-bold text-sm"
+          style={{ background: "transparent", color: C.stamp, border: `1.5px solid ${C.stamp}`, opacity: busy ? 0.6 : 1 }}
+        >
+          בחר קובץ גיבוי לשחזור
+        </button>
+      </div>
+
+      <p className="text-[11px] leading-relaxed" style={{ color: C.steel }}>
+        הערה: חשבונות המשתמשים והשיוך למוסד נשמרים בשכבת ההתחברות (לא בקובץ הזה), ולכן אינם מושפעים משינויי נתונים.
+      </p>
+    </div>
+  );
+}
+
+/* Manager-only ledger of items taken from institutional stock for personal use,
+   so they can be paid back. Does NOT touch inventory - it's a private tally. */
+function PersonalPurchasesAdmin({ products, personalPurchases, persistPersonalPurchases, currentUser, users, showToast }) {
+  const [adding, setAdding] = useState(false);
+  const [search, setSearch] = useState("");
+  const [filterPerson, setFilterPerson] = useState("all");
+
+  const list = Array.isArray(personalPurchases) ? personalPurchases : [];
+
+  // Who has entries (so a manager can track their own separately from others).
+  const buyers = Array.from(new Set(list.map((e) => e.byId))).map((id) => ({
+    id,
+    name: users.find((u) => u.id === id)?.name || "לא ידוע",
+  }));
+
+  const shown = filterPerson === "all" ? list : list.filter((e) => e.byId === filterPerson);
+  const unpaid = shown.filter((e) => !e.paid);
+  const paidTotal = shown.filter((e) => e.paid).reduce((s, e) => s + e.price * e.qty, 0);
+  const unpaidTotal = unpaid.reduce((s, e) => s + e.price * e.qty, 0);
+
+  async function addItem(product) {
+    const entry = {
+      id: genId(),
+      productId: product.id,
+      name: product.name,
+      unit: product.unit,
+      qty: 1,
+      price: Number(product.price || 0),
+      byId: currentUser.id,
+      byName: currentUser.name,
+      paid: false,
+      takenAt: Date.now(),
+    };
+    await persistPersonalPurchases([entry, ...list]);
+    setSearch("");
+  }
+
+  async function setQty(id, qty) {
+    await persistPersonalPurchases(list.map((e) => (e.id === id ? { ...e, qty: Math.max(1, Number(qty) || 1) } : e)));
+  }
+  async function setPrice(id, price) {
+    await persistPersonalPurchases(list.map((e) => (e.id === id ? { ...e, price: Math.max(0, Number(price) || 0) } : e)));
+  }
+  async function togglePaid(id) {
+    await persistPersonalPurchases(list.map((e) => (e.id === id ? { ...e, paid: !e.paid, paidAt: !e.paid ? Date.now() : null } : e)));
+  }
+  async function remove(id) {
+    await persistPersonalPurchases(list.filter((e) => e.id !== id));
+  }
+  async function markAllPaid() {
+    if (!window.confirm("לסמן את כל הפריטים שלא שולמו כשולמו?")) return;
+    await persistPersonalPurchases(list.map((e) => (shown.some((x) => x.id === e.id) && !e.paid ? { ...e, paid: true, paidAt: Date.now() } : e)));
+    showToast("סומנו כשולמו");
+  }
+
+  const pickable = products
+    .filter((p) => !search || p.name.includes(search))
+    .slice(0, 30);
+
+  const fmtDate = (ts) => new Date(ts).toLocaleString("he-IL", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
+
+  return (
+    <div>
+      <h2 className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>קניות פרטיות</h2>
+      <p className="text-xs mb-4" style={{ color: C.steel }}>
+        פריטים שלקחת מהמלאי של המוסד לשימוש אישי, כדי לשלם עליהם בנפרד. זה רישום פרטי בלבד - הוא לא משנה את המלאי.
+      </p>
+
+      {buyers.length > 1 && (
+        <select
+          value={filterPerson}
+          onChange={(e) => setFilterPerson(e.target.value)}
+          className="w-full p-2 rounded-2xl border mb-3 text-sm"
+          style={{ borderColor: C.kraftDark }}
+        >
+          <option value="all">כולם</option>
+          {buyers.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+        </select>
+      )}
+
+      {/* Totals */}
+      <div className="grid grid-cols-2 gap-3 mb-4">
+        <div className="rounded-2xl p-3 text-center" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${C.stamp}` }}>
+          <div className="wh-display font-black" style={{ color: C.stamp, fontSize: 26 }}>₪{unpaidTotal.toFixed(0)}</div>
+          <div className="text-xs" style={{ color: C.steel }}>חוב פתוח ({unpaid.length})</div>
+        </div>
+        <div className="rounded-2xl p-3 text-center" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${C.sage}` }}>
+          <div className="wh-display font-black" style={{ color: C.sage, fontSize: 26 }}>₪{paidTotal.toFixed(0)}</div>
+          <div className="text-xs" style={{ color: C.steel }}>שולם</div>
+        </div>
+      </div>
+
+      <button
+        onClick={() => setAdding((v) => !v)}
+        className="w-full py-3 rounded-2xl font-bold mb-3"
+        style={{ background: adding ? C.kraft : C.ink, color: adding ? C.brand : C.paper, border: adding ? `1px solid ${C.kraftDark}` : "none" }}
+      >
+        {adding ? "סגור" : "➕ הוסף מוצר שלקחתי"}
+      </button>
+
+      {adding && (
+        <ShelfTag accent={C.accent} style={{ marginBottom: 12 }}>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="חיפוש מוצר..."
+            className="w-full p-2 rounded-2xl border mb-2 text-sm"
+            style={{ borderColor: C.kraftDark }}
+            autoFocus
+          />
+          <div className="flex flex-col gap-1.5" style={{ maxHeight: 240, overflowY: "auto" }}>
+            {pickable.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => addItem(p)}
+                className="flex justify-between items-center p-2.5 rounded-2xl text-right"
+                style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}
+              >
+                <div>
+                  <div className="text-sm font-bold" style={{ color: C.ink }}>{p.name}</div>
+                  <div className="text-xs" style={{ color: C.steel }}>₪{Number(p.price || 0).toFixed(0)} ל{p.unit}</div>
+                </div>
+                <span className="text-lg font-bold" style={{ color: C.sage }}>+</span>
+              </button>
+            ))}
+          </div>
+        </ShelfTag>
+      )}
+
+      {unpaid.length > 0 && (
+        <button onClick={markAllPaid} className="w-full py-2 rounded-2xl font-bold text-sm mb-3" style={{ background: C.sage, color: "#fff" }}>
+          ✓ סמן הכל כשולם
+        </button>
+      )}
+
+      <div className="flex flex-col gap-2">
+        {shown.length === 0 && (
+          <p className="text-sm text-center py-8" style={{ color: C.steel }}>אין עדיין רישומים</p>
+        )}
+        {shown.map((e) => (
+          <ShelfTag key={e.id} accent={e.paid ? C.sage : C.stamp}>
+            <div className="flex justify-between items-start mb-2">
+              <div>
+                <div className="font-bold text-sm" style={{ color: C.ink }}>
+                  {e.name} {e.paid && <span style={{ color: C.sage }}>✓ שולם</span>}
+                </div>
+                <div className="text-xs" style={{ color: C.steel }}>
+                  {fmtDate(e.takenAt)}{filterPerson === "all" && buyers.length > 1 ? ` · ${e.byName}` : ""}
+                </div>
+              </div>
+              <button onClick={() => remove(e.id)} className="rounded-xl font-bold" style={{ background: C.stamp, color: "#fff", width: 28, height: 28 }}>✕</button>
+            </div>
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
+                <span className="text-xs" style={{ color: C.steel }}>כמות</span>
+                <input type="number" value={e.qty} onChange={(ev) => setQty(e.id, ev.target.value)} className="w-14 text-center p-1.5 rounded-xl border" style={{ borderColor: C.kraftDark }} />
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="text-xs" style={{ color: C.steel }}>₪ ליח'</span>
+                <input type="number" value={e.price} onChange={(ev) => setPrice(e.id, ev.target.value)} className="w-16 text-center p-1.5 rounded-xl border" style={{ borderColor: C.kraftDark }} />
+              </div>
+              <div className="flex-1 text-left font-bold" style={{ color: C.ink }}>
+                ₪{(e.price * e.qty).toFixed(0)}
+              </div>
+            </div>
+            <button
+              onClick={() => togglePaid(e.id)}
+              className="w-full mt-2 py-1.5 rounded-xl font-bold text-xs"
+              style={{ background: e.paid ? C.kraft : C.sage, color: e.paid ? C.brand : C.kraft, border: e.paid ? `1px solid ${C.kraftDark}` : "none" }}
+            >
+              {e.paid ? "בטל סימון תשלום" : "✓ סמן כשולם"}
+            </button>
+          </ShelfTag>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AnalyticsAdmin({ products, stockLog, tasks = [], orderHistory = [], unitRequests = [], users = [] }) {
+  const [view, setView] = useState("overview"); // overview | stock | tasks | orders
+  const [range, setRange] = useState(30); // days
+  const [categoryFilter, setCategoryFilter] = useState("all");
+
+  const cutoff = Date.now() - range * 24 * 60 * 60 * 1000;
+
+  // ---- Task stats ----
+  const openTasks = tasks.filter((t) => t.status !== "done");
+  const doneTasks = tasks.filter((t) => t.status === "done");
+  const doneInRange = doneTasks.filter((t) => (t.completedAt || t.createdAt || 0) >= cutoff);
+  const overdueFollowups = tasks.filter((t) => t.followUpAt && t.followUpAt < Date.now() && t.status !== "done");
+  const perWorker = {};
+  tasks.forEach((t) => {
+    const u = users.find((x) => x.id === t.assignedToId);
+    const name = u?.name || "לא משויך";
+    if (!perWorker[name]) perWorker[name] = { open: 0, done: 0 };
+    if (t.status === "done") perWorker[name].done++;
+    else perWorker[name].open++;
+  });
+
+  // ---- Order stats ----
+  const ordersInRange = orderHistory.filter((o) => o.createdAt >= cutoff);
+  const orderTotal = ordersInRange.reduce((sum, o) => sum + Number(o.total || 0), 0);
+  const perSupplier = {};
+  ordersInRange.forEach((o) => {
+    const name = o.supplierName || "ספק כללי";
+    if (!perSupplier[name]) perSupplier[name] = { count: 0, total: 0 };
+    perSupplier[name].count++;
+    perSupplier[name].total += Number(o.total || 0);
+  });
+
+  const fmtDate = (ts) => new Date(ts).toLocaleDateString("he-IL", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
+
+  return (
+    <div>
+      <h2 className="wh-display font-black text-lg mb-3" style={{ color: C.ink }}>סיכום ונתונים</h2>
+
+      <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
+        {[["overview", "כללי"], ["tasks", "משימות"], ["orders", "הזמנות"], ["stock", "צריכת מלאי"]].map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setView(id)}
+            className="px-4 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
+            style={{ background: view === id ? C.brand : C.kraft, color: view === id ? "#fff" : C.ink }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      <div className="flex gap-2 mb-4">
+        {[7, 30, 90].map((d) => (
+          <button
+            key={d}
+            onClick={() => setRange(d)}
+            className="flex-1 py-1.5 rounded-xl text-xs font-bold"
+            style={{ background: range === d ? C.accent : C.kraft, color: range === d ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+          >
+            {d} ימים
+          </button>
+        ))}
+      </div>
+
+      {view === "overview" && (
+        <>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <StatCard label="משימות פתוחות" value={openTasks.length} color={C.mustard} />
+            <StatCard label={`הושלמו (${range} ימים)`} value={doneInRange.length} color={C.sage} />
+            <StatCard label={`הזמנות (${range} ימים)`} value={ordersInRange.length} color={C.accent} />
+            <StatCard label={`סכום הזמנות`} value={`₪${orderTotal.toFixed(0)}`} color={C.ink} />
+          </div>
+          {overdueFollowups.length > 0 && (
+            <ShelfTag accent={C.stamp} style={{ marginBottom: 12 }}>
+              <div className="font-bold text-sm" style={{ color: C.stamp }}>
+                ⏰ {overdueFollowups.length} תזכורות המשך באיחור
+              </div>
+              <p className="text-xs" style={{ color: C.steel }}>משימות שקבעת להן בדיקת המשך והתאריך עבר.</p>
+            </ShelfTag>
+          )}
+          <ShelfTag accent={C.steel}>
+            <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>עומס לפי עובד</div>
+            {Object.entries(perWorker).length === 0 ? (
+              <p className="text-xs" style={{ color: C.steel }}>אין נתונים</p>
+            ) : (
+              <div className="flex flex-col gap-1.5">
+                {Object.entries(perWorker).sort((a, b) => b[1].open - a[1].open).map(([name, s]) => (
+                  <div key={name} className="flex justify-between text-sm">
+                    <span style={{ color: C.ink }}>{name}</span>
+                    <span style={{ color: C.steel }}>
+                      <b style={{ color: C.mustard }}>{s.open}</b> פתוחות · <b style={{ color: C.sage }}>{s.done}</b> הושלמו
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </ShelfTag>
+        </>
+      )}
+
+      {view === "tasks" && (
+        <>
+          <div className="grid grid-cols-3 gap-2 mb-4">
+            <StatCard label="פתוחות" value={openTasks.length} color={C.mustard} small />
+            <StatCard label="הושלמו" value={doneTasks.length} color={C.sage} small />
+            <StatCard label="באיחור" value={overdueFollowups.length} color={C.stamp} small />
+          </div>
+          <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>
+            הושלמו לאחרונה
+          </div>
+          <div className="flex flex-col gap-2">
+            {doneTasks.sort((a, b) => (b.completedAt || b.createdAt || 0) - (a.completedAt || a.createdAt || 0)).slice(0, 20).map((t) => {
+              const u = users.find((x) => x.id === t.assignedToId);
+              return (
+                <ShelfTag key={t.id} accent={C.sage}>
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <div className="font-bold text-sm" style={{ color: C.ink }}>{t.title}</div>
+                      <div className="text-xs" style={{ color: C.steel }}>{u?.name || "—"}</div>
+                    </div>
+                    <span className="text-xs" style={{ color: C.steel }}>
+                      {t.completedAt ? fmtDate(t.completedAt) : ""}
+                    </span>
+                  </div>
+                </ShelfTag>
+              );
+            })}
+            {doneTasks.length === 0 && <p className="text-sm text-center py-6" style={{ color: C.steel }}>עדיין לא הושלמו משימות</p>}
+          </div>
+        </>
+      )}
+
+      {view === "orders" && (
+        <>
+          <div className="grid grid-cols-2 gap-3 mb-4">
+            <StatCard label={`הזמנות (${range} ימים)`} value={ordersInRange.length} color={C.accent} />
+            <StatCard label="סכום כולל" value={`₪${orderTotal.toFixed(0)}`} color={C.ink} />
+          </div>
+
+          {Object.keys(perSupplier).length > 0 && (
+            <ShelfTag accent={C.accent} style={{ marginBottom: 12 }}>
+              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>לפי ספק</div>
+              <div className="flex flex-col gap-1.5">
+                {Object.entries(perSupplier).sort((a, b) => b[1].total - a[1].total).map(([name, s]) => (
+                  <div key={name} className="flex justify-between text-sm">
+                    <span style={{ color: C.ink }}>{name}</span>
+                    <span style={{ color: C.steel }}>{s.count} הזמנות · ₪{s.total.toFixed(0)}</span>
+                  </div>
+                ))}
+              </div>
+            </ShelfTag>
+          )}
+
+          <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>הזמנות אחרונות</div>
+          <div className="flex flex-col gap-2">
+            {ordersInRange.length === 0 && (
+              <ShelfTag accent={C.steel}>
+                <p className="text-sm text-center" style={{ color: C.steel }}>
+                  לא נשלחו הזמנות בטווח הזה.
+                  <br />
+                  <span className="text-xs">היסטוריית הזמנות נשמרת מרגע העדכון הזה והלאה.</span>
+                </p>
+              </ShelfTag>
+            )}
+            {ordersInRange.map((o) => (
+              <details key={o.id}>
+                <summary className="cursor-pointer">
+                  <ShelfTag accent={channelMeta(o.channel).color} style={{ display: "inline-block", width: "100%" }}>
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <div className="font-bold text-sm" style={{ color: C.ink }}>
+                          {channelMeta(o.channel).icon} {o.supplierName}
+                        </div>
+                        <div className="text-xs" style={{ color: C.steel }}>
+                          {fmtDate(o.createdAt)} · {o.items?.length || 0} מוצרים
+                          {o.by && ` · ${o.by}`}
+                        </div>
+                      </div>
+                      <span className="font-bold text-sm" style={{ color: C.ink }}>₪{Number(o.total || 0).toFixed(0)}</span>
+                    </div>
+                  </ShelfTag>
+                </summary>
+                <div className="px-3 py-2 text-xs" style={{ color: C.steel }}>
+                  {(o.items || []).map((it, i) => (
+                    <div key={i} className="flex justify-between">
+                      <span>{it.name}</span>
+                      <span>{it.qty} {it.unit}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ))}
+          </div>
+        </>
+      )}
+
+      {view === "stock" && (
+        <AnalyticsStock products={products} stockLog={stockLog} range={range} categoryFilter={categoryFilter} setCategoryFilter={setCategoryFilter} />
+      )}
+    </div>
+  );
+}
+
+function StatCard({ label, value, color, small }) {
+  return (
+    <div className="rounded-2xl p-3 text-center" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, borderTop: `4px solid ${color}` }}>
+      <div className="wh-display font-black" style={{ color, fontSize: small ? 22 : 28 }}>{value}</div>
+      <div className="text-xs" style={{ color: C.steel }}>{label}</div>
+    </div>
+  );
+}
+
+function AnalyticsStock({ products, stockLog, range, categoryFilter, setCategoryFilter }) {
+  const cutoff = Date.now() - range * 24 * 60 * 60 * 1000;
+  const relevantLog = stockLog.filter((e) => e.timestamp >= cutoff);
+
+  const perProduct = {};
+  relevantLog.forEach((e) => {
+    if (e.delta >= 0) return;
+    if (!perProduct[e.productId]) perProduct[e.productId] = 0;
+    perProduct[e.productId] += Math.abs(e.delta);
+  });
+
+  const rows = Object.entries(perProduct)
+    .map(([pid, consumed]) => {
+      const p = products.find((x) => x.id === pid);
+      if (!p) return null;
+      if (categoryFilter !== "all" && (p.category || "ללא קטגוריה") !== categoryFilter) return null;
+      return { product: p, consumed };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.consumed - a.consumed);
+
+  const categories = Array.from(new Set(products.map((p) => p.category || "ללא קטגוריה")));
+  const max = rows.length ? rows[0].consumed : 1;
+
+  return (
+    <>
+      <select
+        value={categoryFilter}
+        onChange={(e) => setCategoryFilter(e.target.value)}
+        className="p-2 rounded-2xl border w-full mb-3 text-sm"
+        style={{ borderColor: C.kraftDark }}
+      >
+        <option value="all">כל הקטגוריות</option>
+        {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+      </select>
+
+      <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>המוצרים הכי נצרכים</div>
+      {rows.length === 0 ? (
+        <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין תנועת מלאי בטווח הזה</p>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {rows.slice(0, 25).map(({ product, consumed }) => (
+            <div key={product.id}>
+              <div className="flex justify-between text-sm mb-0.5">
+                <span style={{ color: C.ink }}>{product.name}</span>
+                <span className="font-bold" style={{ color: C.ink }}>{consumed} {product.unit}</span>
+              </div>
+              <div className="rounded-full overflow-hidden" style={{ background: C.kraft, height: 8 }}>
+                <div style={{ background: C.accent, height: "100%", width: `${(consumed / max) * 100}%` }} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
+function OldAnalyticsAdmin({ products, stockLog }) {
+  const [range, setRange] = useState(30); // days
+  const [categoryFilter, setCategoryFilter] = useState("all");
+
+  const cutoff = Date.now() - range * 24 * 60 * 60 * 1000;
+  const relevantLog = stockLog.filter((e) => e.timestamp >= cutoff);
+
+  const perProduct = {};
+  relevantLog.forEach((e) => {
+    if (e.delta >= 0) return; // only count consumption (decreases)
+    if (!perProduct[e.productId]) perProduct[e.productId] = 0;
+    perProduct[e.productId] += Math.abs(e.delta);
+  });
+
+  let rows = Object.entries(perProduct)
+    .map(([productId, consumed]) => {
+      const product = products.find((p) => p.id === productId);
+      if (!product) return null;
+      return { product, consumed };
+    })
+    .filter(Boolean);
+
+  if (categoryFilter !== "all") {
+    rows = rows.filter((r) => (r.product.category || "ללא קטגוריה") === categoryFilter);
+  }
+
+  rows.sort((a, b) => b.consumed - a.consumed);
+  const maxConsumed = rows.length > 0 ? rows[0].consumed : 1;
+  const totalEvents = relevantLog.length;
+
+  const categories = Array.from(new Set(products.map((p) => p.category || "ללא קטגוריה")));
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-3 overflow-x-auto pb-1">
+        {[7, 30, 90].map((d) => (
+          <button
+            key={d}
+            onClick={() => setRange(d)}
+            className="px-3 py-2 rounded-2xl text-sm font-bold whitespace-nowrap"
+            style={{ background: range === d ? C.brand : C.kraft, color: range === d ? "#fff" : C.ink }}
+          >
+            {d} ימים אחרונים
+          </button>
+        ))}
+      </div>
+
+      <div className="mb-4">
+        <select
+          value={categoryFilter}
+          onChange={(e) => setCategoryFilter(e.target.value)}
+          className="p-2 rounded-2xl border w-full text-sm"
+          style={{ borderColor: C.kraftDark }}
+        >
+          <option value="all">כל הקטגוריות</option>
+          {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+        </select>
+      </div>
+
+      {totalEvents === 0 ? (
+        <ShelfTag accent={C.steel}>
+          <p className="text-sm text-center" style={{ color: C.steel }}>
+            עדיין אין מספיק היסטוריית שינויי מלאי בטווח הזה. ברגע שיתבצעו עדכוני כמות במסך המלאי, הנתונים כאן יתמלאו אוטומטית.
+          </p>
+        </ShelfTag>
+      ) : rows.length === 0 ? (
+        <ShelfTag accent={C.steel}>
+          <p className="text-sm text-center" style={{ color: C.steel }}>אין ירידות במלאי בקטגוריה הזו בטווח שנבחר</p>
+        </ShelfTag>
+      ) : (
+        <div className="flex flex-col gap-2">
+          {rows.map(({ product, consumed }) => {
+            const pct = Math.max(6, Math.round((consumed / maxConsumed) * 100));
+            const col = categoryColor(product.category || "ללא קטגוריה");
+            return (
+              <ShelfTag key={product.id} accent={col}>
+                <div className="flex justify-between items-center mb-2 text-sm">
+                  <span className="font-bold" style={{ color: C.ink }}>{product.name}</span>
+                  <span style={{ color: C.steel }}>{consumed} {product.unit} · ₪{(consumed * Number(product.price)).toFixed(0)}</span>
+                </div>
+                <div style={{ background: C.paper, borderRadius: 8, height: 10, overflow: "hidden" }}>
+                  <div style={{ width: `${pct}%`, background: col, height: "100%" }} />
+                </div>
+              </ShelfTag>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function LocationsAdmin({ locations, persistLocations, showToast }) {
+  const empty = { name: "", group: "", imageData: null };
+  const [form, setForm] = useState(empty);
+  const [editingId, setEditingId] = useState(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [search, setSearch] = useState("");
+  const fileInputRef = useRef(null);
+  const [importing, setImporting] = useState(false);
+
+  async function handleImage(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImageBusy(true);
+    try {
+      const dataUrl = await resizeImageToDataUrl(file);
+      setForm((f) => ({ ...f, imageData: dataUrl }));
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setImageBusy(false);
+    }
+  }
+
+  function downloadTemplate() {
+    const rows = [
+      { "שם מקום/חדר": "חדר 101", "קבוצה/אזור": "קומה 1" },
+      { "שם מקום/חדר": "מטבח בשרי", "קבוצה/אזור": "מטבחים" },
+    ];
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    sheet["!cols"] = [{ wch: 26 }, { wch: 22 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, "Locations");
+    XLSX.writeFile(wb, "locations-template.xlsx");
+  }
+
+  function exportLocations() {
+    const rows = locations.map((l) => ({ "שם מקום/חדר": l.name, "קבוצה/אזור": l.group || "" }));
+    const sheet = XLSX.utils.json_to_sheet(rows.length ? rows : [{ "שם מקום/חדר": "", "קבוצה/אזור": "" }]);
+    sheet["!cols"] = [{ wch: 26 }, { wch: 22 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, "Locations");
+    XLSX.writeFile(wb, "locations-export.xlsx");
+    showToast("הקובץ יורד עכשיו");
+  }
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      const norm = (s) => String(s).trim().toLowerCase();
+      function pick(row, keys) {
+        for (const k of Object.keys(row)) {
+          if (keys.includes(norm(k))) return row[k];
+        }
+        return "";
+      }
+      const imported = rows
+        .map((row) => {
+          const name = pick(row, ["name", "שם", "שם מקום", "שם מקום/חדר", "חדר"]);
+          if (!name) return null;
+          const group = String(pick(row, ["group", "קבוצה", "קבוצה/אזור", "אזור", "קומה"]) || "");
+          return { name: String(name), group };
+        })
+        .filter(Boolean);
+
+      if (imported.length === 0) {
+        showToast("לא נמצאו שורות עם שם מקום תקין");
+        return;
+      }
+      let next = [...locations];
+      let added = 0, updated = 0;
+      for (const item of imported) {
+        const idx = next.findIndex((l) => l.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+        if (idx >= 0) {
+          next[idx] = { ...next[idx], ...item };
+          updated++;
+        } else {
+          next.push({ ...item, id: genId(), imageData: null });
+          added++;
+        }
+      }
+      await persistLocations(next);
+      showToast(`נוספו ${added} מקומות, עודכנו ${updated}`);
+    } catch (err) {
+      console.error(err);
+      showToast("שגיאה בקריאת הקובץ");
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function save() {
+    if (!form.name.trim()) return showToast("יש להזין שם מקום/חדר");
+    let next;
+    if (editingId) {
+      next = locations.map((l) => (l.id === editingId ? { ...form, id: editingId } : l));
+    } else {
+      next = [...locations, { ...form, id: genId() }];
+    }
+    await persistLocations(next);
+    setForm(empty);
+    setEditingId(null);
+    showToast("המקום נשמר");
+  }
+
+  async function remove(id) {
+    await persistLocations(locations.filter((l) => l.id !== id));
+  }
+
+  const filtered = locations.filter((l) => !search || l.name.includes(search) || (l.group || "").includes(search));
+  const grouped = Object.entries(
+    filtered.reduce((acc, l) => {
+      const g = l.group || "אחר";
+      (acc[g] = acc[g] || []).push(l);
+      return acc;
+    }, {})
+  );
+
+  return (
+    <div>
+      <div className="mb-4">
+        <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv" onChange={handleFile} className="hidden" />
+        <div className="flex gap-2 mb-2">
+          <button onClick={downloadTemplate} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+            📄 הורד תבנית ריקה
+          </button>
+          <button onClick={exportLocations} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
+            📤 ייצא רשימה קיימת
+          </button>
+        </div>
+        <button
+          onClick={() => fileInputRef.current?.click()}
+          disabled={importing}
+          className="w-full py-2 rounded-2xl font-bold text-sm"
+          style={{ background: C.mustard, color: C.ink }}
+        >
+          {importing ? "מייבא..." : "📥 ייבוא מקומות מקובץ אקסל/CSV"}
+        </button>
+        <p className="text-xs mt-1 text-center" style={{ color: C.steel }}>
+          עמודות: שם מקום/חדר, קבוצה/אזור. התאמה לפי שם מעדכנת מקום קיים במקום ליצור כפול.
+        </p>
+      </div>
+
+      <ShelfTag accent={C.accent} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>
+          {editingId ? "עריכת מקום" : "הוספת מקום/חדר"}
+        </div>
+        <p className="text-xs" style={{ color: C.steel }}>
+          כל מוסד שונה - הרשימה הזו שלך לגמרי, אפשר להוסיף, לערוך ולמחוק חדרים/מקומות כרצונך.
+        </p>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם המקום/חדר</label>
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} placeholder="לדוגמה: חדר 105" />
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>קבוצה/אזור (לארגון ברשימה)</label>
+          <input value={form.group} onChange={(e) => setForm({ ...form, group: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} placeholder="לדוגמה: קומה 1" />
+        </div>
+        <div>
+          <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
+            {imageBusy ? "טוען תמונה..." : form.imageData ? "📷 החלף תמונה" : "📷 צרף תמונה של המקום"}
+            <input type="file" accept="image/*" capture="environment" onChange={handleImage} className="hidden" />
+          </label>
+          {form.imageData && (
+            <div className="mt-2 relative inline-block">
+              <img src={form.imageData} alt="" className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%" }} />
+              <button onClick={() => setForm({ ...form, imageData: null })} className="absolute -top-2 -left-2 w-6 h-6 rounded-full font-bold text-xs" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+            </div>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
+            {editingId ? "שמור שינויים" : "הוסף מקום"}
+          </button>
+          {editingId && (
+            <button onClick={() => { setForm(empty); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
+          )}
+        </div>
+      </ShelfTag>
+
+      <input
+        value={search}
+        onChange={(e) => setSearch(e.target.value)}
+        placeholder="חיפוש מקום..."
+        className="p-2 rounded-2xl border w-full mb-3"
+        style={{ borderColor: C.kraftDark, background: C.kraft }}
+      />
+
+      <div className="flex flex-col gap-4">
+        {locations.length === 0 && (
+          <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין עדיין מקומות - הוסף למעלה</p>
+        )}
+        {grouped.map(([g, items]) => (
+          <div key={g}>
+            <div className="wh-display font-bold text-sm mb-2" style={{ color: C.steel }}>{g} ({items.length})</div>
+            <div className="flex flex-col gap-2">
+              {items.map((l) => (
+                <div key={l.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                  <div className="flex items-center gap-2">
+                    {l.imageData && <img src={l.imageData} alt="" className="rounded-xl" style={{ width: 40, height: 40, objectFit: "cover" }} />}
+                    <div className="font-bold text-sm" style={{ color: C.ink }}>{l.name}</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => { setForm(l); setEditingId(l.id); }} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+                    <button onClick={() => remove(l.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RemindersAdmin({ reminders, persistReminders, products, users, showToast }) {
+  const empty = { title: "", productId: "", categoryId: "", assignedToId: users[0]?.id || "", scheduleType: "weekly", dayOfWeek: 0, date: "", active: true };
+  const [form, setForm] = useState(empty);
+  const [editingId, setEditingId] = useState(null);
+  const categories = Array.from(new Set(products.map((p) => p.category).filter(Boolean)));
+
+  async function save() {
+    if (!form.title.trim() && !form.productId && !form.categoryId) return showToast("יש להזין כותרת, מוצר או קטגוריה");
+    if (form.scheduleType === "date" && !form.date) return showToast("בחר תאריך לתזכורת");
+    let next;
+    if (editingId) {
+      next = reminders.map((r) => (r.id === editingId ? { ...form, id: editingId, lastTriggeredDate: r.lastTriggeredDate } : r));
+    } else {
+      next = [...reminders, { ...form, id: genId(), lastTriggeredDate: null }];
+    }
+    await persistReminders(next);
+    setForm(empty);
+    setEditingId(null);
+    showToast("התזכורת נשמרה");
+  }
+
+  async function remove(id) {
+    await persistReminders(reminders.filter((r) => r.id !== id));
+  }
+
+  async function toggleActive(rem) {
+    await persistReminders(reminders.map((r) => (r.id === rem.id ? { ...r, active: !r.active } : r)));
+  }
+
+  return (
+    <div>
+      <ShelfTag accent={C.accent2} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>
+          {editingId ? "עריכת תזכורת" : "תזכורת שבועית חדשה"}
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מוצר לבדיקה (אופציונלי)</label>
+          <select value={form.productId} onChange={(e) => setForm({ ...form, productId: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="">— ללא מוצר ספציפי —</option>
+            {products.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>או קטגוריה שלמה (אופציונלי)</label>
+          <select value={form.categoryId} onChange={(e) => setForm({ ...form, categoryId: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="">— ללא קטגוריה —</option>
+            {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>כותרת/פירוט התזכורת</label>
+          <input
+            value={form.title}
+            onChange={(e) => setForm({ ...form, title: e.target.value })}
+            placeholder={form.productId ? "לדוגמה: לבדוק תוקף ולספור מלאי" : "לדוגמה: לבדוק מקפיא תחתון"}
+            className="p-2 rounded-2xl border w-full"
+            style={{ borderColor: C.kraftDark }}
+          />
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מתי להזכיר</label>
+          <select value={form.scheduleType} onChange={(e) => setForm({ ...form, scheduleType: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="weekly">כל שבוע ביום קבוע</option>
+            <option value="date">בתאריך מסוים (חד־פעמי)</option>
+          </select>
+        </div>
+        {form.scheduleType === "date" ? (
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תאריך</label>
+            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+          </div>
+        ) : (
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>יום בשבוע לתזכורת</label>
+            <select value={form.dayOfWeek} onChange={(e) => setForm({ ...form, dayOfWeek: Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+              {WEEK_DAYS.map(([key, label], idx) => <option key={key} value={idx}>{label}</option>)}
+            </select>
+          </div>
+        )}
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שלח תזכורת לעובד</label>
+          <select value={form.assignedToId} onChange={(e) => setForm({ ...form, assignedToId: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
+          </select>
+        </div>
+        <div className="flex gap-2">
+          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
+            {editingId ? "שמור שינויים" : "צור תזכורת"}
+          </button>
+          {editingId && (
+            <button onClick={() => { setForm(empty); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
+              ביטול
+            </button>
+          )}
+        </div>
+        <p className="text-xs" style={{ color: C.steel }}>
+          התזכורת תיצור אוטומטית משימה ותשלח התראה לעובד בכל פעם שמישהו פותח את האפליקציה ביום הנבחר (או אחריו) ועוד לא נוצרה תזכורת השבוע.
+        </p>
+      </ShelfTag>
+
+      <div className="flex flex-col gap-2">
+        {reminders.length === 0 && (
+          <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין תזכורות עדיין</p>
+        )}
+        {reminders.map((r) => {
+          const product = products.find((p) => p.id === r.productId);
+          const assignee = users.find((u) => u.id === r.assignedToId);
+          return (
+            <div key={r.id} className="p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, opacity: r.active ? 1 : 0.5 }}>
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className="font-bold text-sm" style={{ color: C.ink }}>{product ? `בדוק ${product.name}` : r.categoryId ? `הזמנה: ${r.categoryId}` : r.title}</div>
+                  <div className="text-xs" style={{ color: C.steel }}>
+                    {r.scheduleType === "date" ? `בתאריך ${r.date}` : WEEK_DAYS[r.dayOfWeek]?.[1]} · {assignee ? assignee.name : "—"} {!r.active && "· מושהה"}
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => toggleActive(r)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>
+                    {r.active ? "השהה" : "הפעל"}
+                  </button>
+                  <button onClick={() => { setForm({ scheduleType: "weekly", categoryId: "", date: "", ...r }); setEditingId(r.id); }} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+                  <button onClick={() => remove(r.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function GroupLinkEditor({ settings, persistSettings, showToast }) {
+  const [link, setLink] = useState(settings?.whatsappGroupLink || "");
+
+  async function save() {
+    const v = link.trim();
+    if (v && !v.includes("chat.whatsapp.com") && !v.startsWith("https://")) {
+      return showToast("הקישור לא נראה תקין - הוא צריך להתחיל ב-https://chat.whatsapp.com");
+    }
+    await persistSettings({ ...settings, whatsappGroupLink: v });
+    showToast(v ? "קישור הקבוצה נשמר ✓" : "קישור הקבוצה נמחק");
+  }
+
+  return (
+    <div className="flex gap-2">
+      <input
+        value={link}
+        onChange={(e) => setLink(e.target.value)}
+        placeholder="https://chat.whatsapp.com/..."
+        className="flex-1 p-2 rounded-2xl border text-sm"
+        style={{ borderColor: C.kraftDark, direction: "ltr" }}
+      />
+      <button onClick={save} className="px-4 rounded-2xl font-bold text-sm" style={{ background: "#128C7E", color: "#fff" }}>
+        שמור
+      </button>
+    </div>
+  );
+}
+
+function SuppliersAdmin({ settings, persistSettings, showToast }) {
+  const suppliers = settings.suppliers || [];
+  const empty = { name: "", phone: "", email: "" };
+  const [form, setForm] = useState(empty);
+  const [editingId, setEditingId] = useState(null);
+  const contactsSupported = typeof navigator !== "undefined" && "contacts" in navigator && "ContactsManager" in window;
+
+  function normalizePhone(raw) {
+    let digits = String(raw || "").replace(/\D/g, "");
+    if (digits.startsWith("0")) digits = "972" + digits.slice(1);
+    return digits;
+  }
+
+  async function pickContact() {
+    if (!contactsSupported) {
+      showToast("הדפדפן הזה לא תומך בייבוא מאנשי קשר (זמין כרגע רק ב-Chrome באנדרואיד)");
+      return;
+    }
+    try {
+      const contacts = await navigator.contacts.select(["name", "tel", "email"], { multiple: true });
+      if (!contacts || contacts.length === 0) {
+        showToast("לא נבחרו אנשי קשר");
+        return;
+      }
+      const newSuppliers = contacts
+        .map((c) => ({
+          id: genId(),
+          name: c.name?.[0] || "ללא שם",
+          phone: normalizePhone(c.tel?.[0] || ""),
+          email: (c.email?.[0] || "").trim(),
+        }))
+        .filter((s) => s.phone || s.email);
+
+      if (newSuppliers.length === 0) {
+        showToast("לאנשי הקשר שנבחרו אין טלפון או מייל שמורים");
+        return;
+      }
+
+      await persistSettings({ ...settings, suppliers: [...suppliers, ...newSuppliers] });
+      showToast(`נוספו ${newSuppliers.length} ספקים מאנשי הקשר`);
+    } catch (err) {
+      console.error(err);
+      if (window.matchMedia("(display-mode: standalone)").matches) {
+        showToast("ייבוא מאנשי קשר לא עובד באפליקציה המותקנת - פתח את האתר בכרום רגיל (לא מהאייקון) ונסה שוב");
+      } else {
+        showToast("שגיאה בייבוא אנשי קשר: " + (err?.message || "לא ידועה"));
+      }
+    }
+  }
+
+  async function save() {
+    if (!form.name.trim()) return showToast("יש להזין שם ספק");
+    if (!form.phone.trim() && !form.email.trim())
+      return showToast("יש להזין לפחות טלפון או מייל");
+    let next;
+    if (editingId) {
+      next = suppliers.map((s) => (s.id === editingId ? { ...form, id: editingId } : s));
+    } else {
+      next = [...suppliers, { ...form, id: genId() }];
+    }
+    await persistSettings({ ...settings, suppliers: next });
+    setForm(empty);
+    setEditingId(null);
+    showToast("הספק נשמר");
+  }
+
+  async function remove(id) {
+    await persistSettings({ ...settings, suppliers: suppliers.filter((s) => s.id !== id) });
+  }
+
+  return (
+    <div>
+      <ShelfTag accent="#128C7E" style={{ marginBottom: 16 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>👥 קבוצת וואטסאפ להזמנות</div>
+        <p className="text-xs mb-2" style={{ color: C.steel }}>
+          אם יש קבוצת ספקים בוואטסאפ, הדבק כאן את קישור ההזמנה שלה. אז בסיכום ההזמנה יופיע כפתור "שלח לקבוצה" שמעתיק את ההזמנה ופותח את הקבוצה.
+        </p>
+        <GroupLinkEditor settings={settings} persistSettings={persistSettings} showToast={showToast} />
+        <details className="mt-2">
+          <summary className="text-xs font-bold cursor-pointer" style={{ color: C.accent }}>איך משיגים את קישור הקבוצה?</summary>
+          <p className="text-xs mt-1" style={{ color: C.steel, lineHeight: 1.6 }}>
+            בוואטסאפ: פתח את הקבוצה ← שם הקבוצה למעלה ← "הזמנה באמצעות קישור" ← "העתק קישור". הדבק אותו כאן.
+            הקישור נראה כך: <span style={{ direction: "ltr", display: "inline-block" }}>chat.whatsapp.com/...</span>
+          </p>
+        </details>
+      </ShelfTag>
+
+      <ShelfTag accent={C.accent} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 8 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>
+          {editingId ? "עריכת ספק" : "הוספת ספק"}
+        </div>
+        <button
+          onClick={pickContact}
+          className="py-2 rounded-2xl font-bold text-sm"
+          style={{ background: contactsSupported ? C.accent : C.kraft, color: contactsSupported ? "#fff" : C.steel, border: `1px solid ${C.kraftDark}` }}
+        >
+          📇 ייבוא ספקים מאנשי קשר (אפשר לבחור כמה)
+        </button>
+        {!contactsSupported && (
+          <p className="text-xs" style={{ color: C.steel }}>
+            זמין כרגע רק ב-Chrome באנדרואיד. בדפדפנים אחרים אפשר להזין ידנית למטה.
+          </p>
+        )}
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם הספק</label>
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>טלפון (לוואטסאפ / SMS)</label>
+          <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="972501234567" className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מייל (לשליחת הזמנה במייל)</label>
+          <input value={form.email || ""} onChange={(e) => setForm({ ...form, email: e.target.value })} type="email" placeholder="supplier@example.com" className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+        </div>
+        <div className="flex gap-2">
+          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
+            {editingId ? "שמור שינויים" : "הוסף ספק"}
+          </button>
+          {editingId && (
+            <button onClick={() => { setForm(empty); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
+              ביטול
+            </button>
+          )}
+        </div>
+      </ShelfTag>
+
+      <div className="flex flex-col gap-2">
+        {suppliers.length === 0 && (
+          <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין ספקים עדיין - הוסף למעלה</p>
+        )}
+        {suppliers.map((s) => (
+          <div key={s.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+            <div>
+              <div className="font-bold text-sm" style={{ color: C.ink }}>{s.name}</div>
+              <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>
+                {s.phone || "ללא טלפון"}
+              </div>
+              <div className="text-xs" style={{ color: s.email ? C.steel : C.kraftDark, direction: "ltr", textAlign: "right" }}>
+                {s.email || "ללא מייל"}
+              </div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => { setForm({ email: "", ...s }); setEditingId(s.id); }} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+              <button onClick={() => remove(s.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UnitRequestsAdmin({
+  unitRequests,
+  persistUnitRequests,
+  products,
+  persistProducts,
+  logStockChange,
+  currentUser,
+  showToast,
+  notifyUser,
+  unitTemplates,
+  persistUnitTemplates,
+  users,
+  settings,
+}) {
+  const [tab, setTab] = useState("pending");
+  const [editing, setEditing] = useState(null); // { requestId, items, note }
+  const [managingTemplate, setManagingTemplate] = useState(null); // unitId whose fixed list we're editing
+  const [addSearch, setAddSearch] = useState("");
+  const [addSelectedId, setAddSelectedId] = useState("");
+  const [addQty, setAddQty] = useState(1);
+
+  const all = [...(unitRequests || [])].sort((a, b) => (b.submittedAt || b.createdAt) - (a.submittedAt || a.createdAt));
+  const pending = all.filter((r) => r.status === "submitted");
+  const done = all.filter((r) => r.status === "fulfilled" || r.status === "rejected");
+  const shown = tab === "pending" ? pending : done;
+
+  const stockOf = (id) => Number(products.find((p) => p.id === id)?.quantity ?? 0);
+
+  /* Build the plain-text list from whatever items are on screen. */
+  function buildListText(reqOrItems, unitName, weekOf) {
+    const items = Array.isArray(reqOrItems) ? reqOrItems : reqOrItems.items || [];
+    const lines = items
+      .filter((i) => (i.give ?? i.qty) > 0)
+      .map((i) => `▫️ ${i.name}: ${i.give ?? i.qty} ${i.unit || ""}`);
+    return [
+      `🧺 רשימת ליקוט למחסן`,
+      unitName ? `יחידה: ${unitName}` : "",
+      weekOf ? `שבוע: ${weekLabel(weekOf)}` : "",
+      "",
+      ...lines,
+      "",
+      `סה"כ ${lines.length} פריטים`,
+    ].filter(Boolean).join("\n");
+  }
+
+  /* Send the picking list to a worker on WhatsApp. */
+  function sendListWhatsapp(items, unitName, weekOf) {
+    const text = buildListText(items, unitName, weekOf);
+    // No specific number - open the share/chooser so the manager picks the worker.
+    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
+    window.open(url, "_blank");
+  }
+
+  function sendListEmail(items, unitName, weekOf) {
+    const text = buildListText(items, unitName, weekOf);
+    const subject = `רשימת ליקוט למחסן${unitName ? " - " + unitName : ""}`;
+    window.location.href = `mailto:?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(text)}`;
+  }
+
+  function sendListSms(items, unitName, weekOf) {
+    const text = buildListText(items, unitName, weekOf);
+    window.location.href = `sms:?body=${encodeURIComponent(text)}`;
+  }
+
+  /* Print a clean picking sheet to take to the warehouse. */
+  function printList(items, unitName, weekOf) {
+    const rows = items
+      .filter((i) => (i.give ?? i.qty) > 0)
+      .map((i) => `<tr><td>☐</td><td>${i.name}</td><td style="text-align:center">${i.give ?? i.qty} ${i.unit || ""}</td></tr>`)
+      .join("");
+    const html = `
+      <!doctype html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><title>רשימת ליקוט</title>
+      <style>
+        @page { size: A4; margin: 15mm; }
+        body { font-family: Arial, sans-serif; color: #111; }
+        h1 { font-size: 22px; margin: 0 0 4px; }
+        .sub { color: #666; font-size: 13px; margin-bottom: 16px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #444; padding: 10px 8px; font-size: 15px; }
+        thead th { background: #2E86C4; color: #fff; }
+        td:first-child { width: 32px; text-align: center; font-size: 20px; }
+      </style></head><body>
+        <h1>🧺 רשימת ליקוט למחסן</h1>
+        <div class="sub">${unitName ? `יחידה: ${unitName} · ` : ""}${weekOf ? weekLabel(weekOf) : ""}</div>
+        <table><thead><tr><th>✓</th><th>מוצר</th><th>כמות</th></tr></thead><tbody>${rows}</tbody></table>
+        <script>window.onload=()=>window.print();</script>
+      </body></html>`;
+    const win = window.open("", "_blank");
+    win.document.write(html);
+    win.document.close();
+  }
+
+  /* Delete a whole request permanently. */
+  async function deleteRequest(reqId, unitName) {
+    if (!window.confirm(`למחוק לצמיתות את הבקשה של ${unitName}? לא ניתן לשחזר.`)) return;
+    await persistUnitRequests((unitRequests || []).filter((r) => r.id !== reqId));
+    setEditing(null);
+    showToast("הבקשה נמחקה");
+  }
+
+  /* Clear all completed history. */
+  async function clearHistory() {
+    if (!window.confirm("למחוק את כל היסטוריית הבקשות שטופלו? לא ניתן לשחזר.")) return;
+    await persistUnitRequests((unitRequests || []).filter((r) => r.status === "submitted"));
+    showToast("ההיסטוריה נמחקה");
+  }
+
+  function openReview(r) {
+    setEditing({
+      requestId: r.id,
+      unitName: r.unitName,
+      weekOf: r.weekOf,
+      reopened: !!r.reopened,
+      priorIssued: r.priorIssued || [],
+      items: (r.items || []).map((i) => ({ ...i, give: r.reopened ? 0 : Math.min(i.qty, stockOf(i.productId)) })),
+      note: r.managerNote || "",
+    });
+  }
+
+  // Return an already-fulfilled request to "pending" so the manager can add to it and
+  // issue the extra. Keeps a record of what was already issued so nothing is double-counted.
+  async function reopenForMore(r) {
+    await persistUnitRequests(
+      (unitRequests || []).map((x) =>
+        x.id === r.id
+          ? { ...x, status: "submitted", reopened: true, priorIssued: x.issuedItems || x.priorIssued || [] }
+          : x
+      )
+    );
+    showToast("הבקשה הוחזרה לטיפול — הוסף ונפק את התוספת");
+  }
+
+  function setGive(productId, val) {
+    setEditing((cur) => ({
+      ...cur,
+      items: cur.items.map((i) => (i.productId === productId ? { ...i, give: Math.max(0, Number(val) || 0) } : i)),
+    }));
+  }
+
+  function removeItem(productId) {
+    setEditing((cur) => ({ ...cur, items: cur.items.filter((i) => i.productId !== productId) }));
+  }
+
+  // Manager adds an item: resolve the typed text to a catalog product (picked from
+  // the suggestions, or an exact name match), otherwise add it as a free-text product.
+  function addItemToReview() {
+    const q = Math.max(1, Number(addQty) || 1);
+    const term = addSearch.trim();
+    let p = addSelectedId ? products.find((x) => x.id === addSelectedId) : null;
+    if (!p && term) p = products.find((x) => (x.name || "").trim() === term);
+    if (p) {
+      setEditing((cur) => {
+        if (cur.items.some((i) => i.productId === p.id)) {
+          return { ...cur, items: cur.items.map((i) => (i.productId === p.id ? { ...i, qty: (i.qty || 0) + q, give: (i.give || 0) + q } : i)) };
+        }
+        return { ...cur, items: [...cur.items, { productId: p.id, name: p.name, unit: p.unit, qty: q, give: q }] };
+      });
+    } else if (term) {
+      setEditing((cur) => ({ ...cur, items: [...cur.items, { productId: "custom-" + genId(), name: term, unit: "", qty: q, give: q, custom: true }] }));
+    } else {
+      return;
+    }
+    setAddSearch(""); setAddSelectedId(""); setAddQty(1);
+  }
+
+  function giveAll() {
+    // Issue the full requested quantity for every item - even beyond what's in stock.
+    setEditing((cur) => ({
+      ...cur,
+      items: cur.items.map((i) => ({ ...i, give: i.qty })),
+    }));
+  }
+
+  function giveNone() {
+    setEditing((cur) => ({ ...cur, items: cur.items.map((i) => ({ ...i, give: 0 })) }));
+  }
+
+  async function fulfill() {
+    const req = all.find((r) => r.id === editing.requestId);
+    const issued = editing.items.filter((i) => i.give > 0);
+    if (issued.length === 0) return showToast("לא הוגדרה כמות לניפוק");
+
+    // Deduct from stock and log who issued what.
+    const next = products.map((p) => {
+      const hit = issued.find((i) => i.productId === p.id);
+      if (!hit) return p;
+      return { ...p, quantity: Math.max(0, Number(p.quantity) - hit.give) };
+    });
+    await persistProducts(next);
+    for (const i of issued) {
+      if (logStockChange) await logStockChange(i.productId, -i.give, `${currentUser.name} → ${req.unitName}`);
+    }
+
+    // Cumulative record: if this request was reopened after a prior issue, add the new
+    // amounts on top of what was already given (so history shows the full total).
+    const prior = editing.priorIssued || [];
+    const mergedMap = {};
+    [...prior, ...issued.map((i) => ({ productId: i.productId, name: i.name, unit: i.unit, qty: i.give }))].forEach((it) => {
+      const k = it.productId;
+      if (mergedMap[k]) mergedMap[k] = { ...mergedMap[k], qty: (Number(mergedMap[k].qty) || 0) + (Number(it.qty) || 0) };
+      else mergedMap[k] = { ...it };
+    });
+    const mergedIssued = Object.values(mergedMap);
+
+    await persistUnitRequests(
+      (unitRequests || []).map((r) =>
+        r.id === editing.requestId
+          ? {
+              ...r,
+              status: "fulfilled",
+              fulfilledAt: Date.now(),
+              fulfilledBy: currentUser.name,
+              managerNote: editing.note,
+              issuedItems: mergedIssued,
+              reopened: false,
+              priorIssued: [],
+            }
+          : r
+      )
+    );
+
+    const shortages = editing.items.filter((i) => i.give < i.qty);
+    if (notifyUser) {
+      const msg = shortages.length
+        ? `🧺 הבקשה שלך נופקה חלקית (${shortages.length} מוצרים בחוסר) — אפשר להדפיס כטבלה מההיסטוריה`
+        : "🧺 הבקשה שלך נופקה במלואה ✓ — אפשר להדפיס כטבלה מההיסטוריה";
+      await notifyUser(req.unitId, msg, { tab: "unitrequest" });
+    }
+    setEditing(null);
+    showToast("נופק והמלאי עודכן ✓");
+  }
+
+  /* Close a request without touching stock: for when the goods were handed over
+     outside the app, or the stock count was already corrected by hand. */
+  async function markHandled(reqId, note) {
+    const req = all.find((r) => r.id === reqId);
+    await persistUnitRequests(
+      (unitRequests || []).map((r) =>
+        r.id === reqId
+          ? {
+              ...r,
+              status: "fulfilled",
+              fulfilledAt: Date.now(),
+              fulfilledBy: currentUser.name,
+              stockUntouched: true,
+              managerNote: note || r.managerNote || "",
+              issuedItems: (r.items || []).map((i) => ({ ...i })),
+            }
+          : r
+      )
+    );
+    if (notifyUser && req) {
+      await notifyUser(req.unitId, "🧺 הבקשה שלך טופלה ✓ — אפשר להדפיס כטבלה מההיסטוריה", { tab: "unitrequest" });
+    }
+    setEditing(null);
+    showToast("הבקשה סומנה כטופלה (המלאי לא שונה)");
+  }
+
+  async function reject() {
+    const req = all.find((r) => r.id === editing.requestId);
+    await persistUnitRequests(
+      (unitRequests || []).map((r) =>
+        r.id === editing.requestId ? { ...r, status: "rejected", managerNote: editing.note } : r
+      )
+    );
+    if (notifyUser) await notifyUser(req.unitId, `הבקשה השבועית שלך נדחתה${editing.note ? `: ${editing.note}` : ""}`, { tab: "unitrequest" });
+    setEditing(null);
+    showToast("הבקשה נדחתה");
+  }
+
+  if (editing) {
+    const req = all.find((r) => r.id === editing.requestId);
+    const shortages = editing.items.filter((i) => stockOf(i.productId) < i.qty);
+
+    return (
+      <div>
+        <button onClick={() => setEditing(null)} className="mb-3 text-sm font-bold" style={{ color: C.accent }}>
+          ← חזרה לרשימה
+        </button>
+
+        <ShelfTag accent={C.mustard} style={{ marginBottom: 16 }}>
+          <div className="wh-display font-bold" style={{ color: C.ink }}>{req.unitName}</div>
+          <div className="text-xs" style={{ color: C.steel }}>שבוע {weekLabel(req.weekOf)}</div>
+        </ShelfTag>
+
+        {shortages.length > 0 && (
+          <ShelfTag accent={C.stamp} style={{ marginBottom: 16 }}>
+            <div className="font-bold text-sm mb-1" style={{ color: C.stamp }}>⚠️ {shortages.length} מוצרים במלאי חסר</div>
+            <p className="text-xs" style={{ color: C.steel }}>
+              הכמויות למטה כבר הותאמו למה שיש בפועל. אפשר לנפק חלקית ולהזמין את החסר מהספק.
+            </p>
+          </ShelfTag>
+        )}
+
+        {(() => {
+          const reqNote = (all.find((r) => r.id === editing.requestId) || {}).note;
+          return reqNote ? (
+            <ShelfTag accent={C.accent} style={{ marginBottom: 12 }}>
+              <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>📝 הערת המזמין</div>
+              <div className="text-sm" style={{ color: C.ink, whiteSpace: "pre-wrap" }}>{reqNote}</div>
+            </ShelfTag>
+          ) : null;
+        })()}
+
+        <div className="flex justify-between items-center mb-2">
+          <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
+            מה לנפק ({editing.items.length} מוצרים)
+          </div>
+          <div className="flex gap-1">
+            <button
+              onClick={giveAll}
+              className="text-xs font-bold px-2 py-1 rounded-full"
+              style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              נפק הכל
+            </button>
+            <button
+              onClick={giveNone}
+              className="text-xs font-bold px-2 py-1 rounded-full"
+              style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              אפס הכל
+            </button>
+          </div>
+        </div>
+
+        <div className="flex flex-col gap-2 mb-4">
+          {editing.reopened && (
+            <div className="text-xs p-2 rounded-xl" style={{ background: "rgba(232,168,77,0.15)", color: C.ink, border: `1px solid ${C.mustard}` }}>
+              הבקשה כבר נופקה קודם. הכמויות מתחילות מ-0 — הזן כמות רק למה שאתה <b>מוסיף עכשio</b>. מה שכבר ניפקת נשמר ולא יורד מהמלאי שוב.
+            </div>
+          )}
+          {editing.items.length === 0 && (
+            <ShelfTag accent={C.stamp}>
+              <p className="text-sm text-center" style={{ color: C.steel }}>
+                הסרת את כל המוצרים. אפשר לדחות את הבקשה, או לחזור ולפתוח אותה מחדש.
+              </p>
+            </ShelfTag>
+          )}
+          {editing.items.map((i) => {
+            const have = stockOf(i.productId);
+            const short = have < i.qty;
+            return (
+              <ShelfTag key={i.productId} accent={i.give === 0 ? C.kraftDark : short ? C.stamp : C.sage}>
+                <div className="flex justify-between items-center">
+                  <div className="flex-1">
+                    <div className="font-bold text-sm" style={{ color: i.give === 0 ? C.steel : C.ink }}>
+                      {i.name}
+                      {i.give === 0 && <span className="text-xs font-normal"> (לא ינופק)</span>}
+                    </div>
+                    <div className="text-xs" style={{ color: short ? C.stamp : C.steel }}>
+                      ביקשו {i.qty} {i.unit} · במלאי {have} {i.unit}
+                      {short && ` · חסר ${i.qty - have}`}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className="text-center">
+                      <div className="text-xs mb-1" style={{ color: C.steel }}>לנפק</div>
+                      <input
+                        type="number"
+                        value={i.give === 0 ? "" : i.give}
+                        onChange={(e) => setGive(i.productId, e.target.value)}
+                        placeholder="0"
+                        className="w-16 text-center p-2 rounded-2xl border"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                    </div>
+                    <button
+                      onClick={() => removeItem(i.productId)}
+                      title="הסר מהבקשה"
+                      className="rounded-xl font-bold"
+                      style={{ background: C.stamp, color: "#fff", width: 32, height: 32, marginTop: 14 }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                </div>
+              </ShelfTag>
+            );
+          })}
+        </div>
+
+        <div className="rounded-2xl p-3 mb-3" style={{ background: C.kraft, border: `1px dashed ${C.kraftDark}` }}>
+          <div className="text-sm font-bold mb-2" style={{ color: C.ink }}>➕ הוסף פריט לרשימה</div>
+          <div className="flex gap-2">
+            <div style={{ position: "relative", flex: 1 }}>
+              <input
+                value={addSearch}
+                onChange={(e) => { setAddSearch(e.target.value); setAddSelectedId(""); }}
+                onKeyDown={(e) => { if (e.key === "Enter") addItemToReview(); }}
+                placeholder="הקלד שם מוצר..."
+                className="w-full p-2 rounded-xl border text-sm"
+                style={{ borderColor: C.kraftDark, background: C.kraft }}
+              />
+              {(() => {
+                const term = addSearch.trim();
+                if (!term || addSelectedId) return null;
+                const matches = products.filter((p) => (p.name || "").trim().startsWith(term)).slice(0, 8);
+                if (matches.length === 0) return null;
+                return (
+                  <div style={{ position: "absolute", top: "100%", right: 0, left: 0, zIndex: 20, background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 12, marginTop: 4, maxHeight: 220, overflowY: "auto", boxShadow: "0 6px 16px rgba(0,0,0,0.15)" }}>
+                    {matches.map((p) => (
+                      <button
+                        key={p.id}
+                        onClick={() => { setAddSearch(p.name); setAddSelectedId(p.id); }}
+                        className="w-full text-right px-3 py-2 text-sm"
+                        style={{ color: C.ink, borderBottom: `1px solid ${C.kraft}`, background: C.kraft }}
+                      >
+                        {p.name}
+                      </button>
+                    ))}
+                  </div>
+                );
+              })()}
+            </div>
+            <input
+              type="number"
+              value={addQty}
+              onChange={(e) => setAddQty(Math.max(1, Number(e.target.value) || 1))}
+              className="w-16 text-center p-2 rounded-xl border"
+              style={{ borderColor: C.kraftDark }}
+            />
+            <button onClick={addItemToReview} className="px-4 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+              הוסף
+            </button>
+          </div>
+          <p className="text-xs mt-1" style={{ color: C.steel }}>בחר מההצעות שקופצות, או הקלד שם חדש והוסף.</p>
+        </div>
+
+        <textarea
+          value={editing.note}
+          onChange={(e) => setEditing({ ...editing, note: e.target.value })}
+          placeholder="הערה למעון (אופציונלי)"
+          rows={2}
+          className="w-full p-3 rounded-2xl border mb-3"
+          style={{ borderColor: C.kraftDark }}
+        />
+
+        {/* Take the list to the warehouse: small icons for each channel. */}
+        <div className="flex gap-4 justify-center flex-wrap mb-3">
+          {(() => {
+            const ic = (bg, emoji, label, onClick, dark) => (
+              <button onClick={onClick} title={label} style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 4, background: "transparent", border: "none", cursor: "pointer" }}>
+                <span style={{ width: 46, height: 46, borderRadius: "50%", background: bg, color: dark ? C.brand : C.kraft, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, boxShadow: "0 2px 8px rgba(0,0,0,0.22)" }}>{emoji}</span>
+                <span style={{ fontSize: 11, color: C.steel, fontWeight: 700 }}>{label}</span>
+              </button>
+            );
+            return (
+              <>
+                {ic("#25D366", "💬", "וואטסאפ", () => sendListWhatsapp(editing.items, editing.unitName, editing.weekOf))}
+                {ic(C.mustard, "✉️", "SMS", () => sendListSms(editing.items, editing.unitName, editing.weekOf), true)}
+                {ic(C.steel, "📧", "מייל", () => sendListEmail(editing.items, editing.unitName, editing.weekOf))}
+                {ic(C.accent, "🖨️", "הדפס", () => printList(editing.items, editing.unitName, editing.weekOf))}
+              </>
+            );
+          })()}
+        </div>
+
+        <button onClick={fulfill} className="w-full py-3 rounded-2xl wh-display font-bold mb-2" style={{ background: C.sage, color: "#fff" }}>
+          ✓ נפק והורד מהמלאי
+        </button>
+        <button
+          onClick={() => markHandled(editing.requestId, editing.note)}
+          className="w-full py-2 rounded-2xl font-bold text-sm mb-2"
+          style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+        >
+          ✓ סמן כטופל — בלי לשנות מלאי
+        </button>
+        <p className="text-xs text-center mb-3" style={{ color: C.steel }}>
+          השתמש בזה אם מסרת להם ידנית, או אם כבר עדכנת את המלאי בעצמך.
+        </p>
+        <div className="flex gap-2">
+          <button onClick={reject} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>
+            דחה בקשה
+          </button>
+          <button
+            onClick={() => deleteRequest(editing.requestId, editing.unitName)}
+            className="flex-1 py-2 rounded-2xl font-bold text-sm"
+            style={{ background: C.kraft, color: C.stamp, border: `1.5px solid ${C.stamp}` }}
+          >
+            🗑️ מחק בקשה
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <h2 className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>בקשות מהמחסן</h2>
+      <p className="text-xs mb-3" style={{ color: C.steel }}>
+        בקשות שיחידות (מעון וכו') שלחו. אישור מנפיק מהמלאי שלך ומוריד את הכמות.
+      </p>
+
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => setTab("pending")}
+          className="flex-1 py-2 rounded-2xl text-sm font-bold"
+          style={{ background: tab === "pending" ? C.brand : C.kraft, color: tab === "pending" ? "#fff" : C.ink }}
+        >
+          ממתינות {pending.length > 0 && `(${pending.length})`}
+        </button>
+        <button
+          onClick={() => setTab("done")}
+          className="flex-1 py-2 rounded-2xl text-sm font-bold"
+          style={{ background: tab === "done" ? C.brand : C.kraft, color: tab === "done" ? "#fff" : C.ink }}
+        >
+          טופלו
+        </button>
+        <button
+          onClick={() => setTab("templates")}
+          className="flex-1 py-2 rounded-2xl text-sm font-bold"
+          style={{ background: tab === "templates" ? C.brand : C.kraft, color: tab === "templates" ? "#fff" : C.ink }}
+        >
+          רשימות קבועות
+        </button>
+      </div>
+
+      {tab === "templates" && (
+        <UnitTemplatesManager
+          unitTemplates={unitTemplates}
+          persistUnitTemplates={persistUnitTemplates}
+          users={users}
+          products={products}
+          showToast={showToast}
+        />
+      )}
+
+      {tab === "done" && done.length > 0 && (
+        <button onClick={clearHistory} className="w-full py-2 rounded-2xl font-bold text-sm mb-3" style={{ background: C.kraft, color: C.stamp, border: `1.5px solid ${C.stamp}` }}>
+          🗑️ נקה את כל ההיסטוריה
+        </button>
+      )}
+
+      {tab !== "templates" && (
+      <div className="flex flex-col gap-2">
+        {shown.length === 0 && (
+          <p className="text-sm text-center py-8" style={{ color: C.steel }}>
+            {tab === "pending" ? "אין בקשות ממתינות" : "אין בקשות שטופלו"}
+          </p>
+        )}
+        {shown.map((r) => {
+          const st = UNIT_STATUS[r.status] || UNIT_STATUS.open;
+          const shortCount = (r.items || []).filter((i) => stockOf(i.productId) < i.qty).length;
+          return (
+            <ShelfTag key={r.id} accent={st.color}>
+              <div className="flex justify-between items-center">
+                <div>
+                  <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>{r.unitName}</div>
+                  <div className="text-xs" style={{ color: C.steel }}>
+                    שבוע {weekLabel(r.weekOf)} · {(r.items || []).length} מוצרים
+                    {r.status === "submitted" && shortCount > 0 && (
+                      <span style={{ color: C.stamp }}> · {shortCount} בחוסר</span>
+                    )}
+                    {r.status === "fulfilled" && r.fulfilledBy && (
+                      <span> · ע"י {r.fulfilledBy}</span>
+                    )}
+                    {r.status === "fulfilled" && r.stockUntouched && (
+                      <span style={{ color: C.mustard }}> · המלאי לא שונה</span>
+                    )}
+                  </div>
+                </div>
+                {r.status === "submitted" ? (
+                  <div className="flex flex-col gap-1.5">
+                    <button onClick={() => openReview(r)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.brand, color: "#fff" }}>
+                      בדוק ונפק
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!window.confirm(`לסמן את הבקשה של ${r.unitName} כטופלה? המלאי לא ישתנה.`)) return;
+                        markHandled(r.id);
+                      }}
+                      className="px-4 py-1.5 rounded-2xl font-bold text-xs"
+                      style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                    >
+                      ✓ סמן כטופל
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-1.5 items-end">
+                    <span className="text-xs font-bold px-2 py-1 rounded-full" style={{ background: st.color, color: "#fff" }}>
+                      {st.label}
+                    </span>
+                    {r.status === "fulfilled" && (
+                      <div className="flex gap-1.5">
+                        <button
+                          onClick={() => reopenForMore(r)}
+                          className="px-3 py-1 rounded-2xl font-bold text-xs"
+                          style={{ background: C.mustard, color: C.ink }}
+                        >
+                          ↩️ החזר להוספה
+                        </button>
+                        <button
+                          onClick={() => sendListWhatsapp(r.issuedItems || r.items || [], r.unitName, r.weekOf)}
+                          className="px-3 py-1 rounded-2xl font-bold text-xs"
+                          style={{ background: "#25D366", color: "#fff" }}
+                        >
+                          💬
+                        </button>
+                        <button
+                          onClick={() => printList(r.issuedItems || r.items || [], r.unitName, r.weekOf)}
+                          className="px-3 py-1 rounded-2xl font-bold text-xs"
+                          style={{ background: C.accent, color: "#fff" }}
+                        >
+                          🖨️ הדפס
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </ShelfTag>
+          );
+        })}
+      </div>
+      )}
+    </div>
+  );
+}
+
+function UnitTemplatesManager({ unitTemplates, persistUnitTemplates, users, products, showToast }) {
+  const [selectedUnit, setSelectedUnit] = useState("");
+  const [addSearch, setAddSearch] = useState("");
+
+  const templates = unitTemplates || {};
+  // Any user who has a saved fixed list, plus units you might want to build one for.
+  const unitIds = Object.keys(templates).filter((id) => (templates[id] || []).length > 0);
+  const unitName = (id) => users.find((u) => u.id === id)?.name || "יחידה";
+
+  const activeUnit = selectedUnit || unitIds[0] || "";
+  const list = templates[activeUnit] || [];
+
+  async function updateList(next) {
+    await persistUnitTemplates({ ...templates, [activeUnit]: next });
+  }
+
+  async function setQty(productId, qty) {
+    const p = products.find((x) => x.id === productId);
+    if (!p) return;
+    const q = Math.max(0, Number(qty) || 0);
+    const next = list.filter((i) => i.productId !== productId);
+    if (q > 0) next.push({ productId, qty: q });
+    await updateList(next);
+  }
+
+  async function removeFromList(productId) {
+    await updateList(list.filter((i) => i.productId !== productId));
+  }
+
+  async function clearList() {
+    if (!window.confirm(`למחוק את כל הרשימה הקבועה של ${unitName(activeUnit)}?`)) return;
+    const next = { ...templates };
+    delete next[activeUnit];
+    await persistUnitTemplates(next);
+    showToast("הרשימה הקבועה נמחקה");
+  }
+
+  if (unitIds.length === 0 && !selectedUnit) {
+    return (
+      <ShelfTag accent={C.steel}>
+        <p className="text-sm text-center" style={{ color: C.steel }}>
+          אין עדיין רשימות קבועות. יחידה יוצרת רשימה קבועה מהמסך שלה ("שמור כקבועה"),
+          ואז תוכל לנהל אותה כאן.
+        </p>
+      </ShelfTag>
+    );
+  }
+
+  const pickable = products
+    .filter((p) => !list.some((i) => i.productId === p.id))
+    .filter((p) => !addSearch || p.name.includes(addSearch));
+
+  return (
+    <div>
+      {unitIds.length > 1 && (
+        <select
+          value={activeUnit}
+          onChange={(e) => setSelectedUnit(e.target.value)}
+          className="w-full p-2 rounded-2xl border mb-3 text-sm"
+          style={{ borderColor: C.kraftDark }}
+        >
+          {unitIds.map((id) => (
+            <option key={id} value={id}>{unitName(id)} ({(templates[id] || []).length} מוצרים)</option>
+          ))}
+        </select>
+      )}
+
+      <ShelfTag accent={C.accent} style={{ marginBottom: 12 }}>
+        <div className="flex justify-between items-center">
+          <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
+            רשימה קבועה: {unitName(activeUnit)}
+          </div>
+          {list.length > 0 && (
+            <button onClick={clearList} className="text-xs px-2 py-1 rounded-xl font-bold" style={{ background: C.stamp, color: "#fff" }}>
+              מחק הכל
+            </button>
+          )}
+        </div>
+      </ShelfTag>
+
+      <div className="flex flex-col gap-2 mb-4">
+        {list.length === 0 && <p className="text-sm text-center py-4" style={{ color: C.steel }}>הרשימה ריקה</p>}
+        {list.map((i) => {
+          const p = products.find((x) => x.id === i.productId);
+          if (!p) return null;
+          return (
+            <ShelfTag key={i.productId} accent={C.sage}>
+              <div className="flex justify-between items-center">
+                <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={i.qty}
+                    onChange={(e) => setQty(i.productId, e.target.value)}
+                    className="w-16 text-center p-2 rounded-2xl border"
+                    style={{ borderColor: C.kraftDark }}
+                  />
+                  <span className="text-xs" style={{ color: C.steel }}>{p.unit}</span>
+                  <button onClick={() => removeFromList(i.productId)} className="rounded-xl font-bold" style={{ background: C.stamp, color: "#fff", width: 30, height: 30 }}>
+                    ✕
+                  </button>
+                </div>
+              </div>
+            </ShelfTag>
+          );
+        })}
+      </div>
+
+      <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>הוסף מוצר לרשימה</div>
+      <input
+        value={addSearch}
+        onChange={(e) => setAddSearch(e.target.value)}
+        placeholder="חיפוש מוצר..."
+        className="w-full p-2 rounded-2xl border mb-2 text-sm"
+        style={{ borderColor: C.kraftDark }}
+      />
+      <div className="flex flex-col gap-1.5">
+        {pickable.slice(0, 30).map((p) => (
+          <button
+            key={p.id}
+            onClick={() => { setQty(p.id, 1); setAddSearch(""); }}
+            className="flex justify-between items-center p-2.5 rounded-2xl text-right"
+            style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}
+          >
+            <span className="text-sm font-bold" style={{ color: C.ink }}>{p.name}</span>
+            <span className="text-lg font-bold" style={{ color: C.sage }}>+</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function RequestsHistory({ orderRequests, unitRequests, settings }) {
+  const [filter, setFilter] = useState("all"); // all | order | unit
+  const suppliers = settings?.suppliers || [];
+
+  const orderStatusLabel = { pending: "ממתינה", approved: "אושרה ונשלחה", rejected: "נדחתה" };
+  const unitStatusLabel = { open: "טיוטה", submitted: "ממתינה", fulfilled: "נופקה", rejected: "נדחתה" };
+
+  const rows = [];
+  (orderRequests || []).forEach((r) => {
+    rows.push({
+      id: "o-" + r.id,
+      kind: "order",
+      when: r.decidedAt || r.createdAt || 0,
+      who: r.createdByName || "מנהל מטבח",
+      status: orderStatusLabel[r.status] || r.status,
+      items: r.items || [],
+      extra: r.approvedSupplierId ? (suppliers.find((s) => s.id === r.approvedSupplierId)?.name || "") : "",
+    });
+  });
+  (unitRequests || []).forEach((r) => {
+    if (r.status === "open") return; // skip unsent drafts
+    rows.push({
+      id: "u-" + r.id,
+      kind: "unit",
+      when: r.fulfilledAt || r.submittedAt || r.createdAt || 0,
+      who: r.unitName || "יחידה",
+      status: unitStatusLabel[r.status] || r.status,
+      items: (r.status === "fulfilled" && Array.isArray(r.issuedItems) && r.issuedItems.length) ? r.issuedItems : (r.items || []),
+    });
+  });
+
+  const shown = rows
+    .filter((r) => filter === "all" || r.kind === filter)
+    .sort((a, b) => b.when - a.when);
+
+  return (
+    <div>
+      <div className="flex gap-2 mb-3">
+        {[["all", "הכל"], ["order", "📤 בקשות הזמנה"], ["unit", "🧺 בקשות מחסן"]].map(([val, label]) => (
+          <button
+            key={val}
+            onClick={() => setFilter(val)}
+            className="px-3 py-1.5 rounded-full text-xs font-bold"
+            style={{ background: filter === val ? C.brand : C.kraft, color: filter === val ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {shown.length === 0 ? (
+        <ShelfTag accent={C.steel}>
+          <p className="text-sm text-center" style={{ color: C.steel }}>אין עדיין היסטוריית בקשות.</p>
+        </ShelfTag>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {shown.map((r) => (
+            <ShelfTag key={r.id} accent={r.kind === "order" ? C.accent : C.sage}>
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: r.kind === "order" ? C.accent : C.sage, color: "#fff" }}>
+                  {r.kind === "order" ? "📤 בקשת הזמנה" : "🧺 בקשת מחסן"}
+                </span>
+                <span className="text-xs" style={{ color: C.steel }}>{r.when ? new Date(r.when).toLocaleDateString("he-IL") : ""}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="font-bold text-sm" style={{ color: C.ink }}>{r.who}</span>
+                <span className="text-xs font-bold" style={{ color: C.steel }}>{r.status}{r.extra ? ` · ${r.extra}` : ""}</span>
+              </div>
+              {r.items.length > 0 && (
+                <div className="mt-2 flex flex-col gap-0.5">
+                  {r.items.map((i, idx) => (
+                    <div key={idx} className="flex justify-between text-xs" style={{ color: C.ink }}>
+                      <span>{i.name}</span>
+                      <span className="font-bold">{i.qty} {i.unit || ""}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </ShelfTag>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function OrderRequestsAdmin({ orderRequests, persistOrderRequests, settings, products, showToast, notifyUser, currentUser }) {
+  const suppliers = settings?.suppliers || [];
+  const requests = [...(orderRequests || [])].sort((a, b) => b.createdAt - a.createdAt);
+
+  const [tab, setTab] = useState("pending");
+  const [editing, setEditing] = useState(null); // { requestId, items:[...], supplierId, channel }
+
+  const shown = requests.filter((r) => (tab === "pending" ? r.status === "pending" : r.status !== "pending"));
+  const pendingCount = requests.filter((r) => r.status === "pending").length;
+
+  function openReview(r) {
+    setEditing({
+      requestId: r.id,
+      items: r.items.map((i) => ({ ...i })),
+      supplierId: r.suggestedSupplierId || "",
+      channel: "whatsapp",
+    });
+  }
+
+  function setItemQty(productId, qty) {
+    setEditing((cur) => ({
+      ...cur,
+      items: cur.items.map((i) => (i.productId === productId ? { ...i, qty: Math.max(0, Number(qty) || 0) } : i)),
+    }));
+  }
+  function removeItem(productId) {
+    setEditing((cur) => ({ ...cur, items: cur.items.filter((i) => i.productId !== productId) }));
+  }
+
+  async function approveAndSend() {
+    const req = requests.find((r) => r.id === editing.requestId);
+    const items = editing.items.filter((i) => i.qty > 0);
+    if (items.length === 0) return showToast("אין מוצרים עם כמות");
+
+    const supplier = suppliers.find((s) => s.id === editing.supplierId);
+    const text = items.map((i) => `- ${i.qty} ${i.unit} ${i.name}`).join("\n");
+
+    const res = sendViaChannel(editing.channel, {
+      phone: supplier?.phone || settings?.supplierPhone || "",
+      email: supplier?.email || settings?.supplierEmail || "",
+      text,
+      subject: `הזמנת מלאי — ${todayStr()}`,
+    });
+    if (!res.ok) return showToast(res.error);
+
+    await persistOrderRequests(
+      (orderRequests || []).map((r) =>
+        r.id === editing.requestId
+          ? {
+              ...r,
+              status: "approved",
+              items,
+              approvedSupplierId: editing.supplierId,
+              decidedAt: Date.now(),
+              decidedByName: currentUser.name,
+            }
+          : r
+      )
+    );
+    if (notifyUser && req) {
+      notifyUser(req.createdById, `✅ בקשת ההזמנה שלך אושרה ונשלחה${supplier ? ` ל${supplier.name}` : ""}`, { tab: "order" });
+    }
+    setEditing(null);
+    showToast("הבקשה אושרה ונשלחה");
+  }
+
+  async function reject(r) {
+    const reason = window.prompt("סיבת הדחייה (אופציונלי):", "");
+    if (reason === null) return; // cancelled
+    await persistOrderRequests(
+      (orderRequests || []).map((x) =>
+        x.id === r.id
+          ? { ...x, status: "rejected", rejectReason: reason, decidedAt: Date.now(), decidedByName: currentUser.name }
+          : x
+      )
+    );
+    if (notifyUser) {
+      notifyUser(r.createdById, `❌ בקשת ההזמנה שלך נדחתה${reason ? `: ${reason}` : ""}`, { tab: "order" });
+    }
+    setEditing(null);
+    showToast("הבקשה נדחתה");
+  }
+
+  const statusChip = (r) => {
+    if (r.status === "approved") return <span className="text-xs px-2 py-0.5 rounded-full font-bold" style={{ background: C.sage, color: "#fff" }}>אושרה</span>;
+    if (r.status === "rejected") return <span className="text-xs px-2 py-0.5 rounded-full font-bold" style={{ background: C.stamp, color: "#fff" }}>נדחתה</span>;
+    return <span className="text-xs px-2 py-0.5 rounded-full font-bold" style={{ background: C.mustard, color: "#fff" }}>ממתינה</span>;
+  };
+
+  return (
+    <div>
+      <h2 className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>בקשות הזמנה</h2>
+      <p className="text-xs mb-3" style={{ color: C.steel }}>
+        בקשות שמנהלי המטבח שלחו. אפשר לערוך כמויות, לבחור ספק, ואז לאשר ולשלוח.
+      </p>
+
+      <div className="flex gap-2 mb-4">
+        <button
+          onClick={() => { setTab("pending"); setEditing(null); }}
+          className="flex-1 py-2 rounded-2xl text-sm font-bold"
+          style={{ background: tab === "pending" ? C.brand : C.kraft, color: tab === "pending" ? "#fff" : C.ink }}
+        >
+          ממתינות{pendingCount > 0 ? ` (${pendingCount})` : ""}
+        </button>
+        <button
+          onClick={() => { setTab("history"); setEditing(null); }}
+          className="flex-1 py-2 rounded-2xl text-sm font-bold"
+          style={{ background: tab === "history" ? C.brand : C.kraft, color: tab === "history" ? "#fff" : C.ink }}
+        >
+          היסטוריה
+        </button>
+      </div>
+
+      {shown.length === 0 && (
+        <ShelfTag accent={C.steel}>
+          <p className="text-sm text-center mb-2" style={{ color: C.steel }}>
+            {tab === "pending" ? "אין בקשות ממתינות ✓" : "אין עדיין היסטוריה"}
+          </p>
+          {tab === "pending" && (
+            <p className="text-xs text-center" style={{ color: C.steel, lineHeight: 1.6 }}>
+              כמנהל, ההזמנות שלך יוצאות ישירות לספק ולא נכנסות לכאן. המסך הזה מתמלא רק כשעובד שולח בקשה שדורשת את אישורך.
+              <br />
+              <b>מחפש את הבקשות של המעון?</b> הן נמצאות בניהול ← "בקשות מהמחסן".
+            </p>
+          )}
+        </ShelfTag>
+      )}
+
+      <div className="flex flex-col gap-3">
+        {shown.map((r) => {
+          const reviewing = editing?.requestId === r.id;
+          const accent = r.status === "approved" ? C.sage : r.status === "rejected" ? C.stamp : C.mustard;
+
+          return (
+            <ShelfTag key={r.id} accent={accent}>
+              <div className="flex justify-between items-start mb-2">
+                <div>
+                  <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
+                    {r.createdByName}
+                  </div>
+                  <div className="text-xs" style={{ color: C.steel }}>
+                    {r.source} · {r.items.length} מוצרים ·{" "}
+                    {new Date(r.createdAt).toLocaleString("he-IL", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                </div>
+                {statusChip(r)}
+              </div>
+
+              {!reviewing && (
+                <div className="flex flex-col gap-1 mb-2">
+                  {r.items.map((i) => (
+                    <div key={i.productId} className="text-xs flex justify-between" style={{ color: C.steel }}>
+                      <span>{i.name}</span>
+                      <span className="font-bold" style={{ color: C.ink }}>{i.qty} {i.unit}</span>
+                    </div>
+                  ))}
+                  {r.rejectReason && (
+                    <div className="text-xs mt-1" style={{ color: C.stamp }}>סיבה: {r.rejectReason}</div>
+                  )}
+                </div>
+              )}
+
+              {reviewing && (
+                <div className="flex flex-col gap-2 mb-2">
+                  {editing.items.map((i) => (
+                    <div key={i.productId} className="flex items-center gap-2">
+                      <span className="flex-1 text-sm" style={{ color: C.ink }}>{i.name}</span>
+                      <input
+                        type="number"
+                        value={i.qty === 0 ? "" : i.qty}
+                        onChange={(e) => setItemQty(i.productId, e.target.value)}
+                        className="w-16 text-center p-1.5 rounded-xl border"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                      <span className="text-xs" style={{ color: C.steel }}>{i.unit}</span>
+                      <button onClick={() => removeItem(i.productId)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                    </div>
+                  ))}
+
+                  <div>
+                    <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>ספק</label>
+                    <select
+                      value={editing.supplierId}
+                      onChange={(e) => setEditing({ ...editing, supplierId: e.target.value })}
+                      className="p-2 rounded-2xl border w-full text-sm"
+                      style={{ borderColor: C.kraftDark }}
+                    >
+                      <option value="">ללא ספק (מספר/מייל ברירת מחדל)</option>
+                      {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                  </div>
+
+                  <ChannelPicker value={editing.channel} onChange={(c) => setEditing({ ...editing, channel: c })} />
+                </div>
+              )}
+
+              {r.status === "pending" && (
+                <div className="flex gap-2 mt-2">
+                  {reviewing ? (
+                    <>
+                      <button onClick={approveAndSend} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+                        ✅ אשר ושלח
+                      </button>
+                      <button onClick={() => reject(r)} className="px-3 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>
+                        דחה
+                      </button>
+                      <button onClick={() => setEditing(null)} className="px-3 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+                        סגור
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button onClick={() => openReview(r)} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.brand, color: "#fff" }}>
+                        בדוק ואשר
+                      </button>
+                      <button onClick={() => reject(r)} className="px-3 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>
+                        דחה
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </ShelfTag>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function TaskCategoriesAdmin({ taskCategories, persistTaskCategories, showToast }) {
+  const ICON_CHOICES = ["⚡", "🔧", "🪚", "❄️", "🧹", "🍳", "🚿", "🔨", "🪟", "🚪", "💡", "🧯", "🌱", "📋"];
+  const [name, setName] = useState("");
+  const [icon, setIcon] = useState("📋");
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+  const [editIcon, setEditIcon] = useState("📋");
+
+  const cats = taskCategories || [];
+
+  async function add() {
+    if (!name.trim()) return showToast("יש להזין שם קטגוריה");
+    if (cats.some((c) => c.name.trim() === name.trim())) return showToast("קטגוריה כזו כבר קיימת");
+    await persistTaskCategories([...cats, { id: genId(), name: name.trim(), icon }]);
+    setName("");
+    setIcon("📋");
+    showToast("הקטגוריה נוספה");
+  }
+
+  async function saveEdit() {
+    if (!editName.trim()) return showToast("יש להזין שם קטגוריה");
+    await persistTaskCategories(
+      cats.map((c) => (c.id === editingId ? { ...c, name: editName.trim(), icon: editIcon } : c))
+    );
+    setEditingId(null);
+    showToast("הקטגוריה עודכנה");
+  }
+
+  async function remove(id) {
+    if (!window.confirm("למחוק את הקטגוריה? משימות שכבר משויכות אליה יישארו, אבל יוצגו ללא קטגוריה.")) return;
+    await persistTaskCategories(cats.filter((c) => c.id !== id));
+    showToast("הקטגוריה נמחקה");
+  }
+
+  async function move(id, dir) {
+    const idx = cats.findIndex((c) => c.id === id);
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= cats.length) return;
+    const next = [...cats];
+    [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+    await persistTaskCategories(next);
+  }
+
+  return (
+    <div>
+      <h2 className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>קטגוריות משימות</h2>
+      <p className="text-xs mb-3" style={{ color: C.steel }}>
+        חשמל, אינסטלציה, נגרות... הקטגוריה נבחרת ביצירת משימה, ואפשר לסנן לפיה במסך המשימות.
+      </p>
+
+      <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="text-sm font-bold" style={{ color: C.ink }}>הוסף קטגוריה</div>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder="שם הקטגוריה (למשל: גינון)"
+          className="p-2 rounded-2xl border"
+          style={{ borderColor: C.kraftDark }}
+        />
+        <div>
+          <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>בחר אייקון</div>
+          <div className="flex flex-wrap gap-1">
+            {ICON_CHOICES.map((ic) => (
+              <button
+                key={ic}
+                onClick={() => setIcon(ic)}
+                className="text-lg rounded-xl"
+                style={{
+                  width: 38,
+                  height: 38,
+                  background: icon === ic ? C.brand : C.kraft,
+                  border: `1.5px solid ${icon === ic ? C.brand : C.kraftDark}`,
+                }}
+              >
+                {ic}
+              </button>
+            ))}
+          </div>
+        </div>
+        <button onClick={add} className="py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
+          הוסף
+        </button>
+      </ShelfTag>
+
+      <div className="flex flex-col gap-2">
+        {cats.length === 0 && (
+          <p className="text-sm text-center py-6" style={{ color: C.steel }}>אין עדיין קטגוריות</p>
+        )}
+        {cats.map((c, idx) => (
+          <ShelfTag key={c.id} accent={categoryColor(c.name)}>
+            {editingId === c.id ? (
+              <div className="flex flex-col gap-2">
+                <input
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="p-2 rounded-2xl border"
+                  style={{ borderColor: C.kraftDark }}
+                  autoFocus
+                />
+                <div className="flex flex-wrap gap-1">
+                  {ICON_CHOICES.map((ic) => (
+                    <button
+                      key={ic}
+                      onClick={() => setEditIcon(ic)}
+                      className="text-lg rounded-xl"
+                      style={{
+                        width: 34,
+                        height: 34,
+                        background: editIcon === ic ? C.brand : C.kraft,
+                        border: `1.5px solid ${editIcon === ic ? C.brand : C.kraftDark}`,
+                      }}
+                    >
+                      {ic}
+                    </button>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={saveEdit} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+                    שמור
+                  </button>
+                  <button onClick={() => setEditingId(null)} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+                    ביטול
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex justify-between items-center">
+                <div className="font-bold text-sm" style={{ color: C.ink }}>
+                  {c.icon || "📋"} {c.name}
+                </div>
+                <div className="flex gap-1">
+                  <button onClick={() => move(c.id, -1)} disabled={idx === 0} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft, opacity: idx === 0 ? 0.4 : 1 }}>▲</button>
+                  <button onClick={() => move(c.id, 1)} disabled={idx === cats.length - 1} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft, opacity: idx === cats.length - 1 ? 0.4 : 1 }}>▼</button>
+                  <button
+                    onClick={() => { setEditingId(c.id); setEditName(c.name); setEditIcon(c.icon || "📋"); }}
+                    className="text-xs px-2 py-1 rounded-xl"
+                    style={{ background: C.kraft }}
+                  >
+                    ערוך
+                  </button>
+                  <button onClick={() => remove(c.id)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+                </div>
+              </div>
+            )}
+          </ShelfTag>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
+  const [name, setName] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [editName, setEditName] = useState("");
+
+  async function add() {
+    if (!name.trim()) return showToast("יש להזין שם קטגוריה");
+    if (dishTypes.some((d) => d.name.trim() === name.trim())) return showToast("קטגוריה כזו כבר קיימת");
+    await persistDishTypes([...dishTypes, { id: genId(), name: name.trim() }]);
+    setName("");
+    showToast("הקטגוריה נוספה");
+  }
+
+  async function saveEdit() {
+    if (!editName.trim()) return showToast("יש להזין שם");
+    await persistDishTypes(dishTypes.map((d) => (d.id === editingId ? { ...d, name: editName.trim() } : d)));
+    setEditingId(null);
+    setEditName("");
+  }
+
+  async function remove(id) {
+    await persistDishTypes(dishTypes.filter((d) => d.id !== id));
+  }
+
+  function move(id, dir) {
+    const idx = dishTypes.findIndex((d) => d.id === id);
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= dishTypes.length) return;
+    const next = [...dishTypes];
+    [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+    persistDishTypes(next);
+  }
+
+  return (
+    <div>
+      <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>סוגי מנות/קטגוריות בארוחה</div>
+        <p className="text-xs" style={{ color: C.steel }}>
+          כאן בונים מה מרכיב ארוחה אצלכם - כמה קטגוריות שרוצים (למשל: מנה עיקרית, תוספת, ירקנית, סלט, ללא גלוטן...). כל מוסד יכול לבנות סגנון שונה.
+        </p>
+        <div className="flex gap-2">
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="לדוגמה: סלט"
+            className="flex-1 p-2 rounded-2xl border"
+            style={{ borderColor: C.kraftDark }}
+          />
+          <button onClick={add} className="px-4 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>+ הוסף</button>
+        </div>
+      </ShelfTag>
+
+      <div className="flex flex-col gap-2">
+        {dishTypes.length === 0 && (
+          <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין עדיין קטגוריות - הוסף למעלה</p>
+        )}
+        {dishTypes.map((d, idx) => (
+          <div key={d.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+            {editingId === d.id ? (
+              <input
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="flex-1 p-1 rounded-xl border ml-2"
+                style={{ borderColor: C.kraftDark }}
+                autoFocus
+              />
+            ) : (
+              <div className="flex items-center gap-2">
+                <div className="font-bold text-sm" style={{ color: C.ink }}>{d.name}</div>
+                <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: d.slot ? "#D6E7F5" : C.kraft, color: C.ink }}>
+                  {d.slot ? (MEAL_SLOTS.find(([k]) => k === d.slot)?.[1] || d.slot) : "כל הארוחות"}
+                </span>
+              </div>
+            )}
+            <div className="flex gap-1 items-center">
+              <button onClick={() => move(d.id, -1)} disabled={idx === 0} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft, opacity: idx === 0 ? 0.4 : 1 }}>▲</button>
+              <button onClick={() => move(d.id, 1)} disabled={idx === dishTypes.length - 1} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft, opacity: idx === dishTypes.length - 1 ? 0.4 : 1 }}>▼</button>
+              {editingId === d.id ? (
+                <button onClick={saveEdit} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.sage, color: "#fff" }}>שמור</button>
+              ) : (
+                <button onClick={() => { setEditingId(d.id); setEditName(d.name); }} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft }}>ערוך</button>
+              )}
+              <button onClick={() => remove(d.id)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MenuAdmin({ menuItems, persistMenuItems, products, persistProducts, showToast, weeklyMenu, persistWeeklyMenu, dishTypes }) {
+  /* Adds a missing product straight to inventory without leaving the meal being built. */
+  async function quickAddProduct(rawName) {
+    const name = (rawName || "").trim();
+    if (!name) return null;
+    const existing = (products || []).find((p) => p.name === name);
+    if (existing) return existing;
+    if (!persistProducts) {
+      showToast("לא ניתן להוסיף מוצר מכאן");
+      return null;
+    }
+    const newProduct = {
+      id: genId(),
+      name,
+      barcode: "",
+      quantity: 0,
+      threshold: 1,
+      price: 0,
+      unit: "יח׳",
+      unitsPerCarton: 0,
+      category: "",
+      supplierId: "",
+      unitVisible: true,
+      imageData: null,
+    };
+    await persistProducts([...(products || []), newProduct]);
+    showToast(`"${name}" נוסף למלאי — אפשר להשלים פרטים במסך מוצרים`);
+    return newProduct;
+  }
+
+  const emptyEdit = { name: "", category: "בשרי", dishType: "", ingredients: [] };
+  const [editingId, setEditingId] = useState(null);
+  const [editForm, setEditForm] = useState(emptyEdit);
+  const [editIngProductId, setEditIngProductId] = useState(products[0]?.id || "");
+  const [editIngQty, setEditIngQty] = useState(1);
+
+  const [mealCategory, setMealCategory] = useState("בשרי");
+  const [rows, setRows] = useState([]);
+  const [assignDay, setAssignDay] = useState("");
+  const [assignMeal, setAssignMeal] = useState("lunch");
+
+  useEffect(() => {
+    if (rows.length === 0 && dishTypes.length > 0) {
+      setRows(dishTypes.map((d) => ({ rowId: genId(), dishType: d.id, locked: true, name: "", ingredients: [] })));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dishTypes.length]);
+
+  function addRow() {
+    setRows((r) => [...r, { rowId: genId(), dishType: "", locked: false, name: "", ingredients: [] }]);
+  }
+  function removeRow(rowId) {
+    setRows((r) => r.filter((row) => row.rowId !== rowId));
+  }
+  function updateRow(rowId, fields) {
+    setRows((r) => r.map((row) => (row.rowId === rowId ? { ...row, ...fields } : row)));
+  }
+  function addIngredientToRow(rowId) {
+    setRows((r) =>
+      r.map((row) =>
+        row.rowId === rowId
+          ? { ...row, ingredients: [...row.ingredients, { ingId: genId(), label: "", productId: "", qty: 1 }] }
+          : row
+      )
+    );
+  }
+  function updateIngredientInRow(rowId, key, fields) {
+    setRows((r) =>
+      r.map((row) =>
+        row.rowId === rowId
+          ? { ...row, ingredients: row.ingredients.map((i) => ((i.ingId || i.productId) === key ? { ...i, ...fields } : i)) }
+          : row
+      )
+    );
+  }
+  function removeIngredientFromRow(rowId, key) {
+    setRows((r) =>
+      r.map((row) => (row.rowId === rowId ? { ...row, ingredients: row.ingredients.filter((i) => (i.ingId || i.productId) !== key) } : row))
+    );
+  }
+
+  async function createMeal() {
+    const filled = rows.filter((r) => r.name.trim());
+    if (filled.length === 0) return showToast("מלא לפחות שורה אחת עם שם מנה");
+    const missingType = filled.find((r) => !r.dishType);
+    if (missingType) return showToast("בחר סוג מנה לכל שורה שמילאת");
+
+    const created = filled.map((r) => ({
+      id: genId(),
+      name: r.name.trim(),
+      category: mealCategory,
+      dishType: r.dishType,
+      ingredients: r.ingredients.filter((i) => i.productId),
+    }));
+    await persistMenuItems([...menuItems, ...created]);
+
+    if (assignDay && persistWeeklyMenu) {
+      const daySlots = weeklyMenu[assignDay] || {};
+      const slotTypes = { ...(daySlots[assignMeal] || {}) };
+      created.forEach((item) => {
+        slotTypes[item.dishType] = item.id;
+      });
+      await persistWeeklyMenu({ ...weeklyMenu, [assignDay]: { ...daySlots, [assignMeal]: slotTypes } });
+    }
+
+    setRows(dishTypes.map((d) => ({ rowId: genId(), dishType: d.id, locked: true, name: "", ingredients: [] })));
+    setAssignDay("");
+    showToast(assignDay ? "הארוחה נשמרה ושובצה ללוח השבועי" : "הארוחה נשמרה");
+  }
+
+  function startEdit(m) {
+    setEditForm({ ...m });
+    setEditingId(m.id);
+  }
+  function addEditIngredient() {
+    setEditForm((f) => ({ ...f, ingredients: [...f.ingredients, { ingId: genId(), label: "", productId: "", qty: 1 }] }));
+  }
+  function updateEditIngredient(key, fields) {
+    setEditForm((f) => ({ ...f, ingredients: f.ingredients.map((i) => ((i.ingId || i.productId) === key ? { ...i, ...fields } : i)) }));
+  }
+  function removeEditIngredient(key) {
+    setEditForm((f) => ({ ...f, ingredients: f.ingredients.filter((i) => (i.ingId || i.productId) !== key) }));
+  }
+  async function saveEdit() {
+    if (!editForm.name.trim()) return showToast("יש להזין שם מנה");
+    await persistMenuItems(menuItems.map((m) => (m.id === editingId ? { ...editForm, id: editingId } : m)));
+    setEditingId(null);
+    showToast("המנה עודכנה");
+  }
+
+  async function remove(id) {
+    await persistMenuItems(menuItems.filter((m) => m.id !== id));
+  }
+
+  return (
+    <div>
+      <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 12 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>בניית ארוחה</div>
+        <p className="text-xs" style={{ color: C.steel }}>
+          שורה אחת לכל סוג מנה שהגדרת (במסך "סוגי מנות"). מלא מה שרלוונטי, ואפשר להוסיף עוד שורות בכפתור למטה.
+        </p>
+
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>כשרות הארוחה</label>
+          <select value={mealCategory} onChange={(e) => setMealCategory(e.target.value)} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="בשרי">בשרי</option>
+            <option value="חלבי">חלבי</option>
+            <option value="פרווה">פרווה</option>
+          </select>
+        </div>
+
+        {dishTypes.length === 0 && (
+          <p className="text-xs" style={{ color: C.steel }}>אין עדיין סוגי מנות מוגדרים - הוסף במסך ניהול ← סוגי מנות כדי להתחיל.</p>
+        )}
+
+        {rows.map((row) => (
+          <div key={row.rowId} className="p-3 rounded-2xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+            <div className="flex justify-between items-center mb-2">
+              {row.locked ? (
+                <div className="font-bold text-sm" style={{ color: C.accent }}>
+                  {dishTypes.find((d) => d.id === row.dishType)?.name || "סוג לא ידוע"}
+                </div>
+              ) : (
+                <select
+                  value={row.dishType}
+                  onChange={(e) => updateRow(row.rowId, { dishType: e.target.value })}
+                  className="flex-1 p-2 rounded-xl border text-sm ml-2"
+                  style={{ borderColor: C.kraftDark }}
+                >
+                  <option value="">בחר סוג מנה</option>
+                  {dishTypes.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                </select>
+              )}
+              <button onClick={() => removeRow(row.rowId)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>✕ הסר שורה</button>
+            </div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>המנה (מהמלאי) — הבחירה היא גם השם וגם המוצר</label>
+            {(() => {
+              const mainIng = findMainIngredient(row.ingredients, row.name, products);
+              const mainKey = mainIng ? (mainIng.ingId || mainIng.productId) : null;
+              return (
+                <div className="flex gap-2 mb-3">
+                  <div className="flex-1">
+                    <ProductAutocomplete
+                      products={products}
+                      value={row.name}
+                      valueMode="name"
+                      bold
+                      placeholder="הקלד אות לחיפוש מנה..."
+                      onCreateProduct={quickAddProduct}
+                      onPick={(p) =>
+                        updateRow(row.rowId, {
+                          name: p.name,
+                          ingredients: applyMainProduct(row.ingredients, row.name, products, p),
+                        })
+                      }
+                    />
+                  </div>
+                  <input
+                    type="number"
+                    value={mainIng ? mainIng.qty : 1}
+                    onChange={(e) => mainKey && updateIngredientInRow(row.rowId, mainKey, { qty: Number(e.target.value) })}
+                    disabled={!mainIng}
+                    className="w-14 p-2 rounded-xl border text-center text-sm"
+                    style={{ borderColor: C.kraftDark, background: mainIng ? "#fff" : C.paper }}
+                  />
+                </div>
+              );
+            })()}
+            <RowIngredientPicker
+              products={products}
+              ingredients={(row.ingredients || []).filter((i) => i !== findMainIngredient(row.ingredients, row.name, products))}
+              onAdd={() => addIngredientToRow(row.rowId)}
+              onCreateProduct={quickAddProduct}
+              onUpdate={(key, fields) => updateIngredientInRow(row.rowId, key, fields)}
+              onRemove={(key) => removeIngredientFromRow(row.rowId, key)}
+            />
+          </div>
+        ))}
+
+        <button onClick={addRow} className="py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+          + הוסף שורת מנה
+        </button>
+
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שיבוץ ללוח השבועי (אופציונלי)</label>
+          <div className="flex gap-2">
+            <select value={assignDay} onChange={(e) => setAssignDay(e.target.value)} className="flex-1 p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
+              <option value="">— לא לשבץ עכשיו —</option>
+              {WEEK_DAYS.map(([val, label], idx) => <option key={val} value={val}>{label} ({weekdayDateLabel(idx)})</option>)}
+            </select>
+            <select value={assignMeal} onChange={(e) => setAssignMeal(e.target.value)} className="flex-1 p-2 rounded-2xl border" style={{ borderColor: C.kraftDark }}>
+              {MEAL_SLOTS.map(([val, label]) => <option key={val} value={val}>{label}</option>)}
+            </select>
+          </div>
+        </div>
+
+        <button onClick={createMeal} className="py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
+          שמור ארוחה
+        </button>
+      </ShelfTag>
+
+      {editingId && (
+        <ShelfTag accent={C.sage} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>עריכת מנה</div>
+          <label className="text-xs font-bold block" style={{ color: C.steel }}>המנה (מהמלאי) — הבחירה היא גם השם וגם המוצר</label>
+          {(() => {
+            const mainIng = findMainIngredient(editForm.ingredients, editForm.name, products);
+            const mainKey = mainIng ? (mainIng.ingId || mainIng.productId) : null;
+            return (
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <ProductAutocomplete
+                    products={products}
+                    value={editForm.name}
+                    valueMode="name"
+                    bold
+                    placeholder="הקלד אות לחיפוש מנה..."
+                    onCreateProduct={quickAddProduct}
+                    onPick={(p) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        name: p.name,
+                        ingredients: applyMainProduct(f.ingredients, f.name, products, p),
+                      }))
+                    }
+                  />
+                </div>
+                <input
+                  type="number"
+                  value={mainIng ? mainIng.qty : 1}
+                  onChange={(e) => mainKey && updateEditIngredient(mainKey, { qty: Number(e.target.value) })}
+                  disabled={!mainIng}
+                  className="w-14 p-2 rounded-xl border text-center text-sm"
+                  style={{ borderColor: C.kraftDark, background: mainIng ? "#fff" : C.paper }}
+                />
+              </div>
+            );
+          })()}
+          <select value={editForm.category} onChange={(e) => setEditForm({ ...editForm, category: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="בשרי">בשרי</option>
+            <option value="חלבי">חלבי</option>
+            <option value="פרווה">פרווה</option>
+          </select>
+          <select value={editForm.dishType || ""} onChange={(e) => setEditForm({ ...editForm, dishType: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="">בחר סוג מנה</option>
+            {dishTypes.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+          </select>
+          <label className="text-xs font-bold block" style={{ color: C.steel }}>תוספות למנה</label>
+          <div className="flex flex-col gap-2">
+            {editForm.ingredients
+              .filter((i) => i !== findMainIngredient(editForm.ingredients, editForm.name, products))
+              .map((ing) => {
+              const key = ing.ingId || ing.productId;
+              return (
+                <div key={key} className="p-2 rounded-xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+                  <div className="flex gap-2">
+                    <div className="flex-1">
+                      <ProductAutocomplete
+                        products={products}
+                        value={ing.productId}
+                        onCreateProduct={quickAddProduct}
+                        onChange={(pid) => updateEditIngredient(key, { productId: pid })}
+                      />
+                    </div>
+                    <input type="number" value={ing.qty} onChange={(e) => updateEditIngredient(key, { qty: Number(e.target.value) })} className="w-14 p-2 rounded-xl border text-center text-sm" style={{ borderColor: C.kraftDark }} />
+                    <button onClick={() => removeEditIngredient(key)} className="px-3 rounded-xl font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          <button onClick={addEditIngredient} className="w-full py-2 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+            + הוסף תוספת
+          </button>
+          <div className="flex gap-2">
+            <button onClick={saveEdit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>שמור שינויים</button>
+            <button onClick={() => setEditingId(null)} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
+          </div>
+        </ShelfTag>
+      )}
+
+      <div className="flex flex-col gap-2">
+        {menuItems.length === 0 && (
+          <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין מנות בתפריט עדיין</p>
+        )}
+        {menuItems.map((m) => (
+          <div key={m.id} className="p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+            <div className="flex justify-between items-center">
+              <div>
+                <div className="font-bold text-sm" style={{ color: C.ink }}>
+                  {m.name} <span style={{ color: categoryColor(m.category) }}>· {m.category}</span>
+                  {m.dishType && <span style={{ color: C.steel }}> · {dishTypes.find((d) => d.id === m.dishType)?.name || ""}</span>}
+                </div>
+                <div className="text-xs mt-1" style={{ color: C.steel }}>
+                  {m.ingredients.map((ing) => {
+                    const p = products.find((pp) => pp.id === ing.productId);
+                    if (!p) return "";
+                    return ing.label ? `${ing.label}: ${p.name} (${ing.qty})` : `${p.name} (${ing.qty})`;
+                  }).filter(Boolean).join(" · ")}
+                </div>
+              </div>
+              <div className="flex gap-2">
+                <button onClick={() => startEdit(m)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+                <button onClick={() => remove(m.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* The "main" ingredient is the one whose product IS the dish name.
+   Falls back to matching by name so meals saved before this change still work. */
+function findMainIngredient(ingredients, dishName, products) {
+  const list = ingredients || [];
+  return (
+    list.find((i) => i.main) ||
+    (dishName ? list.find((i) => (products || []).find((p) => p.id === i.productId)?.name === dishName) : null) ||
+    null
+  );
+}
+
+/* Picking a product sets BOTH the dish name and the dish's main product. */
+function applyMainProduct(ingredients, dishName, products, product) {
+  const list = ingredients || [];
+  const current = findMainIngredient(list, dishName, products);
+  if (current) {
+    const key = current.ingId || current.productId;
+    return list.map((i) => ((i.ingId || i.productId) === key ? { ...i, main: true, productId: product.id } : i));
+  }
+  return [{ ingId: genId(), main: true, label: "", productId: product.id, qty: 1 }, ...list];
+}
+
+/* Type-ahead product picker: type a letter and matching products appear below. */
+function ProductAutocomplete({ products, value, onChange, onPick, onCreateProduct, valueMode = "id", placeholder = "הקלד לחיפוש מוצר...", bold = false }) {
+  const [q, setQ] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const selected =
+    valueMode === "id"
+      ? (products || []).find((p) => p.id === value)
+      : (products || []).find((p) => p.name === value);
+
+  const display = open ? q : (selected ? selected.name : (valueMode === "name" && value ? value : ""));
+
+  const matches = (products || [])
+    .filter((p) => !q.trim() || p.name.includes(q.trim()))
+    .slice(0, 30);
+
+  function pick(p) {
+    if (onPick) onPick(p);
+    else onChange(valueMode === "id" ? p.id : p.name);
+    setQ("");
+    setOpen(false);
+  }
+
+  const typed = q.trim();
+  const hasExact = (products || []).some((p) => p.name === typed);
+
+  async function createAndPick() {
+    if (!typed || !onCreateProduct) return;
+    const created = await onCreateProduct(typed);
+    if (created) pick(created);
+  }
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={display}
+        onChange={(e) => { setQ(e.target.value); setOpen(true); }}
+        onFocus={() => { setQ(""); setOpen(true); }}
+        onBlur={() => setTimeout(() => {
+          // Forgiving: if they typed a brand-new name that matches no existing product,
+          // add it to inventory automatically so it isn't silently lost on save.
+          const t = q.trim();
+          if (t && !hasExact && onCreateProduct && matches.length === 0) {
+            createAndPick();
+          }
+          setOpen(false);
+        }, 150)}
+        placeholder={placeholder}
+        className={`p-2 rounded-xl border w-full text-sm ${bold ? "font-bold" : ""}`}
+        style={{ borderColor: C.kraftDark, background: C.kraft, fontSize: bold ? "1rem" : undefined }}
+      />
+      {open && (
+        <div
+          style={{
+            position: "absolute", top: "100%", right: 0, left: 0, zIndex: 40,
+            background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 12,
+            marginTop: 4, maxHeight: 200, overflowY: "auto",
+            boxShadow: "0 6px 18px rgba(20,33,61,0.15)",
+          }}
+        >
+          {matches.length === 0 && !(typed && onCreateProduct) && (
+            <div className="text-xs p-3 text-center" style={{ color: C.steel }}>לא נמצא מוצר תואם</div>
+          )}
+          {matches.map((p) => (
+            <button
+              key={p.id}
+              onMouseDown={(e) => { e.preventDefault(); pick(p); }}
+              className="w-full text-right p-2.5 text-sm"
+              style={{ background: C.kraft, color: C.ink, borderBottom: `1px solid ${C.paper}` }}
+            >
+              {p.name}
+              {p.unit && <span style={{ color: C.steel }}> · {p.unit}</span>}
+            </button>
+          ))}
+          {typed && !hasExact && onCreateProduct && (
+            <button
+              onMouseDown={(e) => { e.preventDefault(); createAndPick(); }}
+              className="w-full text-right p-3 text-sm font-bold"
+              style={{ background: C.paper, color: C.sage, borderTop: `1px solid ${C.kraftDark}` }}
+            >
+              ➕ הוסף "{typed}" למלאי ובחר
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RowIngredientPicker({ products, ingredients, onAdd, onUpdate, onRemove, onCreateProduct }) {
+  return (
+    <div>
+      <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תוספות למנה</label>
+      <div className="flex flex-col gap-2 mb-2">
+        {ingredients.length === 0 && (
+          <p className="text-xs" style={{ color: C.steel }}>אין תוספות. אפשר להוסיף בכפתור למטה.</p>
+        )}
+        {ingredients.map((ing) => {
+          const key = ing.ingId || ing.productId;
+          return (
+            <div key={key} className="p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+              <div className="flex gap-2">
+                <div className="flex-1">
+                  <ProductAutocomplete
+                    products={products}
+                    value={ing.productId}
+                    onCreateProduct={onCreateProduct}
+                    onChange={(pid) => onUpdate(key, { productId: pid })}
+                  />
+                </div>
+                <input
+                  type="number"
+                  value={ing.qty}
+                  onChange={(e) => onUpdate(key, { qty: Number(e.target.value) })}
+                  className="w-14 p-2 rounded-xl border text-center text-sm"
+                  style={{ borderColor: C.kraftDark }}
+                />
+                <button onClick={() => onRemove(key)} className="px-3 rounded-xl font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <button onClick={onAdd} className="w-full py-2 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+        + הוסף תוספת
+      </button>
+    </div>
+  );
+}
+
+/* Starting set only - the real list lives in settings.productCategories and is editable. */
+const DEFAULT_PRODUCT_CATEGORIES = [
+  "יבשים",
+  "מוצרי ניקיון",
+  "חד פעמי",
+  "קפואים",
+  "קירור / ירקות",
+  "אחר",
+];
+
+// Best-effort match of an invoice line name to an existing product id.
+function bestProductMatch(itemName, products) {
+  const n = (itemName || "").trim();
+  if (!n) return "";
+  let m = products.find((p) => (p.name || "").trim() === n);
+  if (m) return m.id;
+  m = products.find((p) => n.includes((p.name || "").trim()) || (p.name || "").trim().includes(n));
+  if (m) return m.id;
+  const nt = n.split(/\s+/).filter(Boolean);
+  let best = "", bestScore = 0;
+  products.forEach((p) => {
+    const pt = (p.name || "").split(/\s+/).filter(Boolean);
+    const score = pt.filter((w) => nt.includes(w)).length;
+    if (score > bestScore) { bestScore = score; best = p.id; }
+  });
+  return bestScore > 0 ? best : "";
+}
+
+function InvoiceScanner({ products, persistProducts, showToast, onClose }) {
+  const SUPABASE_URL = "https://axkgksyoaysvhthbxoee.supabase.co";
+  const SUPABASE_ANON_KEY =
+    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImF4a2drc3lvYXlzdmh0aGJ4b2VlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM0MTMwOTUsImV4cCI6MjA5ODk4OTA5NX0.zHJHvNwmiaFRRijy1HT53thIg72ELa8w0vZmKA9MWgA";
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [rows, setRows] = useState(null); // [{ name, price, unit, productId }]
+  const [preview, setPreview] = useState(null);
+
+  async function handleFile(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    setError("");
+    setBusy(true);
+    setRows(null);
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result);
+        r.onerror = () => rej(new Error("read failed"));
+        r.readAsDataURL(file);
+      });
+      setPreview(dataUrl);
+      const base64 = String(dataUrl).split(",")[1];
+      const mediaType = file.type || "image/jpeg";
+
+      let token = SUPABASE_ANON_KEY;
+      try { const sess = await window.auth?.getSession?.(); if (sess?.access_token) token = sess.access_token; } catch (e) {}
+
+      const resp = await fetch(`${SUPABASE_URL}/functions/v1/parse-invoice`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY },
+        body: JSON.stringify({ imageBase64: base64, mediaType }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || "שגיאה בקריאת החשבונית");
+      const items = data.items || [];
+      if (items.length === 0) { setError("לא זוהו מוצרים בתמונה. נסה תמונה ברורה יותר."); setBusy(false); return; }
+      setRows(items.map((it) => ({ name: it.name, price: it.price || 0, unit: it.unit || "", productId: bestProductMatch(it.name, products) })));
+    } catch (err) {
+      setError(String(err.message || err));
+    }
+    setBusy(false);
+  }
+
+  function updateRow(i, patch) {
+    setRows((cur) => cur.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  }
+
+  async function applyPrices() {
+    const updates = (rows || []).filter((r) => r.productId && Number(r.price) > 0);
+    if (updates.length === 0) { showToast("אין שורות עם מוצר ומחיר לעדכון"); return; }
+    if (typeof window !== "undefined" && !window.confirm(`לעדכן מחיר ל-${updates.length} מוצרים?`)) return;
+    const byId = {};
+    updates.forEach((r) => { byId[r.productId] = Number(r.price); });
+    const next = products.map((p) => (byId[p.id] != null ? { ...p, price: byId[p.id] } : p));
+    await persistProducts(next);
+    showToast(`עודכנו מחירים ל-${updates.length} מוצרים`);
+    onClose();
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" style={{ background: "rgba(35,31,61,0.55)" }} onClick={onClose}>
+      <div
+        dir="rtl"
+        onClick={(e) => e.stopPropagation()}
+        style={{ background: C.paper, width: "100%", maxWidth: 520, maxHeight: "90vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 16, margin: "0 auto" }}
+      >
+        <div className="flex justify-between items-center mb-3">
+          <div className="wh-display font-black text-lg" style={{ color: C.ink }}>📸 סריקת חשבונית</div>
+          <button onClick={onClose} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>סגור</button>
+        </div>
+
+        {!rows && (
+          <div>
+            <p className="text-sm mb-3" style={{ color: C.steel }}>
+              צלם או העלה תמונה של חשבונית/תעודת משלוח, והמערכת תזהה את המוצרים והמחירים ותתאים אותם למלאי.
+            </p>
+            <label
+              className="block w-full text-center py-3 rounded-2xl font-bold cursor-pointer"
+              style={{ background: C.brand, color: "#fff" }}
+            >
+              {busy ? "קורא את החשבונית…" : "📷 צלם / העלה חשבונית"}
+              <input type="file" accept="image/*" onChange={handleFile} style={{ display: "none" }} disabled={busy} />
+            </label>
+            {busy && <p className="text-xs text-center mt-3" style={{ color: C.steel }}>מזהה מוצרים ומחירים… זה עשוי לקחת כמה שניות.</p>}
+            {error && <p className="text-sm mt-3 p-2 rounded-xl" style={{ background: "#fde8e8", color: C.stamp }}>{error}</p>}
+          </div>
+        )}
+
+        {rows && (
+          <div>
+            <p className="text-xs mb-2" style={{ color: C.steel }}>
+              בדוק את הזיהוי, התאם כל שורה למוצר במלאי (או "דלג"), ותקן מחיר אם צריך. רק שורות עם מוצר ומחיר יעודכנו.
+            </p>
+            <div className="flex flex-col gap-2 mb-3">
+              {rows.map((r, i) => (
+                <div key={i} className="p-2 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                  <div className="text-sm font-bold mb-1" style={{ color: C.ink }}>{r.name}{r.unit ? ` · ${r.unit}` : ""}</div>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={r.productId}
+                      onChange={(e) => updateRow(i, { productId: e.target.value })}
+                      className="flex-1 p-2 rounded-xl border text-sm"
+                      style={{ borderColor: C.kraftDark, background: r.productId ? "#fff" : "rgba(232,168,77,0.15)" }}
+                    >
+                      <option value="">— דלג (לא לעדכן) —</option>
+                      {products.map((p) => (
+                        <option key={p.id} value={p.id}>{p.name}</option>
+                      ))}
+                    </select>
+                    <div className="flex items-center gap-1">
+                      <span style={{ color: C.steel }}>₪</span>
+                      <input
+                        type="number"
+                        value={r.price === 0 ? "" : r.price}
+                        onChange={(e) => updateRow(i, { price: Math.max(0, Number(e.target.value) || 0) })}
+                        className="w-20 text-center p-2 rounded-xl border"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={applyPrices} className="flex-1 py-3 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
+                ✓ עדכן מחירים במלאי
+              </button>
+              <button onClick={() => { setRows(null); setPreview(null); setError(""); }} className="px-4 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
+                חשבונית אחרת
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ProductsAdmin({ products, persistProducts, showToast, settings, persistSettings }) {
+  const suppliers = settings?.suppliers || [];
+  const categories = settings?.productCategories || DEFAULT_PRODUCT_CATEGORIES;
+  const [showCatManager, setShowCatManager] = useState(false);
+  const [invoiceOpen, setInvoiceOpen] = useState(false);
+  const [newCat, setNewCat] = useState("");
+  const [renamingCat, setRenamingCat] = useState(null);
+  const [renameValue, setRenameValue] = useState("");
+
+  async function persistCategories(next) {
+    await persistSettings({ ...settings, productCategories: next });
+  }
+
+  async function addCategory() {
+    const name = newCat.trim();
+    if (!name) return showToast("יש להזין שם קטגוריה");
+    if (categories.includes(name)) return showToast("קטגוריה כזו כבר קיימת");
+    await persistCategories([...categories, name]);
+    setNewCat("");
+    showToast(`הקטגוריה "${name}" נוספה`);
+  }
+
+  async function renameCategory(oldName) {
+    const name = renameValue.trim();
+    if (!name) return showToast("יש להזין שם קטגוריה");
+    if (name !== oldName && categories.includes(name)) return showToast("קטגוריה כזו כבר קיימת");
+    await persistCategories(categories.map((c) => (c === oldName ? name : c)));
+    // Keep existing products pointing at the renamed category.
+    const affected = products.filter((p) => p.category === oldName);
+    if (affected.length > 0) {
+      await persistProducts(products.map((p) => (p.category === oldName ? { ...p, category: name } : p)));
+    }
+    setRenamingCat(null);
+    showToast(`שונה ל"${name}"${affected.length ? ` · ${affected.length} מוצרים עודכנו` : ""}`);
+  }
+
+  async function removeCategory(name) {
+    const inUse = products.filter((p) => p.category === name).length;
+    const msg = inUse > 0
+      ? `יש ${inUse} מוצרים בקטגוריה "${name}". למחוק אותה? המוצרים יישארו אבל יעברו ל"ללא קטגוריה".`
+      : `למחוק את הקטגוריה "${name}"?`;
+    if (!window.confirm(msg)) return;
+    await persistCategories(categories.filter((c) => c !== name));
+    if (inUse > 0) {
+      await persistProducts(products.map((p) => (p.category === name ? { ...p, category: "" } : p)));
+    }
+    showToast("הקטגוריה נמחקה");
+  }
+
+  async function moveCategory(name, dir) {
+    const idx = categories.indexOf(name);
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= categories.length) return;
+    const next = [...categories];
+    [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+    await persistCategories(next);
+  }
+
+  const empty = { name: "", orderName: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "", unitVisible: true, imageData: null };
+  const [form, setForm] = useState(empty);
+  const [editingId, setEditingId] = useState(null);
+  const [scanningBarcode, setScanningBarcode] = useState(false);
+  const fileInputRef = useRef(null);
+  const [importing, setImporting] = useState(false);
+  const [pasteMode, setPasteMode] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [namesMode, setNamesMode] = useState(false);
+  const [namesText, setNamesText] = useState("");
+  const [namesRows, setNamesRows] = useState(null); // null while typing; array once previewing
+  const [nDefUnit, setNDefUnit] = useState("יח׳");
+  const [nDefThreshold, setNDefThreshold] = useState(1);
+  const [nDefCategory, setNDefCategory] = useState("");
+  const [nDefSupplier, setNDefSupplier] = useState("");
+  const [adminSearch, setAdminSearch] = useState("");
+  const [visFilter, setVisFilter] = useState("all"); // all | open | hidden
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [bulkThreshold, setBulkThreshold] = useState("");
+  const [bulkCategory, setBulkCategory] = useState("");
+  const [bulkSupplier, setBulkSupplier] = useState("");
+  const [photoBusy, setPhotoBusy] = useState(false);
+
+  const formRef = useRef(null);
+
+  async function handleProductPhoto(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setPhotoBusy(true);
+    try {
+      const dataUrl = await resizeImageToDataUrl(file);
+      setForm((f) => ({ ...f, imageData: dataUrl }));
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setPhotoBusy(false);
+    }
+  }
+
+  function toggleSelect(id) {
+    setSelectedIds((cur) => (cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id]));
+  }
+
+  async function applyBulkThreshold() {
+    if (selectedIds.length === 0) return showToast("בחר לפחות מוצר אחד");
+    if (bulkThreshold === "" || Number(bulkThreshold) < 0) return showToast("הזן סף מינימום תקין");
+    const next = products.map((p) =>
+      selectedIds.includes(p.id) ? { ...p, threshold: Number(bulkThreshold) } : p
+    );
+    await persistProducts(next);
+    showToast(`עודכן סף מינימום ל-${bulkThreshold} עבור ${selectedIds.length} מוצרים`);
+    setSelectedIds([]);
+    setBulkThreshold("");
+  }
+
+  async function applyBulkCategory() {
+    if (selectedIds.length === 0) return showToast("בחר לפחות מוצר אחד");
+    if (!bulkCategory) return showToast("בחר קטגוריה");
+    const next = products.map((p) =>
+      selectedIds.includes(p.id) ? { ...p, category: bulkCategory } : p
+    );
+    await persistProducts(next);
+    showToast(`עודכנה קטגוריה ל-${selectedIds.length} מוצרים`);
+    setSelectedIds([]);
+    setBulkCategory("");
+  }
+  async function applyBulkSupplier() {
+    if (selectedIds.length === 0) return showToast("בחר לפחות מוצר אחד");
+    const next = products.map((p) =>
+      selectedIds.includes(p.id) ? { ...p, supplierId: bulkSupplier || "" } : p
+    );
+    await persistProducts(next);
+    const label = bulkSupplier
+      ? suppliers.find((sp) => sp.id === bulkSupplier)?.name || "ספק"
+      : "ללא ספק";
+    showToast(`${selectedIds.length} מוצרים שויכו ל${label}`);
+    setSelectedIds([]);
+    setBulkSupplier("");
+  }
+
+  async function toggleUnitVisible(product) {
+    const next = products.map((p) =>
+      p.id === product.id ? { ...p, unitVisible: p.unitVisible === false } : p
+    );
+    await persistProducts(next);
+    showToast(
+      product.unitVisible === false
+        ? `"${product.name}" נפתח להזמנת יחידות`
+        : `"${product.name}" הוסתר מהיחידות`
+    );
+  }
+
+  async function applyBulkVisibility(visible) {
+    if (selectedIds.length === 0) return showToast("בחר לפחות מוצר אחד");
+    await persistProducts(
+      products.map((p) => (selectedIds.includes(p.id) ? { ...p, unitVisible: visible } : p))
+    );
+    showToast(
+      visible
+        ? `${selectedIds.length} מוצרים נפתחו להזמנה ליחידות`
+        : `${selectedIds.length} מוצרים הוסתרו מהיחידות`
+    );
+    setSelectedIds([]);
+  }
+
+
+  function selectAllInCategory(cat) {
+    const ids = products.filter((p) => (p.category || "ללא קטגוריה") === cat).map((p) => p.id);
+    setSelectedIds((cur) => Array.from(new Set([...cur, ...ids])));
+  }
+
+  function startEdit(p) {
+    setForm(p);
+    setEditingId(p.id);
+    setTimeout(() => formRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }), 50);
+  }
+
+  async function save() {
+    if (!form.name.trim()) return showToast("יש להזין שם מוצר");
+    let next;
+    if (editingId) {
+      next = products.map((p) => (p.id === editingId ? { ...form, id: editingId } : p));
+    } else {
+      next = [...products, { ...form, id: genId() }];
+    }
+    await persistProducts(next);
+    setForm(empty);
+    setEditingId(null);
+    showToast("המוצר נשמר");
+  }
+
+  async function remove(id) {
+    await persistProducts(products.filter((p) => p.id !== id));
+  }
+
+  function normKey(s) { return String(s).trim().toLowerCase(); }
+  function pickField(row, keys) {
+    for (const k of Object.keys(row)) {
+      if (keys.includes(normKey(k))) return row[k];
+    }
+    return "";
+  }
+
+  async function applyImportedRows(rows) {
+    const suppliers = settings?.suppliers || [];
+    const newSuppliersFound = [];
+
+    function resolveSupplierId(supplierName) {
+      if (!supplierName) return "";
+      const clean = supplierName.trim();
+      if (!clean) return "";
+      const existing = suppliers.find((s) => s.name.trim() === clean);
+      if (existing) return existing.id;
+      const alreadyQueued = newSuppliersFound.find((s) => s.name === clean);
+      if (alreadyQueued) return alreadyQueued.id;
+      const id = genId();
+      newSuppliersFound.push({ id, name: clean, phone: "" });
+      return id;
+    }
+
+    const imported = rows
+      .map((row) => {
+        const name = pickField(row, ["name", "שם", "שם מוצר", "מוצר"]);
+        if (!name) return null;
+        const barcode = String(pickField(row, ["barcode", "ברקוד", "קוד"]) || "");
+        const quantity = Number(pickField(row, ["quantity", "כמות", "מלאי"]) || 0);
+        const threshold = Number(pickField(row, ["threshold", "סף", "סף מינימום", "סף מינ׳"]) || 1);
+        const price = Number(pickField(row, ["price", "מחיר"]) || 0);
+        const unit = String(pickField(row, ["unit", "יחידה", "יח׳"]) || "יח׳");
+        const unitsPerCarton = Number(pickField(row, ["unitspercarton", "יחידות בקרטון", "בקרטון", "יח בקרטון"]) || 0);
+        const category = String(pickField(row, ["category", "קטגוריה", "קטגוריא"]) || "");
+        const supplierName = String(pickField(row, ["supplier", "ספק"]) || "");
+        const supplierId = resolveSupplierId(supplierName);
+        return { name: String(name), barcode, quantity, threshold, price, unit, unitsPerCarton, category, supplierId };
+      })
+      .filter(Boolean);
+
+    if (imported.length === 0) {
+      showToast("לא נמצאו שורות עם שם מוצר תקין");
+      return;
+    }
+
+    if (newSuppliersFound.length > 0 && persistSettings) {
+      await persistSettings({ ...settings, suppliers: [...suppliers, ...newSuppliersFound] });
+    }
+
+    let next = [...products];
+    let added = 0, updated = 0;
+    for (const item of imported) {
+      const normName = (s) => String(s).trim().toLowerCase();
+      const existingIdx = item.barcode
+        ? next.findIndex((p) => p.barcode && p.barcode === item.barcode)
+        : next.findIndex((p) => normName(p.name) === normName(item.name));
+      if (existingIdx >= 0) {
+        next[existingIdx] = { ...next[existingIdx], ...item };
+        updated++;
+      } else {
+        next.push({ ...item, id: genId() });
+        added++;
+      }
+    }
+    await persistProducts(next);
+    const supplierNote = newSuppliersFound.length > 0 ? ` (נוצרו ${newSuppliersFound.length} ספקים חדשים - הוסף להם טלפון בהגדרות)` : "";
+    showToast(`יובאו ${added} מוצרים חדשים, עודכנו ${updated}${supplierNote}`);
+  }
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImporting(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      await applyImportedRows(rows);
+    } catch (err) {
+      console.error(err);
+      showToast("שגיאה בקריאת הקובץ. ודא שזה קובץ Excel או CSV תקין");
+    } finally {
+      setImporting(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  function parseNamesList() {
+    const lines = namesText.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length === 0) { showToast("הדבק שמות מוצרים - שם לכל שורה"); return; }
+    const rows = lines.map((l) => {
+      const parts = l.split(/[,\t]/).map((x) => x.trim());
+      const name = parts[0];
+      const qtyRaw = parts[1];
+      const qty = qtyRaw !== undefined && qtyRaw !== "" && !isNaN(Number(qtyRaw)) ? Number(qtyRaw) : 0;
+      return { name, qty };
+    }).filter((r) => r.name);
+    setNamesRows(rows);
+  }
+
+  async function addNamesList() {
+    const rows = namesRows || [];
+    const normName = (s) => String(s).trim().toLowerCase();
+    let next = [...products];
+    let added = 0, skipped = 0;
+    for (const r of rows) {
+      const nm = (r.name || "").trim();
+      if (!nm) continue;
+      if (next.some((p) => normName(p.name) === normName(nm))) { skipped++; continue; }
+      next.push({
+        ...empty,
+        id: genId(),
+        name: nm,
+        quantity: Number(r.qty) || 0,
+        threshold: Number(nDefThreshold) || 1,
+        unit: r.unit || nDefUnit || "יח׳",
+        category: nDefCategory || "",
+        supplierId: nDefSupplier || "",
+      });
+      added++;
+    }
+    await persistProducts(next);
+    showToast(`נוספו ${added} מוצרים${skipped ? `, דילגתי על ${skipped} שכבר קיימים` : ""}`);
+    setNamesMode(false); setNamesText(""); setNamesRows(null);
+  }
+
+  async function handlePasteImport() {
+    if (!pasteText.trim()) return showToast("הדבק קודם נתונים בתיבה");
+    setImporting(true);
+    try {
+      const wb = XLSX.read(pasteText, { type: "string" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: "" });
+      await applyImportedRows(rows);
+      setPasteText("");
+      setPasteMode(false);
+    } catch (err) {
+      console.error(err);
+      showToast("שגיאה בפענוח הטקסט שהודבק");
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function exportToExcel() {
+    const rows = products.map((p) => ({
+      "שם מוצר": p.name,
+      "ברקוד": p.barcode || "",
+      "כמות": p.quantity,
+      "יחידות בקרטון": p.unitsPerCarton || "",
+      "סף מינימום": p.threshold,
+      "מחיר": p.price,
+      "יחידה": p.unit,
+      "קטגוריה": p.category || "",
+      "ספק": suppliers.find((s) => s.id === p.supplierId)?.name || "",
+    }));
+    if (rows.length === 0) {
+      rows.push({
+        "שם מוצר": "", "ברקוד": "", "כמות": "", "יחידות בקרטון": "",
+        "סף מינימום": "", "מחיר": "", "יחידה": "", "קטגוריה": "", "ספק": "",
+      });
+    }
+    const sheet = XLSX.utils.json_to_sheet(rows);
+    sheet["!cols"] = [
+      { wch: 26 }, { wch: 20 }, { wch: 10 }, { wch: 16 },
+      { wch: 12 }, { wch: 10 }, { wch: 12 }, { wch: 18 }, { wch: 20 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, sheet, "Products");
+    XLSX.writeFile(wb, "products-export.xlsx");
+    showToast("הקובץ יורד עכשיו");
+  }
+
+  return (
+    <div>
+      {invoiceOpen && (
+        <InvoiceScanner products={products} persistProducts={persistProducts} showToast={showToast} onClose={() => setInvoiceOpen(false)} />
+      )}
+      <div className="mb-4">
+        <button
+          onClick={() => setInvoiceOpen(true)}
+          className="w-full py-3 rounded-2xl font-bold mb-2"
+          style={{ background: C.sage, color: "#fff" }}
+        >
+          📸 סרוק חשבונית ועדכן מחירים
+        </button>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          onChange={handleFile}
+          className="hidden"
+        />
+        <div className="flex gap-2 mb-2">
+          <button
+            onClick={exportToExcel}
+            className="flex-1 py-2 rounded-2xl font-bold text-sm"
+            style={{ background: C.accent, color: "#fff" }}
+          >
+            📤 ייצוא טבלה לאקסל
+          </button>
+        </div>
+        <div className="flex gap-2">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            className="flex-1 py-2 rounded-2xl font-bold text-sm"
+            style={{ background: C.mustard, color: C.ink }}
+          >
+            {importing ? "מייבא..." : "📥 בחר קובץ אקסל/CSV"}
+          </button>
+          <button
+            onClick={() => setPasteMode((v) => !v)}
+            className="flex-1 py-2 rounded-2xl font-bold text-sm"
+            style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+          >
+            📋 הדבקת נתונים
+          </button>
+        </div>
+        <button
+          onClick={() => { setNamesMode((v) => !v); setNamesRows(null); }}
+          className="w-full mt-2 py-2 rounded-2xl font-bold text-sm"
+          style={{ background: C.ink, color: C.paper }}
+        >
+          📝 הדבקת רשימת שמות (והגדרת כמויות)
+        </button>
+
+        {namesMode && (
+          <div className="mt-2 p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+            {!namesRows ? (
+              <>
+                <p className="text-xs mb-2" style={{ color: C.steel }}>
+                  הדבק שמות מוצרים - שם אחד לכל שורה. אפשר גם "שם, כמות" (למשל: אורז, 20).
+                </p>
+                <textarea
+                  value={namesText}
+                  onChange={(e) => setNamesText(e.target.value)}
+                  placeholder={"אורז\nסוכר\nשמן, 12\nקמח"}
+                  rows={7}
+                  className="w-full p-2 rounded-2xl border text-sm mb-2"
+                  style={{ borderColor: C.kraftDark }}
+                />
+                <button onClick={parseNamesList} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
+                  המשך להגדרת כמויות ←
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="text-xs font-bold mb-1" style={{ color: C.ink }}>הגדרות שיחולו על כל המוצרים:</div>
+                <div className="grid grid-cols-2 gap-2 mb-3">
+                  <select value={nDefUnit} onChange={(e) => setNDefUnit(e.target.value)} className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}>
+                    <option value="יח׳">יחידה ברירת מחדל: יח׳</option>
+                    <option value="קרטון">ברירת מחדל: קרטון</option>
+                    <option value="ארגז">ברירת מחדל: ארגז</option>
+                    <option value="שק">ברירת מחדל: שק</option>
+                    <option value='ק"ג'>ברירת מחדל: ק"ג</option>
+                  </select>
+                  <input type="number" value={nDefThreshold} onChange={(e) => setNDefThreshold(e.target.value)} placeholder="סף מינימום" className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark }} />
+                  <select value={nDefCategory} onChange={(e) => setNDefCategory(e.target.value)} className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft }}>
+                    <option value="">בלי קטגוריה</option>
+                    {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <select value={nDefSupplier} onChange={(e) => setNDefSupplier(e.target.value)} className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft }}>
+                    <option value="">בלי ספק</option>
+                    {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                  </select>
+                </div>
+                <div className="text-xs font-bold mb-1" style={{ color: C.ink }}>{namesRows.length} מוצרים - קבע כמות ויחידה לכל אחד:</div>
+                <div className="flex flex-col gap-1 mb-3" style={{ maxHeight: 260, overflowY: "auto" }}>
+                  {namesRows.map((r, i) => (
+                    <div key={i} className="flex items-center gap-1.5">
+                      <input
+                        value={r.name}
+                        onChange={(e) => setNamesRows((rows) => rows.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
+                        className="flex-1 p-1.5 rounded-lg border text-sm"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                      <input
+                        type="number"
+                        value={r.qty}
+                        onChange={(e) => setNamesRows((rows) => rows.map((x, j) => (j === i ? { ...x, qty: e.target.value } : x)))}
+                        placeholder="כמות"
+                        className="w-14 p-1.5 text-center rounded-lg border text-sm"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                      <select
+                        value={r.unit ?? nDefUnit}
+                        onChange={(e) => setNamesRows((rows) => rows.map((x, j) => (j === i ? { ...x, unit: e.target.value } : x)))}
+                        className="p-1.5 rounded-lg border text-sm"
+                        style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}
+                      >
+                        <option value="יח׳">יח׳</option>
+                        <option value="קרטון">קרטון</option>
+                        <option value="ארגז">ארגז</option>
+                        <option value="שק">שק</option>
+                        <option value='ק"ג'>ק"ג</option>
+                        <option value="מארז">מארז</option>
+                        <option value="בקבוק">בקבוק</option>
+                      </select>
+                      <button onClick={() => setNamesRows((rows) => rows.filter((_, j) => j !== i))} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={addNamesList} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+                    ➕ הוסף {namesRows.length} מוצרים
+                  </button>
+                  <button onClick={() => setNamesRows(null)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                    חזור
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+        <p className="text-xs mt-1 text-center" style={{ color: C.steel }}>
+          עמודות מזוהות: שם מוצר, ברקוד, כמות, סף מינימום, מחיר, יחידה. אם יש ברקוד - מתאים לפיו; אם אין ברקוד - מתאים לפי שם מדויק. במקרה של התאמה, המוצר מתעדכן ולא מתווסף כפול.
+        </p>
+
+        {pasteMode && (
+          <div className="mt-2 flex flex-col gap-2">
+            <p className="text-xs" style={{ color: C.steel }}>
+              פתח את קובץ האקסל, סמן את כל הטבלה כולל שורת הכותרות, העתק (Ctrl+C), והדבק כאן:
+            </p>
+            <textarea
+              value={pasteText}
+              onChange={(e) => setPasteText(e.target.value)}
+              placeholder={"שם מוצר\tברקוד\tכמות\tסף מינימום\tמחיר\tיחידה\nאורז\t123456\t20\t5\t24.9\tשק"}
+              rows={6}
+              className="p-2 rounded-2xl border text-xs"
+              style={{ borderColor: C.kraftDark, direction: "ltr", fontFamily: "monospace" }}
+            />
+            <button
+              onClick={handlePasteImport}
+              disabled={importing}
+              className="py-2 rounded-2xl font-bold text-sm"
+              style={{ background: C.sage, color: "#fff" }}
+            >
+              {importing ? "מייבא..." : "ייבא מהטקסט שהודבק"}
+            </button>
+          </div>
+        )}
+      </div>
+
+      <div ref={formRef}>
+      <ShelfTag accent={C.sage} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>
+          {editingId ? "עריכת מוצר" : "הוספת מוצר חדש"}
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם מוצר</label>
+          <input placeholder="שם מוצר" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם אצל הספק (להזמנה)</label>
+          <input placeholder="ריק = אותו שם כמו למעלה" value={form.orderName || ""} onChange={(e) => setForm({ ...form, orderName: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+          <p className="text-xs mt-1" style={{ color: C.steel }}>אם הספק מכיר את המוצר בשם אחר (למשל "נתחי עוף"), כתוב אותו כאן — הוא יופיע בהזמנה במקום שם התפריט.</p>
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>ברקוד</label>
+          <div className="flex gap-2">
+            <input placeholder="ברקוד" value={form.barcode} onChange={(e) => setForm({ ...form, barcode: e.target.value })} className="p-2 rounded-2xl border flex-1" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+            <button
+              type="button"
+              onClick={() => setScanningBarcode(true)}
+              className="px-4 rounded-2xl font-bold whitespace-nowrap"
+              style={{ background: C.steel, color: "#fff" }}
+            >
+              📷 סרוק
+            </button>
+          </div>
+        </div>
+        {scanningBarcode && (
+          <BarcodeScanner
+            onDetected={(code) => {
+              const clash = products.find((p) => p.barcode === code && p.id !== editingId);
+              if (clash) showToast && showToast(`⚠️ הברקוד כבר משויך ל"${clash.name}"`);
+              else showToast && showToast(`ברקוד נקלט: ${code}`);
+              setForm((f) => ({ ...f, barcode: code }));
+              setScanningBarcode(false);
+            }}
+            onClose={() => setScanningBarcode(false)}
+          />
+        )}
+        <div className="flex gap-2">
+          <div className="flex-1">
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>כמות במלאי</label>
+            <input type="number" placeholder="כמות" value={form.quantity === 0 ? "" : form.quantity} onChange={(e) => setForm({ ...form, quantity: e.target.value === "" ? 0 : Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+          </div>
+          <div className="flex-1">
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>סף מינימום</label>
+            <input type="number" placeholder="סף מינ׳" value={form.threshold === 0 ? "" : form.threshold} onChange={(e) => setForm({ ...form, threshold: e.target.value === "" ? 0 : Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <div className="flex-1">
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מחיר ליחידה (₪)</label>
+            <input type="number" placeholder="מחיר ליחידה" value={form.price === 0 ? "" : form.price} onChange={(e) => setForm({ ...form, price: e.target.value === "" ? 0 : Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+          </div>
+          <div className="flex-1">
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>יחידת מידה</label>
+            <input placeholder="ק״ג, יח׳..." value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+          </div>
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>יחידות בקרטון (אופציונלי)</label>
+          <input type="number" placeholder="יחידות בקרטון" value={form.unitsPerCarton || ""} onChange={(e) => setForm({ ...form, unitsPerCarton: Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+        </div>
+        <div>
+          <div className="flex justify-between items-center mb-1">
+            <label className="text-xs font-bold" style={{ color: C.steel }}>קטגוריה</label>
+            <button
+              onClick={() => setShowCatManager((v) => !v)}
+              className="text-xs font-bold underline"
+              style={{ color: C.accent }}
+            >
+              {showCatManager ? "סגור ניהול קטגוריות" : "⚙️ נהל קטגוריות"}
+            </button>
+          </div>
+          <select value={form.category || ""} onChange={(e) => setForm({ ...form, category: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="">ללא קטגוריה</option>
+            {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+          </select>
+
+          {showCatManager && (
+            <div className="mt-2 p-3 rounded-2xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+              <div className="flex gap-2 mb-3">
+                <input
+                  value={newCat}
+                  onChange={(e) => setNewCat(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && addCategory()}
+                  placeholder="שם קטגוריה חדשה"
+                  className="flex-1 p-2 rounded-xl border text-sm"
+                  style={{ borderColor: C.kraftDark, background: C.kraft }}
+                />
+                <button onClick={addCategory} className="px-4 rounded-xl font-bold text-sm" style={{ background: C.brand, color: "#fff" }}>
+                  הוסף
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-1.5">
+                {categories.map((c, idx) => {
+                  const count = products.filter((p) => p.category === c).length;
+                  const col = categoryColor(c);
+                  return (
+                    <div key={c} className="flex items-center gap-1.5 p-2 rounded-xl" style={{ background: C.kraft, borderRight: `4px solid ${col}` }}>
+                      {renamingCat === c ? (
+                        <>
+                          <input
+                            value={renameValue}
+                            onChange={(e) => setRenameValue(e.target.value)}
+                            onKeyDown={(e) => e.key === "Enter" && renameCategory(c)}
+                            className="flex-1 p-1.5 rounded-lg border text-sm"
+                            style={{ borderColor: C.kraftDark }}
+                            autoFocus
+                          />
+                          <button onClick={() => renameCategory(c)} className="text-xs px-2 py-1 rounded-lg font-bold" style={{ background: C.sage, color: "#fff" }}>שמור</button>
+                          <button onClick={() => setRenamingCat(null)} className="text-xs px-2 py-1 rounded-lg" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
+                        </>
+                      ) : (
+                        <>
+                          <span className="flex-1 text-sm font-bold" style={{ color: C.ink }}>
+                            {c} <span className="font-normal text-xs" style={{ color: C.steel }}>({count})</span>
+                          </span>
+                          <button onClick={() => moveCategory(c, -1)} disabled={idx === 0} className="text-xs px-1.5 py-1 rounded-lg" style={{ background: C.kraft, opacity: idx === 0 ? 0.35 : 1 }}>▲</button>
+                          <button onClick={() => moveCategory(c, 1)} disabled={idx === categories.length - 1} className="text-xs px-1.5 py-1 rounded-lg" style={{ background: C.kraft, opacity: idx === categories.length - 1 ? 0.35 : 1 }}>▼</button>
+                          <button onClick={() => { setRenamingCat(c); setRenameValue(c); }} className="text-xs px-2 py-1 rounded-lg" style={{ background: C.kraft, color: C.ink }}>שנה שם</button>
+                          <button onClick={() => removeCategory(c)} className="text-xs px-2 py-1 rounded-lg" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+                        </>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-xs mt-2" style={{ color: C.steel }}>
+                שינוי שם מעדכן אוטומטית את כל המוצרים בקטגוריה.
+              </p>
+            </div>
+          )}
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>ספק קבוע למוצר (אופציונלי)</label>
+          <select value={form.supplierId || ""} onChange={(e) => setForm({ ...form, supplierId: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+            <option value="">ללא ספק קבוע</option>
+            {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+          {suppliers.length === 0 && (
+            <p className="text-xs mt-1" style={{ color: C.steel }}>הוסף ספקים במסך ניהול ← הגדרות כדי לבחור כאן.</p>
+          )}
+        </div>
+        <div className="p-3 rounded-2xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+          <label className="flex items-start gap-2 text-sm" style={{ color: C.ink }}>
+            <input
+              type="checkbox"
+              checked={form.unitVisible !== false}
+              onChange={(e) => setForm({ ...form, unitVisible: e.target.checked })}
+              style={{ marginTop: 4 }}
+            />
+            <span>
+              <b>👁️ פתוח להזמנת יחידות</b>
+              <span className="block text-xs" style={{ color: C.steel }}>
+                יחידות כמו המעון יראו את המוצר ויוכלו להזמין אותו ממך. הורד את הסימון כדי להסתיר אותו מהן.
+              </span>
+            </span>
+          </label>
+        </div>
+        <div>
+          <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
+            {photoBusy ? "טוען תמונה..." : form.imageData ? "📷 החלף תמונת מוצר" : "📷 צרף תמונת מוצר"}
+            <input type="file" accept="image/*" capture="environment" onChange={handleProductPhoto} className="hidden" />
+          </label>
+          {form.imageData && (
+            <div className="mt-2 relative inline-block">
+              <img src={form.imageData} alt="" className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%" }} />
+              <button onClick={() => setForm({ ...form, imageData: null })} className="absolute -top-2 -left-2 w-6 h-6 rounded-full font-bold text-xs" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+            </div>
+          )}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>
+            {editingId ? "שמור שינויים" : "הוסף מוצר"}
+          </button>
+          {editingId && (
+            <button onClick={() => { setForm(empty); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>
+              ביטול
+            </button>
+          )}
+        </div>
+      </ShelfTag>
+      </div>
+
+      <input
+        value={adminSearch}
+        onChange={(e) => setAdminSearch(e.target.value)}
+        placeholder="חיפוש מוצר..."
+        className="p-2 rounded-2xl border w-full mb-3"
+        style={{ borderColor: C.kraftDark, background: C.kraft }}
+      />
+
+      <div className="flex gap-2 mb-3">
+        {[
+          ["all", `הכל (${products.length})`],
+          ["open", `👁️ פתוחים ליחידות (${products.filter((p) => p.unitVisible !== false).length})`],
+          ["hidden", `🚫 מוסתרים (${products.filter((p) => p.unitVisible === false).length})`],
+        ].map(([id, label]) => (
+          <button
+            key={id}
+            onClick={() => setVisFilter(id)}
+            className="flex-1 py-2 rounded-2xl text-xs font-bold"
+            style={{
+              background: visFilter === id ? C.brand : C.kraft,
+              color: visFilter === id ? "#fff" : C.ink,
+              border: `1px solid ${C.kraftDark}`,
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {selectedIds.length > 0 && (
+        <ShelfTag accent={C.accent} style={{ marginBottom: 16 }}>
+          <div className="text-sm font-bold mb-2" style={{ color: C.ink }}>
+            {selectedIds.length} מוצרים נבחרו
+          </div>
+          <div className="flex gap-2 mb-2">
+            <input
+              type="number"
+              value={bulkThreshold}
+              onChange={(e) => setBulkThreshold(e.target.value)}
+              placeholder="סף מינימום חדש"
+              className="flex-1 p-2 rounded-2xl border text-center"
+              style={{ borderColor: C.kraftDark }}
+            />
+            <button onClick={applyBulkThreshold} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+              עדכן סף
+            </button>
+          </div>
+          <div className="flex gap-2 mb-2">
+            <select value={bulkCategory} onChange={(e) => setBulkCategory(e.target.value)} className="flex-1 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }}>
+              <option value="">בחר קטגוריה חדשה</option>
+              {categories.map((c) => <option key={c} value={c}>{c}</option>)}
+            </select>
+            <button onClick={applyBulkCategory} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
+              עדכן קטגוריה
+            </button>
+          </div>
+          <div className="flex gap-2 mb-2">
+            <select value={bulkSupplier} onChange={(e) => setBulkSupplier(e.target.value)} className="flex-1 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark }}>
+              <option value="">ללא ספק קבוע</option>
+              {suppliers.map((sp) => <option key={sp.id} value={sp.id}>{sp.name}</option>)}
+            </select>
+            <button onClick={applyBulkSupplier} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.mustard, color: C.ink }}>
+              שייך ספק
+            </button>
+          </div>
+          <div className="flex gap-2 mb-2">
+            <button onClick={() => applyBulkVisibility(true)} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+              👁️ פתח להזמנת יחידות
+            </button>
+            <button onClick={() => applyBulkVisibility(false)} className="flex-1 py-2 rounded-2xl font-bold text-sm" style={{ background: C.steel, color: "#fff" }}>
+              🚫 הסתר מיחידות
+            </button>
+          </div>
+          {suppliers.length === 0 && (
+            <p className="text-xs mb-2" style={{ color: C.steel }}>אין ספקים מוגדרים - הוסף במסך ניהול ← הגדרות.</p>
+          )}
+          <button onClick={() => setSelectedIds([])} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
+            נקה בחירה
+          </button>
+        </ShelfTag>
+      )}
+
+      <div className="flex flex-col gap-4">
+        {Object.entries(
+          products
+            .filter((p) => !adminSearch || p.name.includes(adminSearch) || (p.barcode || "").includes(adminSearch))
+            .filter((p) =>
+              visFilter === "all"
+                ? true
+                : visFilter === "open"
+                ? p.unitVisible !== false
+                : p.unitVisible === false
+            )
+            .reduce((acc, p) => {
+              const cat = p.category || "ללא קטגוריה";
+              (acc[cat] = acc[cat] || []).push(p);
+              return acc;
+            }, {})
+        ).map(([cat, items]) => (
+          <div key={cat}>
+            <div className="flex justify-between items-center mb-2">
+              <div className="wh-display font-bold text-sm" style={{ color: C.steel }}>{cat} ({items.length})</div>
+              <button onClick={() => selectAllInCategory(cat)} className="text-xs px-2 py-1 rounded-full" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                סמן את כל הקטגוריה
+              </button>
+            </div>
+            <div className="flex flex-col gap-2">
+              {items.map((p) => {
+                const openToUnits = p.unitVisible !== false;
+                return (
+                <div key={p.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRight: `5px solid ${openToUnits ? C.sage : C.steel}` }}>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(p.id)}
+                      onChange={() => toggleSelect(p.id)}
+                    />
+                    {p.imageData && <img src={p.imageData} alt="" className="rounded-xl" style={{ width: 40, height: 40, objectFit: "cover" }} />}
+                    <div>
+                      <div className="font-bold text-sm flex items-center gap-1.5" style={{ color: C.ink }}>
+                        {p.name}
+                        <span
+                          className="text-[10px] px-1.5 py-0.5 rounded-full font-bold whitespace-nowrap"
+                          style={{ background: openToUnits ? C.sage : C.steel, color: "#fff" }}
+                        >
+                          {openToUnits ? "👁️ פתוח ליחידות" : "🚫 מוסתר"}
+                        </span>
+                      </div>
+                      <div className="text-xs" style={{ color: C.steel }}>₪{Number(p.price).toFixed(2)} · {p.quantity} {p.unit} · סף: {p.threshold}</div>
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => toggleUnitVisible(p)}
+                      title={openToUnits ? "הסתר מהיחידות" : "פתח להזמנת יחידות"}
+                      className="text-xs px-2 py-1 rounded-2xl"
+                      style={{ background: openToUnits ? C.sage : C.kraft, color: openToUnits ? "#fff" : C.steel }}
+                    >
+                      {openToUnits ? "👁️" : "🚫"}
+                    </button>
+                    <button onClick={() => startEdit(p)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+                    <button onClick={() => remove(p.id)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+                  </div>
+                </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, currentUser, settings, persistSettings, taskCategories }) {
+  const [editingId, setEditingId] = useState(null);
+  const [form, setForm] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [invitePhone, setInvitePhone] = useState("");
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteChannel, setInviteChannel] = useState("whatsapp");
+  const [apkUrl, setApkUrl] = useState(settings?.apkUrl || "");
+
+  async function saveApkUrl() {
+    await persistSettings({ ...settings, apkUrl: apkUrl.trim() });
+    showToast("קישור ה-APK נשמר");
+  }
+
+  async function importInviteContact() {
+    if (!("contacts" in navigator && "ContactsManager" in window)) {
+      showToast("ייבוא מאנשי קשר זמין רק ב-Chrome באנדרואיד");
+      return;
+    }
+    try {
+      const contacts = await navigator.contacts.select(["name", "tel", "email"], { multiple: false });
+      if (!contacts || contacts.length === 0) return;
+      const c = contacts[0];
+      let digits = String(c.tel?.[0] || "").replace(/\D/g, "");
+      if (digits.startsWith("0")) digits = "972" + digits.slice(1);
+      const mail = (c.email?.[0] || "").trim();
+
+      if (digits) setInvitePhone(digits);
+      if (mail) setInviteEmail(mail);
+
+      // Land them on a channel we actually have a destination for.
+      if (inviteChannel === "email" && !mail && digits) setInviteChannel("whatsapp");
+      if (inviteChannel !== "email" && !digits && mail) setInviteChannel("email");
+
+      if (!digits && !mail) {
+        showToast("לאיש הקשר הזה אין טלפון או מייל שמורים");
+        return;
+      }
+      showToast(`נטען: ${c.name?.[0] || "איש קשר"}`);
+    } catch (e) {
+      console.error("contact import failed", e);
+      showToast("הייבוא בוטל או נכשל");
+    }
+  }
+
+  function startEdit(u) {
+    setForm({ contactEmail: "", ...u });
+    setEditingId(u.id);
+  }
+
+  async function save() {
+    await updateUserProfile(editingId, {
+      display_name: form.name,
+      phone: form.phone,
+      contact_email: (form.contactEmail || "").trim(),
+      role: form.role,
+      permissions: form.permissions,
+    });
+    setEditingId(null);
+    setForm(null);
+    showToast("העובד עודכן");
+  }
+
+  async function remove(u) {
+    if (u.id === currentUser.id) return showToast("אי אפשר למחוק את עצמך");
+    if (!window.confirm(`למחוק את ${u.name} מהארגון? הוא לא יוכל יותר לגשת לנתונים.`)) return;
+    try {
+      await deleteUserProfile(u.id);
+      showToast("העובד הוסר מהארגון");
+    } catch (e) {
+      showToast("שגיאה במחיקה: " + (e?.message || ""));
+    }
+  }
+
+  function copyOrgId() {
+    navigator.clipboard?.writeText(currentUser.orgId).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }
+
+  function sendInvite() {
+    const siteUrl = typeof window !== "undefined" ? window.location.origin : "";
+    const apkUrl = (settings?.apkUrl || "").trim();
+    // One tap: this link pre-fills the org code, so nobody has to copy anything.
+    const joinUrl = `${siteUrl}/?join=${encodeURIComponent(currentUser.orgId)}`;
+
+    const lines = [
+      "שלום! מוזמן/ת להצטרף לאפליקציית ניהול המשימות והמלאי שלנו.",
+      "",
+      "👈 לחץ על הקישור והירשם - הכל כבר ממולא:",
+      joinUrl,
+    ];
+    if (apkUrl) lines.push("", `📱 להורדת האפליקציה לאנדרואיד: ${apkUrl}`);
+    lines.push(
+      "",
+      "──────────",
+      "אם הקישור לא עובד, הירשם ידנית עם קוד הארגון הזה:",
+      "",
+      currentUser.orgId, // alone on its own line - one long-press selects just the code
+      ""
+    );
+
+    const res = sendViaChannel(inviteChannel, {
+      phone: invitePhone,
+      email: inviteEmail,
+      text: lines.join("\n"),
+      subject: "הזמנה להצטרף לאפליקציית ניהול המשימות והמלאי",
+    });
+    if (!res.ok) showToast(res.error);
+  }
+
+  return (
+    <div>
+      <ShelfTag accent={C.accent} style={{ marginBottom: 16 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>הזמנת עובד חדש</div>
+        <p className="text-xs mb-2" style={{ color: C.steel }}>
+          עובדים לא נוצרים כאן ישירות - כל אחד נרשם בעצמו, אבל אפשר לשלוח לו הזמנה מוכנה בוואטסאפ עם כל ההוראות:
+        </p>
+        <div className="mb-2">
+          <ChannelPicker value={inviteChannel} onChange={setInviteChannel} label="" />
+        </div>
+        <div className="flex gap-2 mb-2">
+          {inviteChannel === "email" ? (
+            <input
+              value={inviteEmail}
+              onChange={(e) => setInviteEmail(e.target.value)}
+              type="email"
+              placeholder="worker@example.com"
+              className="flex-1 p-2 rounded-xl border text-sm"
+              style={{ borderColor: C.kraftDark, direction: "ltr" }}
+            />
+          ) : (
+            <input
+              value={invitePhone}
+              onChange={(e) => setInvitePhone(e.target.value)}
+              placeholder={inviteChannel === "sms" ? "972501234567" : "972501234567 (אופציונלי)"}
+              className="flex-1 p-2 rounded-xl border text-sm"
+              style={{ borderColor: C.kraftDark, direction: "ltr" }}
+            />
+          )}
+          <button
+            onClick={importInviteContact}
+            title="ייבא מאנשי קשר"
+            className="px-3 rounded-xl font-bold text-sm"
+            style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+          >
+            📇
+          </button>
+          <button
+            onClick={sendInvite}
+            className="px-3 rounded-xl font-bold text-sm whitespace-nowrap"
+            style={{ background: channelMeta(inviteChannel).color, color: "#fff" }}
+          >
+            שלח הזמנה
+          </button>
+        </div>
+        <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.paper, color: C.steel, border: `1px solid ${C.kraftDark}` }}>
+          ℹ️ עובד חדש שנרשם רואה <b>משימות בלבד</b> כברירת מחדל. פתח לו מסכים נוספים כאן למטה, בעריכת העובד.
+        </div>
+        <p className="text-xs mb-1" style={{ color: C.steel }}>או שתף ידנית את מזהה הארגון:</p>        <div className="p-2 rounded-xl text-xs mb-2" style={{ background: C.brand, color: "#fff", direction: "ltr", wordBreak: "break-all", fontFamily: "monospace" }}>
+          {currentUser.orgId}
+        </div>
+        <button onClick={copyOrgId} className="w-full py-1.5 rounded-xl text-xs font-bold mb-2" style={{ background: C.paper, color: C.ink }}>
+          {copied ? "הועתק ✓" : "העתק מזהה ארגון"}
+        </button>
+        <button
+          onClick={async () => {
+            const link = `${window.location.origin}/?join=${encodeURIComponent(currentUser.orgId)}`;
+            try {
+              await navigator.clipboard.writeText(link);
+              showToast("קישור ההזמנה הועתק ✓");
+            } catch (e) {
+              showToast("לא ניתן להעתיק - העתק ידנית מהשדה למעלה");
+            }
+          }}
+          className="w-full py-1.5 rounded-xl text-xs font-bold mb-3"
+          style={{ background: C.accent, color: "#fff" }}
+        >
+          🔗 העתק קישור הזמנה (ממלא את הקוד לבד)
+        </button>
+
+        <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+          קישור להורדת APK (אופציונלי - ייכנס להזמנה)
+        </label>
+        <div className="flex gap-2">
+          <input
+            value={apkUrl}
+            onChange={(e) => setApkUrl(e.target.value)}
+            placeholder="https://.../app.apk"
+            className="flex-1 p-2 rounded-xl border text-sm"
+            style={{ borderColor: C.kraftDark, direction: "ltr" }}
+          />
+          <button onClick={saveApkUrl} className="px-3 rounded-xl font-bold text-sm" style={{ background: C.brand, color: "#fff" }}>
+            שמור
+          </button>
+        </div>
+        <p className="text-xs mt-1" style={{ color: C.steel }}>
+          אם ריק - ההזמנה תכיל רק את קישור האתר (שממנו אפשר להתקין כ-PWA).
+        </p>
+      </ShelfTag>
+
+      {editingId && form && (
+        <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>עריכת עובד</div>
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>שם</label>
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+          </div>
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>טלפון (לוואטסאפ / SMS)</label>
+            <div className="flex gap-2">
+              <input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="972501234567" className="flex-1 p-2 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
+              <button
+                onClick={async () => {
+                  if (!("contacts" in navigator && "ContactsManager" in window)) {
+                    showToast("ייבוא מאנשי קשר זמין רק ב-Chrome באנדרואיד");
+                    return;
+                  }
+                  try {
+                    const contacts = await navigator.contacts.select(["name", "tel", "email"], { multiple: false });
+                    if (!contacts || contacts.length === 0) return;
+                    const c = contacts[0];
+                    let digits = String(c.tel?.[0] || "").replace(/\D/g, "");
+                    if (digits.startsWith("0")) digits = "972" + digits.slice(1);
+                    setForm({
+                      ...form,
+                      phone: digits || form.phone,
+                      name: c.name?.[0] || form.name,
+                      contactEmail: (c.email?.[0] || "").trim() || form.contactEmail || "",
+                    });
+                  } catch (e) {
+                    console.error(e);
+                    if (window.matchMedia("(display-mode: standalone)").matches) {
+                      showToast("ייבוא מאנשי קשר לא עובד באפליקציה המותקנת - פתח את האתר בכרום רגיל ונסה שוב");
+                    } else {
+                      showToast("שגיאה בייבוא איש קשר: " + (e?.message || "לא ידועה"));
+                    }
+                  }
+                }}
+                className="px-3 rounded-2xl text-sm font-bold"
+                style={{ background: C.accent, color: "#fff" }}
+              >
+                📇
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מייל ליצירת קשר</label>
+            <input
+              value={form.contactEmail || ""}
+              onChange={(e) => setForm({ ...form, contactEmail: e.target.value })}
+              type="email"
+              placeholder={form.loginEmail || "worker@example.com"}
+              className="p-2 rounded-2xl border w-full"
+              style={{ borderColor: C.kraftDark, direction: "ltr" }}
+            />
+            {form.loginEmail && (
+              <p className="text-xs mt-1" style={{ color: C.steel }}>
+                מייל ההתחברות שלו: <span style={{ direction: "ltr", display: "inline-block" }}>{form.loginEmail}</span> (לא ניתן לשינוי מכאן)
+              </p>
+            )}
+          </div>
+          <div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תפקיד</label>
+            <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }}>
+              {ROLES.map((r) => <option key={r.id} value={r.id}>{r.label}</option>)}
+            </select>
+            <p className="text-xs mt-1" style={{ color: C.steel }}>
+              {ROLES.find((r) => r.id === form.role)?.desc}
+            </p>
+          </div>
+
+          {form.role !== "manager" && (() => {
+            const perms = { ...DEFAULT_PERMISSIONS, ...(form.permissions || {}) };
+            const adminPerms = perms.admin || {};
+            const setPerm = (key, val) => setForm({ ...form, permissions: { ...perms, [key]: val } });
+            const setAdminPerm = (key, val) =>
+              setForm({ ...form, permissions: { ...perms, admin: { ...adminPerms, [key]: val } } });
+
+            return (
+              <>
+                <div>
+                  <label className="text-xs font-bold block mb-2" style={{ color: C.steel }}>מסכים ראשיים</label>
+                  <div className="flex flex-col gap-2">
+                    {[
+                      ["inventory", "מלאי"],
+                      ["order", "הזמנה"],
+                      ["tasks", "משימות"],
+                    ].map(([key, label]) => (
+                      <label key={key} className="flex items-center gap-2 text-sm" style={{ color: C.ink }}>
+                        <input
+                          type="checkbox"
+                          checked={perms[key] !== false}
+                          onChange={(e) => setPerm(key, e.target.checked)}
+                        />
+                        {label}
+                      </label>
+                    ))}
+                    <label className="flex items-start gap-2 text-sm" style={{ color: C.ink }}>
+                      <input
+                        type="checkbox"
+                        checked={perms.unitRequest === true}
+                        onChange={(e) => setPerm("unitRequest", e.target.checked)}
+                        style={{ marginTop: 4 }}
+                      />
+                      <span>
+                        בקשה מהמחסן
+                        <span className="block text-xs" style={{ color: C.steel }}>
+                          ליחידות כמו המעון - מזמינים מהמלאי שלך ואתה מנפיק. אם זו ההרשאה היחידה, הם יראו רק את המסך הזה.
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                {perms.tasks !== false && (
+                  <div className="p-3 rounded-2xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+                    <label className="text-xs font-bold block mb-2" style={{ color: C.steel }}>
+                      אילו משימות הוא רואה?
+                    </label>
+                    <select
+                      value={perms.taskScope || "own"}
+                      onChange={(e) => setPerm("taskScope", e.target.value)}
+                      className="p-2 rounded-2xl border w-full mb-2"
+                      style={{ borderColor: C.kraftDark }}
+                    >
+                      <option value="own">רק משימות שמשויכות אליו</option>
+                      <option value="categories">משימות שלו + קטגוריות שאבחר</option>
+                      <option value="all">כל המשימות בארגון</option>
+                    </select>
+
+                    {(perms.taskScope || "own") === "categories" && (
+                      <div>
+                        <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>
+                          קטגוריות שהוא רשאי לראות (גם אם לא שויכו אליו):
+                        </div>
+                        <div className="flex flex-wrap gap-1.5">
+                          {(taskCategories || []).map((c) => {
+                            const allowed = perms.visibleTaskCategories || [];
+                            const on = allowed.includes(c.id);
+                            const col = categoryColor(c.name);
+                            return (
+                              <button
+                                key={c.id}
+                                onClick={() =>
+                                  setPerm(
+                                    "visibleTaskCategories",
+                                    on ? allowed.filter((x) => x !== c.id) : [...allowed, c.id]
+                                  )
+                                }
+                                className="px-3 py-1.5 rounded-full text-xs font-bold"
+                                style={{
+                                  background: on ? col : C.kraft,
+                                  color: on ? "#fff" : col,
+                                  border: `1.5px solid ${col}`,
+                                }}
+                              >
+                                {c.icon || "📋"} {c.name}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {(taskCategories || []).length === 0 && (
+                          <p className="text-xs" style={{ color: C.steel }}>
+                            אין קטגוריות מוגדרות - הוסף בניהול ← קטגוריות משימות.
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {form.role === "supervisor" && (
+                  <div className="p-3 rounded-2xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+                    <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>
+                      מסכי ניהול שמנהל המטבח יראה
+                    </label>
+                    <p className="text-xs mb-2" style={{ color: C.steel }}>
+                      סמן רק את מה שאתה רוצה שיראה. אם לא תסמן כלום - הוא לא יראה את תפריט "ניהול" בכלל.
+                    </p>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      {ADMIN_SECTIONS.map((sec) => (
+                        <label key={sec.id} className="flex items-center gap-2 text-sm" style={{ color: C.ink }}>
+                          <input
+                            type="checkbox"
+                            checked={!!adminPerms[sec.id]}
+                            onChange={(e) => setAdminPerm(sec.id, e.target.checked)}
+                          />
+                          {sec.label}
+                        </label>
+                      ))}
+                    </div>
+                    <p className="text-xs mt-2" style={{ color: C.accent }}>
+                      ℹ️ מנהל מטבח לא יכול לשלוח הזמנה לספק בעצמו - הוא שולח בקשה שתגיע אליך לאישור.
+                    </p>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+          <div className="flex gap-2">
+            <button onClick={save} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>שמור שינויים</button>
+            <button onClick={() => { setForm(null); setEditingId(null); }} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
+          </div>
+        </ShelfTag>
+      )}
+
+      <div className="flex flex-col gap-2">
+        {users.map((u) => (
+          <div key={u.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+            <div>
+              <div className="font-bold text-sm" style={{ color: C.ink }}>{u.name} {u.role === "manager" ? "👑" : u.role === "supervisor" ? "🧑\u200d🍳" : ""}</div>
+              <div className="text-xs font-bold" style={{ color: C.accent }}>{roleLabel(u.role)}</div>
+              <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>{u.phone || "ללא טלפון"}</div>
+              <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>
+                {u.contactEmail || u.loginEmail || "ללא מייל"}
+              </div>
+              <div className="text-xs" style={{ color: C.steel, direction: "ltr", textAlign: "right" }}>קוד מזהה: {u.id.slice(0, 8)}</div>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={() => startEdit(u)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.kraft }}>ערוך</button>
+              <button onClick={() => remove(u)} className="text-xs px-2 py-1 rounded-2xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
