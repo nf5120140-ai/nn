@@ -8104,6 +8104,9 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
   const [selectedLocs, setSelectedLocs] = useState([]);
   const [sheetRoom, setSheetRoom] = useState(null);
   const [taskFormRoom, setTaskFormRoom] = useState(null);
+  const [resolveId, setResolveId] = useState(null); // task being closed from the map → require issue/fix
+  const [mIssue, setMIssue] = useState("");
+  const [mFix, setMFix] = useState("");
   const [newBuilding, setNewBuilding] = useState("");
   const [buildingChoice, setBuildingChoice] = useState("");
   const [newLabel, setNewLabel] = useState("");
@@ -8131,13 +8134,16 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
     });
   }
 
-  async function markTaskDoneFromRoom(taskId) {
+  async function markTaskDoneFromRoom(taskId, resolution) {
     let base = tasks;
     try {
       const latest = await loadKey(KEYS.tasks, null);
       if (Array.isArray(latest)) base = latest;
     } catch (e) {}
-    await persistTasks(base.map((t) => (t.id === taskId ? { ...t, status: "done", completedAt: Date.now(), statusAt: Date.now() } : t)));
+    const res = resolution && (resolution.issue?.trim() || resolution.fix?.trim())
+      ? { issue: (resolution.issue || "").trim(), fix: (resolution.fix || "").trim(), at: Date.now(), by: currentUser?.name || "" }
+      : null;
+    await persistTasks(base.map((t) => (t.id === taskId ? { ...t, status: "done", completedAt: Date.now(), statusAt: Date.now(), ...(res ? { resolution: res } : {}) } : t)));
   }
 
   // Create a full task (any kind, not just cleaning) tied to a room.
@@ -8572,7 +8578,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
                             {t.assignedToId ? null : <div className="text-xs" style={{ color: C.steel }}>לא משויך</div>}
                           </button>
                           <button
-                            onClick={() => markTaskDoneFromRoom(t.id)}
+                            onClick={() => { setResolveId(t.id); setMIssue(""); setMFix(""); }}
                             className="px-3 py-1.5 rounded-full text-xs font-bold"
                             style={{ background: C.sage, color: "#fff" }}
                           >
@@ -8595,6 +8601,37 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
             <button onClick={() => { if (typeof window !== "undefined" && !window.confirm("למחוק את החדר מהמפה?")) return; deleteRoom(sheetRoom.id); }} className="w-full py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>
               🗑️ מחק חדר
             </button>
+          </div>
+        </div>
+      )}
+
+      {resolveId && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setResolveId(null)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 480, borderRadius: "20px 20px 0 0", padding: 18, margin: "0 auto" }}>
+            <div className="wh-display font-black text-lg mb-3" style={{ color: C.ink }}>סגירת משימה</div>
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מה הייתה התקלה?</label>
+            <textarea value={mIssue} onChange={(e) => setMIssue(e.target.value)} rows={2} placeholder="תיאור התקלה" className="w-full p-2 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>איך תוקן / מה נעשה?</label>
+            <textarea value={mFix} onChange={(e) => setMFix(e.target.value)} rows={2} placeholder="תיאור הפתרון" className="w-full p-2 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  if (!mIssue.trim() || !mFix.trim()) { showToast("צריך למלא גם מה הייתה התקלה וגם איך תוקן"); return; }
+                  const id = resolveId;
+                  setResolveId(null);
+                  markTaskDoneFromRoom(id, { issue: mIssue, fix: mFix });
+                  showToast("המשימה נסגרה ✓");
+                }}
+                className="flex-1 py-2.5 rounded-2xl font-bold text-sm"
+                style={{ background: C.sage, color: "#fff" }}
+              >
+                ✓ שמור וסגור
+              </button>
+              <button onClick={() => setResolveId(null)} className="px-4 py-2.5 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                ביטול
+              </button>
+            </div>
+            <p className="text-xs mt-2" style={{ color: C.steel }}>חובה למלא את שני השדות כדי לסגור את המשימה.</p>
           </div>
         </div>
       )}
@@ -8633,6 +8670,9 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [editingTask, setEditingTask] = useState(null);
   const [detailTask, setDetailTask] = useState(null);
+  const [resolveTask, setResolveTask] = useState(null); // task being closed → prompt for issue/fix
+  const [resIssue, setResIssue] = useState("");
+  const [resFix, setResFix] = useState("");
 
   const cats = taskCategories || [];
   const catById = (id) => cats.find((c) => c.id === id);
@@ -8691,7 +8731,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
     }
   }
 
-  async function updateStatus(task, status) {
+  async function updateStatus(task, status, resolution) {
     // Closing/reopening writes the whole task list, and last-writer-wins. If we build
     // it from a stale in-memory copy, another device's save can revert this change (the
     // task "reopens"). So read the freshest list first, then apply only this one task.
@@ -8700,9 +8740,12 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
       const latest = await loadKey(KEYS.tasks, null);
       if (Array.isArray(latest)) base = latest;
     } catch (e) { /* offline - fall back to in-memory */ }
+    const res = resolution && (resolution.issue?.trim() || resolution.fix?.trim())
+      ? { issue: (resolution.issue || "").trim(), fix: (resolution.fix || "").trim(), at: Date.now(), by: currentUser?.name || "" }
+      : null;
     const next = base.map((t) =>
       t.id === task.id
-        ? { ...t, status, completedAt: status === "done" ? Date.now() : null, statusAt: Date.now() }
+        ? { ...t, status, completedAt: status === "done" ? Date.now() : null, statusAt: Date.now(), ...(res ? { resolution: res } : {}) }
         : t
     );
     await persistTasks(next);
@@ -8925,6 +8968,45 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
         />
       )}
 
+      {resolveTask && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setResolveTask(null)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 480, borderRadius: "20px 20px 0 0", padding: 18, margin: "0 auto" }}>
+            <div className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>סגירת משימה</div>
+            <div className="text-sm mb-3" style={{ color: C.steel }}>{resolveTask.title}</div>
+
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מה הייתה התקלה?</label>
+            <textarea value={resIssue} onChange={(e) => setResIssue(e.target.value)} rows={2} placeholder="תיאור התקלה (אופציונלי)" className="w-full p-2 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+
+            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>איך תוקן / מה נעשה?</label>
+            <textarea value={resFix} onChange={(e) => setResFix(e.target.value)} rows={2} placeholder="תיאור הפתרון (אופציונלי)" className="w-full p-2 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  if (!resIssue.trim() || !resFix.trim()) { showToast("צריך למלא גם מה הייתה התקלה וגם איך תוקן"); return; }
+                  const t = resolveTask;
+                  setResolveTask(null);
+                  updateStatus(t, "done", { issue: resIssue, fix: resFix });
+                  showToast("המשימה נסגרה ✓");
+                }}
+                className="flex-1 py-2.5 rounded-2xl font-bold text-sm"
+                style={{ background: C.sage, color: "#fff" }}
+              >
+                ✓ שמור וסגור
+              </button>
+              <button
+                onClick={() => setResolveTask(null)}
+                className="px-4 py-2.5 rounded-2xl font-bold text-sm"
+                style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+              >
+                ביטול
+              </button>
+            </div>
+            <p className="text-xs mt-2" style={{ color: C.steel }}>חובה למלא את שני השדות כדי לסגור את המשימה.</p>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col gap-3">
         {visible.length === 0 && (
           <p className="text-sm text-center py-8" style={{ color: C.steel }}>אין משימות להצגה</p>
@@ -9005,7 +9087,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
                   </button>
                 )}
                 {t.status !== "done" && (
-                  <button onClick={() => updateStatus(t, "done")} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>
+                  <button onClick={() => { setResolveTask(t); setResIssue(""); setResFix(""); }} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>
                     סמן כסגור
                   </button>
                 )}
@@ -9061,6 +9143,16 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
                   מחק
                 </button>
               </div>
+              {t.status === "done" && t.resolution && (t.resolution.issue || t.resolution.fix) && (
+                <div className="mt-2 p-2 rounded-xl text-xs" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, color: C.ink }}>
+                  {t.resolution.issue && <div><b>תקלה:</b> {t.resolution.issue}</div>}
+                  {t.resolution.fix && <div><b>טופל:</b> {t.resolution.fix}</div>}
+                  <div style={{ color: C.steel, marginTop: 2 }}>
+                    {t.resolution.by ? `נסגר ע"י ${t.resolution.by}` : ""}
+                    {t.resolution.at ? ` · ${new Date(t.resolution.at).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" })}` : ""}
+                  </div>
+                </div>
+              )}
             </ShelfTag>
           );
         })}
