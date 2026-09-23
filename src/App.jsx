@@ -211,6 +211,7 @@ const ADMIN_SECTIONS = [
   { id: "orderrequests", label: "בקשות הזמנה" },
   { id: "unitrequests", label: "בקשות מהמחסן" },
   { id: "reqhistory", label: "היסטוריית בקשות" },
+  { id: "recovery", label: "🛟 סל שחזור" },
   { id: "users", label: "עובדים" },
   { id: "settings", label: "הגדרות" },
 ];
@@ -3724,6 +3725,16 @@ function App() {
     })();
   }, [currentUser?.id]);
 
+  // Safety net: record anything a sync removed, so it can be seen and restored from ניהול.
+  async function logRecovery(items, kindLabel) {
+    try {
+      const log = (await loadKey("recovery-log", [])) || [];
+      const add = (items || []).map((it) => ({ id: genId(), kind: kindLabel, at: Date.now(), title: it.title || it.name || "פריט", data: it }));
+      const nextLog = [...add, ...log].slice(0, 100);
+      await saveKey("recovery-log", nextLog);
+    } catch (e) { /* best effort */ }
+  }
+
   useEffect(() => {
     if (!currentUser) return;
     let unsubscribe = () => {};
@@ -3733,6 +3744,7 @@ function App() {
         const server = (await loadKey(KEYS.tasks, [])) || [];
         // Never let an incoming sync reopen a task we just closed, and never drop a task we
         // just created before it has propagated to the server copy.
+        let dropped = [];
         setTasks((local) => {
           const localArr = local || [];
           const byId = new Map(localArr.map((t) => [t.id, t]));
@@ -3751,8 +3763,12 @@ function App() {
           localArr.forEach((lt) => {
             if (!serverIds.has(lt.id) && now - (lt.createdAt || 0) < RECENT) merged.push(lt);
           });
+          // Anything we had locally that the sync removed (and isn't a fresh create) is logged
+          // to the recovery bin so nothing is silently lost — viewable in ניהול.
+          dropped = localArr.filter((lt) => !serverIds.has(lt.id) && now - (lt.createdAt || 0) >= RECENT);
           return merged;
         });
+        if (dropped.length) logRecovery(dropped, "משימה");
       },
       [KEYS.settings]: async () => setSettings((await loadKey(KEYS.settings, { supplierPhone: "" })) || { supplierPhone: "" }),
       [KEYS.notifications]: async () => setNotifications((await loadKey(KEYS.notifications, [])) || []),
@@ -4601,6 +4617,7 @@ function App() {
             persistUnitRequests={persistUnitRequests}
             logStockChange={logStockChange}
             tasks={tasks}
+            persistTasks={persistTasks}
             orderHistory={orderHistory}
             personalPurchases={personalPurchases}
             persistPersonalPurchases={persistPersonalPurchases}
@@ -9880,7 +9897,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, orderHistory, unitTemplates, persistUnitTemplates, personalPurchases, persistPersonalPurchases }) {
+function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, persistTasks, orderHistory, unitTemplates, persistUnitTemplates, personalPurchases, persistPersonalPurchases }) {
   const [section, setSection] = useState(initialSection || "products");
 
   // A notification can deep-link straight into a specific admin screen. Sync whenever
@@ -9900,6 +9917,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
     ["orderrequests", "בקשות הזמנה"],
     ["unitrequests", "בקשות מהמחסן"],
     ["reqhistory", "היסטוריית בקשות"],
+    ["recovery", "🛟 סל שחזור"],
     ["products", "מוצרים"],
     ["users", "עובדים"],
     ["menu", "תפריט"],
@@ -10005,6 +10023,9 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
           users={users}
           settings={settings}
         />
+      )}
+      {section === "recovery" && (
+        <RecoveryBin tasks={tasks} persistTasks={persistTasks} showToast={showToast} />
       )}
       {section === "reqhistory" && (
         <RequestsHistory orderRequests={orderRequests} unitRequests={unitRequests} settings={settings} />
@@ -12146,6 +12167,81 @@ function UnitTemplatesManager({ unitTemplates, persistUnitTemplates, users, prod
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+function RecoveryBin({ tasks, persistTasks, showToast }) {
+  const [log, setLog] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function load() {
+    try { setLog((await loadKey("recovery-log", [])) || []); } catch (e) { setLog([]); }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function restore(entry) {
+    if (busy) return;
+    setBusy(true);
+    try {
+      let base = tasks;
+      try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) base = latest; } catch (e) {}
+      if (!base.some((t) => t.id === entry.data.id)) {
+        await persistTasks([{ ...entry.data }, ...base]);
+      }
+      const nextLog = (log || []).filter((e) => e.id !== entry.id);
+      await saveKey("recovery-log", nextLog);
+      setLog(nextLog);
+      showToast("שוחזר ✓");
+    } finally { setBusy(false); }
+  }
+
+  async function removeEntry(entry) {
+    const nextLog = (log || []).filter((e) => e.id !== entry.id);
+    await saveKey("recovery-log", nextLog);
+    setLog(nextLog);
+  }
+
+  async function clearAll() {
+    if (!window.confirm("לנקות את כל יומן השחזור?")) return;
+    await saveKey("recovery-log", []);
+    setLog([]);
+  }
+
+  if (log === null) return <p className="text-sm text-center py-6" style={{ color: C.steel }}>טוען...</p>;
+
+  return (
+    <div>
+      <p className="text-sm mb-3" style={{ color: C.steel }}>
+        כאן נשמר כל מה שהסנכרון הסיר או דרס - כדי שלא ילך לאיבוד. אפשר לשחזר פריט בחזרה או למחוק מהיומן.
+      </p>
+      <div className="flex gap-2 mb-3">
+        <button onClick={load} className="px-3 py-1.5 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>🔄 רענן</button>
+        {log.length > 0 && (
+          <button onClick={clearAll} className="px-3 py-1.5 rounded-2xl text-sm font-bold" style={{ background: C.stamp, color: "#fff" }}>נקה יומן</button>
+        )}
+      </div>
+      {log.length === 0 ? (
+        <ShelfTag accent={C.sage}>
+          <p className="text-sm text-center" style={{ color: C.steel }}>אין פריטים שנדרסו - הכול תקין 👍</p>
+        </ShelfTag>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {log.map((entry) => (
+            <ShelfTag key={entry.id} accent={C.stamp}>
+              <div className="flex justify-between items-center mb-1">
+                <span className="text-xs font-bold px-2 py-0.5 rounded-full" style={{ background: C.stamp, color: "#fff" }}>{entry.kind || "פריט"}</span>
+                <span className="text-xs" style={{ color: C.steel }}>{entry.at ? new Date(entry.at).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : ""}</span>
+              </div>
+              <div className="font-bold text-sm mb-2" style={{ color: C.ink }}>{entry.title}</div>
+              <div className="flex gap-2">
+                <button onClick={() => restore(entry)} disabled={busy} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.sage, color: "#fff" }}>↩️ שחזר</button>
+                <button onClick={() => removeEntry(entry)} className="px-3 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>הסר מהיומן</button>
+              </div>
+            </ShelfTag>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
