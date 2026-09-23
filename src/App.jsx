@@ -3731,17 +3731,27 @@ function App() {
       [KEYS.products]: async () => setProducts((await loadKey(KEYS.products, [])) || []),
       [KEYS.tasks]: async () => {
         const server = (await loadKey(KEYS.tasks, [])) || [];
-        // Never let an incoming sync reopen a task we just closed: if our local copy has a
-        // newer status change (bigger statusAt) than the server's, keep ours for that task.
+        // Never let an incoming sync reopen a task we just closed, and never drop a task we
+        // just created before it has propagated to the server copy.
         setTasks((local) => {
-          const byId = new Map((local || []).map((t) => [t.id, t]));
-          return server.map((st) => {
+          const localArr = local || [];
+          const byId = new Map(localArr.map((t) => [t.id, t]));
+          const serverIds = new Set(server.map((t) => t.id));
+          const merged = server.map((st) => {
             const lt = byId.get(st.id);
             if (lt && (lt.statusAt || 0) > (st.statusAt || 0)) {
               return { ...st, status: lt.status, completedAt: lt.completedAt, statusAt: lt.statusAt };
             }
             return st;
           });
+          // Keep locally-created tasks the server copy doesn't have yet (created < 5 min ago),
+          // so a stale reload can't make a just-added task disappear.
+          const RECENT = 5 * 60 * 1000;
+          const now = Date.now();
+          localArr.forEach((lt) => {
+            if (!serverIds.has(lt.id) && now - (lt.createdAt || 0) < RECENT) merged.push(lt);
+          });
+          return merged;
         });
       },
       [KEYS.settings]: async () => setSettings((await loadKey(KEYS.settings, { supplierPhone: "" })) || { supplierPhone: "" }),
@@ -8159,7 +8169,9 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
       createdBy: currentUser?.name || "",
       createdById: currentUser?.id || "",
     };
-    await persistTasks([created, ...(tasks || [])]);
+    let baseTasks = tasks;
+    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
+    await persistTasks([created, ...(baseTasks || [])]);
     setTaskFormRoom(null);
     if (notifyNow) {
       if (payload.assignedToId && notifyUser) {
