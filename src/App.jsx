@@ -3382,6 +3382,9 @@ function App() {
   const [users, setUsers] = useState([]);
   const [products, setProducts] = useState([]);
   const [tasks, setTasks] = useState([]);
+  const [deletedTaskIds, setDeletedTaskIds] = useState([]);
+  const deletedRef = useRef([]);
+  useEffect(() => { deletedRef.current = deletedTaskIds; }, [deletedTaskIds]);
   const [settings, setSettings] = useState({ supplierPhone: "" });
   const [notifications, setNotifications] = useState([]);
   const [menuItems, setMenuItems] = useState([]);
@@ -3580,7 +3583,7 @@ function App() {
     setLoaded(false);
     seenNotifIdsRef.current = null;
     (async () => {
-      const [orgProfiles, p, t, s, n, m, w, r, sl, oh, loc, dt, tc, orq, ur, ut, pp] = await Promise.all([
+      const [orgProfiles, p, t, s, n, m, w, r, sl, oh, loc, dt, tc, orq, ur, ut, pp, del] = await Promise.all([
         (async () => {
           try {
             const list = await window.auth.getOrgProfiles();
@@ -3607,6 +3610,7 @@ function App() {
         loadKey(KEYS.unitRequests, []),
         loadKey(KEYS.unitTemplates, {}),
         loadKey(KEYS.personalPurchases, []),
+        loadKey("task-deletes", []),
       ]);
       const finalLocations = loc || [];
       let finalDishTypes = dt;
@@ -3703,9 +3707,12 @@ function App() {
         await saveKey(KEYS.reminders, finalReminders);
       }
 
+      const delIds = del || [];
+      deletedRef.current = delIds;
+      setDeletedTaskIds(delIds);
       setUsers(finalUsers);
       setProducts(finalProducts);
-      setTasks(finalTasks);
+      setTasks(finalTasks.filter((x) => !delIds.includes(x.id)));
       setSettings(s || { supplierPhone: "" });
       setNotifications(finalNotifications);
       setMenuItems(m || []);
@@ -3742,33 +3749,29 @@ function App() {
       [KEYS.products]: async () => setProducts((await loadKey(KEYS.products, [])) || []),
       [KEYS.tasks]: async () => {
         const server = (await loadKey(KEYS.tasks, [])) || [];
-        // Never let an incoming sync reopen a task we just closed, and never drop a task we
-        // just created before it has propagated to the server copy.
-        let dropped = [];
+        const del = new Set(deletedRef.current || []);
+        // UNION merge: an incoming sync can add or update tasks, but can NEVER drop one.
+        // A task we have locally that the server copy is missing is kept (it was either just
+        // created, or clobbered by a stale write elsewhere) — this self-heals the vanishing.
+        // Real deletions are handled only through the separate deleted-list below.
         setTasks((local) => {
-          const localArr = local || [];
-          const byId = new Map(localArr.map((t) => [t.id, t]));
-          const serverIds = new Set(server.map((t) => t.id));
-          const merged = server.map((st) => {
-            const lt = byId.get(st.id);
-            if (lt && (lt.statusAt || 0) > (st.statusAt || 0)) {
-              return { ...st, status: lt.status, completedAt: lt.completedAt, statusAt: lt.statusAt };
+          const byId = new Map();
+          server.forEach((t) => byId.set(t.id, t));
+          (local || []).forEach((lt) => {
+            const st = byId.get(lt.id);
+            if (!st) { byId.set(lt.id, lt); return; }
+            if ((lt.statusAt || 0) > (st.statusAt || 0)) {
+              byId.set(lt.id, { ...st, status: lt.status, completedAt: lt.completedAt, statusAt: lt.statusAt });
             }
-            return st;
           });
-          // Keep locally-created tasks the server copy doesn't have yet (created < 5 min ago),
-          // so a stale reload can't make a just-added task disappear.
-          const RECENT = 5 * 60 * 1000;
-          const now = Date.now();
-          localArr.forEach((lt) => {
-            if (!serverIds.has(lt.id) && now - (lt.createdAt || 0) < RECENT) merged.push(lt);
-          });
-          // Anything we had locally that the sync removed (and isn't a fresh create) is logged
-          // to the recovery bin so nothing is silently lost — viewable in ניהול.
-          dropped = localArr.filter((lt) => !serverIds.has(lt.id) && now - (lt.createdAt || 0) >= RECENT);
-          return merged;
+          return [...byId.values()].filter((t) => !del.has(t.id));
         });
-        if (dropped.length) logRecovery(dropped, "משימה");
+      },
+      "task-deletes": async () => {
+        const d = (await loadKey("task-deletes", [])) || [];
+        deletedRef.current = d;
+        setDeletedTaskIds(d);
+        setTasks((local) => (local || []).filter((t) => !d.includes(t.id)));
       },
       [KEYS.settings]: async () => setSettings((await loadKey(KEYS.settings, { supplierPhone: "" })) || { supplierPhone: "" }),
       [KEYS.notifications]: async () => setNotifications((await loadKey(KEYS.notifications, [])) || []),
@@ -4004,6 +4007,21 @@ function App() {
     await window.auth.deleteProfile(id);
     setUsers((cur) => cur.filter((u) => u.id !== id));
   }
+  // The only way to truly remove a task: record it in the shared deleted-list (so the union
+  // merge won't resurrect it) AND drop it from the task list. Reads latest of both first.
+  async function deleteTasksById(ids) {
+    const idArr = Array.isArray(ids) ? ids : [ids];
+    let dels = [];
+    try { dels = (await loadKey("task-deletes", [])) || []; } catch (e) {}
+    const nextDels = Array.from(new Set([...dels, ...idArr])).slice(-1000);
+    await saveKey("task-deletes", nextDels);
+    deletedRef.current = nextDels;
+    setDeletedTaskIds(nextDels);
+    let base = tasks;
+    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) base = latest; } catch (e) {}
+    await persistTasks(base.filter((t) => !idArr.includes(t.id)));
+  }
+
   async function persistTasks(next) {
     setTasks(next);
     await saveKey(KEYS.tasks, next);
@@ -4524,6 +4542,7 @@ function App() {
             settings={settings}
             tasks={tasks}
             persistTasks={persistTasks}
+            deleteTasksById={deleteTasksById}
             persistSettings={persistSettings}
             isManager={isManager(currentUser)}
             menuItems={menuItems}
@@ -4547,6 +4566,7 @@ function App() {
           <TasksTab
             tasks={tasks}
             persistTasks={persistTasks}
+            deleteTasksById={deleteTasksById}
             users={users}
             currentUser={currentUser}
             showToast={showToast}
@@ -5589,7 +5609,7 @@ function HebrewCalendarWidget() {
   );
 }
 
-function OrderTab({ lowStock, products, settings, persistSettings, isManager, tasks, persistTasks, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry, savedMenus, persistSavedMenus }) {
+function OrderTab({ lowStock, products, settings, persistSettings, isManager, tasks, persistTasks, deleteTasksById, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry, savedMenus, persistSavedMenus }) {
   const mayApprove = canSendOrders(currentUser);
   const myPending = (orderRequests || []).filter((r) => r.createdById === currentUser?.id && r.status === "pending");
   const suppliers = settings.suppliers || [];
@@ -5649,12 +5669,14 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
       createdBy: currentUser?.name || "",
       createdById: currentUser?.id || "",
     };
-    await persistTasks([task, ...(tasks || [])]);
+    let baseTasks = tasks;
+    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
+    await persistTasks([task, ...(baseTasks || [])]);
     setRemProduct(""); setRemNote(""); setRemDate("");
     showToast("התזכורת נוספה ✓");
   }
   async function deleteOrderReminder(id) {
-    await persistTasks((tasks || []).filter((t) => t.id !== id));
+    await deleteTasksById(id);
   }
   const [selectedForOrder, setSelectedForOrder] = useState([]);
   // Reset the "already sent" suppliers whenever the selection or mode changes.
@@ -8353,7 +8375,9 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
       createdBy: currentUser?.name || "",
       createdById: currentUser?.id || "",
     };
-    await persistTasks([task, ...(tasks || [])]);
+    let baseTasks = tasks;
+    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
+    await persistTasks([task, ...(baseTasks || [])]);
     await persistMapRooms((mapRooms || []).map((r) => (r.id === room.id ? { ...r, status: "clean", statusAt: Date.now(), taskId: task.id } : r)));
     if (notifyManagers) notifyManagers(`🧹 נפתחה משימת ניקיון: ${room.building || "כללי"} ${room.label}`, { tab: "tasks", taskId: task.id });
     setSheetRoom(null);
@@ -8688,7 +8712,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
   );
 }
 
-function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUser, locations, taskCategories, focusTaskId, onFocusConsumed, newTaskSignal }) {
+function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, showToast, notifyUser, locations, taskCategories, focusTaskId, onFocusConsumed, newTaskSignal }) {
   const [showNew, setShowNew] = useState(false);
   useEffect(() => {
     // Opened via the header "add task" button or the home-screen shortcut.
@@ -8790,9 +8814,7 @@ function TasksTab({ tasks, persistTasks, users, currentUser, showToast, notifyUs
   }
 
   async function deleteTask(task) {
-    const base = await freshTasks();
-    const next = base.filter((t) => t.id !== task.id);
-    await persistTasks(next);
+    await deleteTasksById(task.id);
     showToast("המשימה נמחקה");
   }
 
