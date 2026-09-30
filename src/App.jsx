@@ -442,6 +442,23 @@ function cleanPhoneDigits(raw) {
  * Open the given text in the chosen channel.
  * Returns { ok } or { ok:false, error } so callers can showToast the reason.
  */
+/* Opens WhatsApp, honoring the user's chosen app (regular / Business / ask).
+   "regular"/"business" use an Android intent targeting that app's package, with a
+   wa.me fallback if it isn't installed; "wa" (default) uses the normal wa.me link. */
+function openWhatsapp(digits, text) {
+  const enc = encodeURIComponent(text || "");
+  const pref = (typeof window !== "undefined" && window.__waApp) || "wa";
+  const waUrl = digits ? `https://wa.me/${digits}?text=${enc}` : `https://wa.me/?text=${enc}`;
+  const isAndroid = typeof navigator !== "undefined" && /android/i.test(navigator.userAgent || "");
+  if ((pref === "business" || pref === "regular") && isAndroid) {
+    const pkg = pref === "business" ? "com.whatsapp.w4b" : "com.whatsapp";
+    const q = digits ? `send?phone=${digits}&text=${enc}` : `send?text=${enc}`;
+    const intent = `intent://${q}#Intent;scheme=whatsapp;package=${pkg};S.browser_fallback_url=${encodeURIComponent(waUrl)};end`;
+    try { window.location.href = intent; return; } catch (e) {}
+  }
+  window.open(waUrl, "_blank");
+}
+
 function sendViaChannel(channel, { phone, email, text, subject }) {
   if (channel === "email") {
     const to = String(email || "").trim();
@@ -459,10 +476,7 @@ function sendViaChannel(channel, { phone, email, text, subject }) {
     return { ok: true };
   }
   const digits = cleanPhoneDigits(phone);
-  const url = digits
-    ? `https://wa.me/${digits}?text=${encodeURIComponent(text)}`
-    : `https://wa.me/?text=${encodeURIComponent(text)}`;
-  window.open(url, "_blank");
+  openWhatsapp(digits, text);
   return { ok: true };
 }
 
@@ -3386,6 +3400,7 @@ function App() {
   const deletedRef = useRef([]);
   useEffect(() => { deletedRef.current = deletedTaskIds; }, [deletedTaskIds]);
   const [settings, setSettings] = useState({ supplierPhone: "" });
+  useEffect(() => { if (typeof window !== "undefined") window.__waApp = settings?.whatsappApp || "wa"; }, [settings?.whatsappApp]);
   const [notifications, setNotifications] = useState([]);
   const [menuItems, setMenuItems] = useState([]);
   const [weeklyMenu, setWeeklyMenu] = useState({});
@@ -6726,7 +6741,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
   function sendWeeklyMenuWhatsApp() {
     const text = weeklyMenuText();
     if (!text) return showToast("לא שובצו מנות לשבוע הזה");
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+    openWhatsapp("", text);
   }
 
   async function sendWeeklyMenuToGroup() {
@@ -6797,7 +6812,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
     // No share support: download the picture and open WhatsApp for manual attaching.
     if (!navigator.share) showToast("הדפדפן לא תומך בשיתוף - התמונה תרד לצירוף ידני");
     downloadDataUrl(dataUrl, "weekly-menu.png");
-    window.open(`https://wa.me/?text=${encodeURIComponent(caption)}`, "_blank");
+    openWhatsapp("", caption);
     showToast("התמונה ירדה - צרף אותה בוואטסאפ ידנית");
   }
 
@@ -8842,18 +8857,18 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
     const loc = (locations || []).find((l) => l.id === task.locationId);
     const photo = task.imageData || loc?.imageData || null;
 
-    const waUrl = `https://wa.me/${user.phone.replace(/\D/g, "")}?text=${encodeURIComponent(text)}`;
+    const waDigits = user.phone.replace(/\D/g, "");
 
     // "chat" mode: open this employee's chat directly. WhatsApp's wa.me protocol
     // has no media parameter, so this is always text-only - by design.
     if (mode === "chat") {
-      window.open(waUrl, "_blank");
+      openWhatsapp(waDigits, text);
       return;
     }
 
     if (!photo) {
       showToast("למשימה הזו אין תמונה מצורפת - נשלח טקסט בלבד");
-      window.open(waUrl, "_blank");
+      openWhatsapp(waDigits, text);
       return;
     }
 
@@ -8902,7 +8917,7 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
     }
     try { await navigator.clipboard.writeText(text); } catch (_) {}
     downloadDataUrl(photo, `task-${task.id}.jpg`);
-    window.open(waUrl, "_blank");
+    openWhatsapp(waDigits, text);
     showToast("התמונה ירדה והטקסט הועתק - צרף את התמונה בוואטסאפ ידנית");
   }
 
@@ -11261,6 +11276,13 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
 
 function GroupLinkEditor({ settings, persistSettings, showToast }) {
   const [link, setLink] = useState(settings?.whatsappGroupLink || "");
+  const waApp = settings?.whatsappApp || "wa";
+
+  async function setWaApp(v) {
+    await persistSettings({ ...settings, whatsappApp: v });
+    if (typeof window !== "undefined") window.__waApp = v;
+    showToast("אפליקציית וואטסאפ נשמרה ✓");
+  }
 
   async function save() {
     const v = link.trim();
@@ -11272,6 +11294,23 @@ function GroupLinkEditor({ settings, persistSettings, showToast }) {
   }
 
   return (
+    <>
+    <div className="mb-3">
+      <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>איזו אפליקציית וואטסאפ לפתוח בשליחה</label>
+      <div className="flex gap-2">
+        {[["wa", "שאל / ברירת מחדל"], ["business", "Business"], ["regular", "רגיל"]].map(([val, lbl]) => (
+          <button
+            key={val}
+            onClick={() => setWaApp(val)}
+            className="flex-1 py-2 rounded-2xl text-sm font-bold"
+            style={{ background: waApp === val ? C.brand : C.kraft, color: waApp === val ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+          >
+            {lbl}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs mt-1" style={{ color: C.steel }}>אם מותקנות שתי אפליקציות וואטסאפ, זה קובע לאיזו ההודעות ייפתחו. עובד על אנדרואיד.</p>
+    </div>
     <div className="flex gap-2">
       <input
         value={link}
@@ -11284,6 +11323,7 @@ function GroupLinkEditor({ settings, persistSettings, showToast }) {
         שמור
       </button>
     </div>
+    </>
   );
 }
 
