@@ -8699,30 +8699,26 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
       {resolveId && (
         <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setResolveId(null)}>
           <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 480, borderRadius: "20px 20px 0 0", padding: 18, margin: "0 auto" }}>
-            <div className="wh-display font-black text-lg mb-3" style={{ color: C.ink }}>סגירת משימה</div>
-            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מה הייתה התקלה?</label>
-            <textarea value={mIssue} onChange={(e) => setMIssue(e.target.value)} rows={2} placeholder="תיאור התקלה" className="w-full p-2 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
-            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>איך תוקן / מה נעשה?</label>
-            <textarea value={mFix} onChange={(e) => setMFix(e.target.value)} rows={2} placeholder="תיאור הפתרון" className="w-full p-2 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+            <div className="wh-display font-black text-lg mb-3" style={{ color: C.ink }}>איך סודר?</div>
+            <textarea value={mFix} onChange={(e) => setMFix(e.target.value)} rows={3} autoFocus placeholder="כתוב בקצרה מה נעשה / איך סודר" className="w-full p-3 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
             <div className="flex gap-2">
               <button
                 onClick={() => {
-                  if (!mIssue.trim() || !mFix.trim()) { showToast("צריך למלא גם מה הייתה התקלה וגם איך תוקן"); return; }
+                  if (!mFix.trim()) { showToast("כתוב איך סודר כדי לסגור"); return; }
                   const id = resolveId;
                   setResolveId(null);
-                  markTaskDoneFromRoom(id, { issue: mIssue, fix: mFix });
+                  markTaskDoneFromRoom(id, { fix: mFix });
                   showToast("המשימה נסגרה ✓");
                 }}
-                className="flex-1 py-2.5 rounded-2xl font-bold text-sm"
+                className="flex-1 py-3 rounded-2xl font-bold"
                 style={{ background: C.sage, color: "#fff" }}
               >
-                ✓ שמור וסגור
+                ✓ סגור משימה
               </button>
-              <button onClick={() => setResolveId(null)} className="px-4 py-2.5 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+              <button onClick={() => setResolveId(null)} className="px-5 py-3 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
                 ביטול
               </button>
             </div>
-            <p className="text-xs mt-2" style={{ color: C.steel }}>חובה למלא את שני השדות כדי לסגור את המשימה.</p>
           </div>
         </div>
       )}
@@ -9060,38 +9056,33 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
       {resolveTask && (
         <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setResolveTask(null)}>
           <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 480, borderRadius: "20px 20px 0 0", padding: 18, margin: "0 auto" }}>
-            <div className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>סגירת משימה</div>
+            <div className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>איך סודר?</div>
             <div className="text-sm mb-3" style={{ color: C.steel }}>{resolveTask.title}</div>
 
-            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>מה הייתה התקלה?</label>
-            <textarea value={resIssue} onChange={(e) => setResIssue(e.target.value)} rows={2} placeholder="תיאור התקלה (אופציונלי)" className="w-full p-2 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
-
-            <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>איך תוקן / מה נעשה?</label>
-            <textarea value={resFix} onChange={(e) => setResFix(e.target.value)} rows={2} placeholder="תיאור הפתרון (אופציונלי)" className="w-full p-2 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+            <textarea value={resFix} onChange={(e) => setResFix(e.target.value)} rows={3} autoFocus placeholder="כתוב בקצרה מה נעשה / איך סודר" className="w-full p-3 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
 
             <div className="flex gap-2">
               <button
                 onClick={() => {
-                  if (!resIssue.trim() || !resFix.trim()) { showToast("צריך למלא גם מה הייתה התקלה וגם איך תוקן"); return; }
+                  if (!resFix.trim()) { showToast("כתוב איך סודר כדי לסגור"); return; }
                   const t = resolveTask;
                   setResolveTask(null);
-                  updateStatus(t, "done", { issue: resIssue, fix: resFix });
+                  updateStatus(t, "done", { fix: resFix });
                   showToast("המשימה נסגרה ✓");
                 }}
-                className="flex-1 py-2.5 rounded-2xl font-bold text-sm"
+                className="flex-1 py-3 rounded-2xl font-bold"
                 style={{ background: C.sage, color: "#fff" }}
               >
-                ✓ שמור וסגור
+                ✓ סגור משימה
               </button>
               <button
                 onClick={() => setResolveTask(null)}
-                className="px-4 py-2.5 rounded-2xl font-bold text-sm"
+                className="px-5 py-3 rounded-2xl font-bold text-sm"
                 style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
               >
                 ביטול
               </button>
             </div>
-            <p className="text-xs mt-2" style={{ color: C.steel }}>חובה למלא את שני השדות כדי לסגור את המשימה.</p>
           </div>
         </div>
       )}
