@@ -1985,8 +1985,11 @@ function UnitRequestTab({
 
   const thisWeek = weekStartIso();
   const mine = (unitRequests || []).filter((r) => r.unitId === currentUser.id);
-  const current = mine.find((r) => r.weekOf === thisWeek && (r.status === "open" || r.status === "submitted"));
-  const history = mine.filter((r) => r !== current).sort((a, b) => b.createdAt - a.createdAt);
+  // "current" is only the open DRAFT. Once submitted it moves to pending, so a new
+  // draft can be started immediately — the unit can have several pending requests.
+  const current = mine.find((r) => r.status === "open");
+  const myPendingReqs = mine.filter((r) => r.status === "submitted").sort((a, b) => (b.submittedAt || b.createdAt) - (a.submittedAt || a.createdAt));
+  const history = mine.filter((r) => r !== current && r.status !== "submitted").sort((a, b) => b.createdAt - a.createdAt);
   const template = (unitTemplates || {})[currentUser.id] || [];
 
   // Only products the manager exposed to units.
@@ -2090,9 +2093,11 @@ function UnitRequestTab({
     const others = (unitRequests || []).filter((r) => r.id !== current.id);
     await persistUnitRequests([...others, { ...current, note: noteDraft, status: "submitted", submittedAt: Date.now() }]);
     if (notifyManagers) {
-      await notifyManagers(`🧺 ${currentUser.name} שלח בקשה שבועית (${current.items.length} מוצרים) - ממתינה לאישורך`, { tab: "admin", section: "unitrequests" });
+      await notifyManagers(`🧺 ${currentUser.name} שלח בקשה (${current.items.length} מוצרים) - ממתינה לאישורך`, { tab: "admin", section: "unitrequests" });
     }
-    showToast("הבקשה נשלחה למחסן ✓");
+    setNoteDraft("");
+    setAddingMore(false);
+    showToast("הבקשה נשלחה ✓ אפשר להכין בקשה נוספת");
   }
 
   async function reopen() {
@@ -2177,14 +2182,32 @@ function UnitRequestTab({
 
       {view === "current" && (
         <>
+          {myPendingReqs.length > 0 && (
+            <ShelfTag accent={C.mustard} style={{ marginBottom: 16 }}>
+              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>
+                ⏳ ממתינות לאישור המחסן ({myPendingReqs.length})
+              </div>
+              <div className="flex flex-col gap-2">
+                {myPendingReqs.map((r) => (
+                  <div key={r.id} className="flex justify-between items-center text-sm p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                    <span style={{ color: C.ink }}>
+                      {(r.items || []).length} מוצרים · {new Date(r.submittedAt || r.createdAt).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                    <button onClick={() => printRequest(r)} className="px-3 py-1 rounded-lg text-xs font-bold" style={{ background: C.accent, color: "#fff" }}>🖨️ הדפס</button>
+                  </div>
+                ))}
+              </div>
+              <p className="text-xs mt-2" style={{ color: C.steel }}>אפשר להכין ולשלוח בקשה נוספת למטה - כל בקשה נשלחת בנפרד.</p>
+            </ShelfTag>
+          )}
           <ShelfTag accent={current ? UNIT_STATUS[current.status].color : C.steel} style={{ marginBottom: 16 }}>
             <div className="flex justify-between items-center">
               <div>
                 <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
-                  שבוע {weekLabel(thisWeek)}
+                  {current ? "בקשה חדשה" : "בקשה חדשה"}
                 </div>
                 <div className="text-xs mt-0.5" style={{ color: C.steel }}>
-                  {current ? `${totalItems} מוצרים · ${UNIT_STATUS[current.status].label}` : "עדיין לא התחלת בקשה לשבוע הזה"}
+                  {current ? `${totalItems} מוצרים · טיוטה` : "הוסף מוצרים למטה כדי להתחיל בקשה"}
                 </div>
               </div>
               {template.length > 0 && !locked && (
