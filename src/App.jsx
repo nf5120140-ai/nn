@@ -1653,7 +1653,10 @@ function SplashScreen() {
         className="wh-splash-sub wh-display text-center font-bold mt-1.5"
         style={{ color: "rgba(255,255,255,0.95)", fontSize: 19 }}
       >
-        לניהול משק חכם
+        {(() => {
+          try { return localStorage.getItem("kitchen-welcome-subtitle") || "לניהול משק חכם"; }
+          catch (e) { return "לניהול משק חכם"; }
+        })()}
       </div>
 
       <div
@@ -3424,6 +3427,13 @@ function App() {
   useEffect(() => { deletedRef.current = deletedTaskIds; }, [deletedTaskIds]);
   const [settings, setSettings] = useState({ supplierPhone: "" });
   useEffect(() => { if (typeof window !== "undefined") window.__waApp = settings?.whatsappApp || "wa"; }, [settings?.whatsappApp]);
+  // Mirror the welcome subtitle to localStorage so the splash (which shows before data
+  // loads) can display the institution's own text instantly.
+  useEffect(() => {
+    try {
+      if (settings?.welcomeSubtitle) localStorage.setItem("kitchen-welcome-subtitle", settings.welcomeSubtitle);
+    } catch (e) {}
+  }, [settings?.welcomeSubtitle]);
   const [notifications, setNotifications] = useState([]);
   const [menuItems, setMenuItems] = useState([]);
   const [weeklyMenu, setWeeklyMenu] = useState({});
@@ -11305,6 +11315,30 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
   );
 }
 
+function WelcomeTextEditor({ settings, persistSettings, showToast }) {
+  const [text, setText] = useState(settings?.welcomeSubtitle || "לניהול משק חכם");
+  async function save() {
+    const v = text.trim() || "לניהול משק חכם";
+    await persistSettings({ ...settings, welcomeSubtitle: v });
+    try { localStorage.setItem("kitchen-welcome-subtitle", v); } catch (e) {}
+    showToast("טקסט הפתיחה נשמר ✓");
+  }
+  return (
+    <div className="flex gap-2">
+      <input
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        placeholder="לניהול ישיבת קרית מלאכי"
+        className="flex-1 p-2 rounded-2xl border text-sm"
+        style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}
+      />
+      <button onClick={save} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
+        שמור
+      </button>
+    </div>
+  );
+}
+
 function GroupLinkEditor({ settings, persistSettings, showToast }) {
   const [link, setLink] = useState(settings?.whatsappGroupLink || "");
   const waApp = settings?.whatsappApp || "wa";
@@ -11430,6 +11464,13 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
 
   return (
     <div>
+      <ShelfTag accent={C.accent} style={{ marginBottom: 16 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>👋 טקסט מסך פתיחה</div>
+        <p className="text-xs mb-2" style={{ color: C.steel }}>
+          הטקסט שמופיע מתחת ל"ברוכים הבאים" במסך הפתיחה (למשל: לניהול ישיבת קרית מלאכי).
+        </p>
+        <WelcomeTextEditor settings={settings} persistSettings={persistSettings} showToast={showToast} />
+      </ShelfTag>
       <ShelfTag accent="#128C7E" style={{ marginBottom: 16 }}>
         <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>👥 קבוצת וואטסאפ להזמנות</div>
         <p className="text-xs mb-2" style={{ color: C.steel }}>
