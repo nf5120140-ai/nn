@@ -10005,7 +10005,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
     ["reminders", "תזכורות"],
     ["analytics", "ניתוח"],
     ["personal", "קניות פרטיות"],
-    ["settings", "ספקים"],
+    ["settings", "הגדרות וספקים"],
     ["backup", "גיבוי ושחזור"],
   ];
   // A supervisor only sees the admin screens the manager granted them.
