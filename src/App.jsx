@@ -8852,6 +8852,14 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
     showToast("המשימה נמחקה");
   }
 
+  async function deleteAllDone() {
+    const doneIds = (tasks || []).filter((t) => t.status === "done").map((t) => t.id);
+    if (doneIds.length === 0) return showToast("אין משימות שהושלמו למחיקה");
+    if (!window.confirm(`למחוק את כל ${doneIds.length} המשימות שהושלמו? פעולה זו אינה הפיכה.`)) return;
+    await deleteTasksById(doneIds);
+    showToast(`נמחקו ${doneIds.length} משימות שהושלמו`);
+  }
+
   async function addTask(newTask) {
     const { notifyNow, ...rest } = newTask;
     const created = { ...rest, id: genId(), createdAt: Date.now(), createdBy: currentUser.name, createdById: currentUser.id, status: "open", comments: [] };
@@ -8979,6 +8987,15 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
               <option key={u.id} value={u.id}>{u.name}</option>
             ))}
           </select>
+        )}
+        {isManager(currentUser) && (tasks || []).some((t) => t.status === "done") && (
+          <button
+            onClick={deleteAllDone}
+            className="px-3 py-1 rounded-2xl text-sm font-bold"
+            style={{ background: C.stamp, color: "#fff" }}
+          >
+            🗑️ מחק את כל שהושלמו
+          </button>
         )}
       </div>
 
