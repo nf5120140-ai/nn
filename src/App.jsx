@@ -4213,6 +4213,32 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id]);
 
+  // Keep the Institution Map in sync with the Places list (ניהול ← מקומות): every place
+  // automatically becomes a room in the map, and a place removed is removed from the map.
+  // Only rooms auto-created from a place (fromLocation) are touched — manually-added rooms stay.
+  useEffect(() => {
+    if (!loaded || !currentUser || !isManager(currentUser)) return;
+    if (!Array.isArray(locations) || !Array.isArray(mapRooms)) return;
+    const locByKey = new Map(locations.filter((l) => l && l.name).map((l) => [`${l.group || "כללי"}|${l.name}`, l]));
+    const roomByKey = new Map();
+    (mapRooms || []).forEach((r) => roomByKey.set(`${r.building || "כללי"}|${r.label}`, r));
+
+    // ADD ONLY: a new place becomes a room in the map. Deleting a place does NOT remove
+    // its room (so rooms with open tasks/status aren't lost) — remove rooms manually.
+    const toAdd = [];
+    locByKey.forEach((l, key) => {
+      if (!roomByKey.has(key)) toAdd.push({ id: genId(), building: l.group || "כללי", label: l.name, fromLocation: true });
+    });
+    if (toAdd.length === 0) return;
+    (async () => {
+      const base = (await loadListFresh(KEYS.mapRooms)) || mapRooms || [];
+      const have = new Set(base.map((r) => `${r.building || "כללי"}|${r.label}`));
+      const stillToAdd = toAdd.filter((r) => !have.has(`${r.building || "כללי"}|${r.label}`));
+      if (stillToAdd.length > 0) await persistMapRooms([...base, ...stillToAdd]);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, currentUser?.id, locations, mapRooms]);
+
   // ---- Full backup / restore ----
   const [backupOpen, setBackupOpen] = useState(false);
   const [backupBusy, setBackupBusy] = useState(false);
