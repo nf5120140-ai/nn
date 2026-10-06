@@ -318,6 +318,39 @@ function nsKey(baseKey) {
   return org ? `${org}${ORG_SEP}${baseKey}` : baseKey;
 }
 
+/* Read the FRESHEST task list for a safe read-modify-write. Unlike loadKey, this always
+   hits the server (bypassing the dirty-cache guard) and then UNIONS in any locally-cached
+   task the server is missing — so a write built on this can never wipe tasks created on
+   another device, and also never loses this device's own unsynced changes. Returns null
+   only if we truly have nothing (offline with no cache). */
+async function loadTasksFresh() {
+  const key = nsKey(KEYS.tasks);
+  const cached = await cacheGet(key);
+  let serverList = null;
+  if (isOnline()) {
+    try {
+      const res = await window.storage.get(key, true);
+      if (res) serverList = JSON.parse(res.value);
+    } catch (e) { /* fall through to cache */ }
+  }
+  if (!Array.isArray(serverList)) {
+    return Array.isArray(cached) ? cached : null;
+  }
+  const byId = new Map();
+  serverList.forEach((t) => { if (t && t.id) byId.set(t.id, t); });
+  (Array.isArray(cached) ? cached : []).forEach((lt) => {
+    if (!lt || !lt.id) return;
+    const st = byId.get(lt.id);
+    if (!st) { byId.set(lt.id, lt); return; }
+    if ((lt.statusAt || 0) > (st.statusAt || 0)) {
+      byId.set(lt.id, { ...st, status: lt.status, completedAt: lt.completedAt, statusAt: lt.statusAt });
+    }
+  });
+  const merged = [...byId.values()];
+  try { await cacheSet(key, merged); } catch (e) {}
+  return merged;
+}
+
 async function loadKey(baseKey, fallback) {
   const key = nsKey(baseKey);
   const cached = await cacheGet(key);
@@ -3134,7 +3167,7 @@ function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyMan
       comments: [],
     };
     let baseTasks = tasks;
-    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
+    try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
     await persistTasks([created, ...baseTasks]);
     if (notifyManagers) notifyManagers(`🛠️ דיווח חדש מ${created.createdBy}: ${title}`, { tab: "tasks" });
     setSent(true);
@@ -3948,7 +3981,7 @@ function App() {
       // once at mount, so without this the 5-min timer would re-save a stale list and
       // silently reopen every task closed since mount.
       let base = tasks;
-      try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) base = latest; } catch (e) {}
+      try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) base = latest; } catch (e) {}
       const due = base.filter(
         (t) => t.followUpAt && !t.followUpFiredAt && t.followUpAt <= now && t.status !== "done"
       );
@@ -4066,7 +4099,7 @@ function App() {
     deletedRef.current = nextDels;
     setDeletedTaskIds(nextDels);
     let base = tasks;
-    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) base = latest; } catch (e) {}
+    try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) base = latest; } catch (e) {}
     await persistTasks(base.filter((t) => !idArr.includes(t.id)));
   }
 
@@ -5718,7 +5751,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
       createdById: currentUser?.id || "",
     };
     let baseTasks = tasks;
-    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
+    try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
     await persistTasks([task, ...(baseTasks || [])]);
     setRemProduct(""); setRemNote(""); setRemDate("");
     showToast("התזכורת נוספה ✓");
@@ -8234,7 +8267,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
   async function markTaskDoneFromRoom(taskId, resolution) {
     let base = tasks;
     try {
-      const latest = await loadKey(KEYS.tasks, null);
+      const latest = await loadTasksFresh();
       if (Array.isArray(latest)) base = latest;
     } catch (e) {}
     const res = resolution && (resolution.issue?.trim() || resolution.fix?.trim())
@@ -8257,7 +8290,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
       createdById: currentUser?.id || "",
     };
     let baseTasks = tasks;
-    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
+    try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
     await persistTasks([created, ...(baseTasks || [])]);
     setTaskFormRoom(null);
     if (notifyNow) {
@@ -8424,7 +8457,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
       createdById: currentUser?.id || "",
     };
     let baseTasks = tasks;
-    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
+    try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) baseTasks = latest; } catch (e) {}
     await persistTasks([task, ...(baseTasks || [])]);
     await persistMapRooms((mapRooms || []).map((r) => (r.id === room.id ? { ...r, status: "clean", statusAt: Date.now(), taskId: task.id } : r)));
     if (notifyManagers) notifyManagers(`🧹 נפתחה משימת ניקיון: ${room.building || "כללי"} ${room.label}`, { tab: "tasks", taskId: task.id });
@@ -8795,7 +8828,7 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
   // on another device (e.g. a worker closing a task) is never overwritten by this device's
   // older in-memory copy. This is the main guard against "closed tasks reopening".
   async function freshTasks() {
-    try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) return latest; } catch (e) {}
+    try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) return latest; } catch (e) {}
     return tasks;
   }
 
@@ -8834,7 +8867,7 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
     // task "reopens"). So read the freshest list first, then apply only this one task.
     let base = tasks;
     try {
-      const latest = await loadKey(KEYS.tasks, null);
+      const latest = await loadTasksFresh();
       if (Array.isArray(latest)) base = latest;
     } catch (e) { /* offline - fall back to in-memory */ }
     const res = resolution && (resolution.issue?.trim() || resolution.fix?.trim())
@@ -12319,7 +12352,7 @@ function RecoveryBin({ tasks, persistTasks, showToast }) {
     setBusy(true);
     try {
       let base = tasks;
-      try { const latest = await loadKey(KEYS.tasks, null); if (Array.isArray(latest)) base = latest; } catch (e) {}
+      try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) base = latest; } catch (e) {}
       if (!base.some((t) => t.id === entry.data.id)) {
         await persistTasks([{ ...entry.data }, ...base]);
       }
