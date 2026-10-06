@@ -7350,15 +7350,31 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                               <div className="text-xs" style={{ color: C.steel }}>יש במלאי: {p.quantity} {p.unit} (סף: {p.threshold})</div>
                             </div>
                           </div>
-                          <input
-                            type="number"
-                            inputMode="numeric"
-                            placeholder="כמות"
-                            value={qtys[p.id] == null || Number(qtys[p.id]) === 0 ? "" : qtys[p.id]}
-                            onChange={(e) => setQtys((q) => ({ ...q, [p.id]: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)) }))}
-                            className="w-16 text-center p-2 rounded-2xl border"
-                            style={{ borderColor: C.kraftDark }}
-                          />
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => setQtys((q) => ({ ...q, [p.id]: Math.max(0, (Number(q[p.id]) || 0) - 1) }))}
+                              className="rounded-full font-bold flex items-center justify-center"
+                              style={{ width: 30, height: 30, background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                            >
+                              −
+                            </button>
+                            <input
+                              type="number"
+                              inputMode="numeric"
+                              placeholder="כמות"
+                              value={qtys[p.id] == null || Number(qtys[p.id]) === 0 ? "" : qtys[p.id]}
+                              onChange={(e) => setQtys((q) => ({ ...q, [p.id]: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)) }))}
+                              className="w-14 text-center p-2 rounded-2xl border"
+                              style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}
+                            />
+                            <button
+                              onClick={() => { setQtys((q) => ({ ...q, [p.id]: (Number(q[p.id]) || 0) + 1 })); setSelectedForOrder((cur) => cur.includes(p.id) ? cur : [...cur, p.id]); }}
+                              className="rounded-full font-bold flex items-center justify-center"
+                              style={{ width: 30, height: 30, background: C.brand, color: "#fff", flexShrink: 0 }}
+                            >
+                              +
+                            </button>
+                          </div>
                         </div>
                       </ShelfTag>
                     );
@@ -8801,6 +8817,8 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
   const [editingTask, setEditingTask] = useState(null);
   const [detailTask, setDetailTask] = useState(null);
   const [resolveTask, setResolveTask] = useState(null); // task being closed → prompt for issue/fix
+  const [reassignTask, setReassignTask] = useState(null); // task being moved to another employee
+  const [reassignNotify, setReassignNotify] = useState(true);
   const [resIssue, setResIssue] = useState("");
   const [resFix, setResFix] = useState("");
 
@@ -8881,11 +8899,11 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
     await persistTasks(next);
   }
 
-  async function reassign(task, assignedToId) {
+  async function reassign(task, assignedToId, notify) {
     const base = await freshTasks();
     const next = base.map((t) => (t.id === task.id ? { ...t, assignedToId } : t));
     await persistTasks(next);
-    if (notifyUser && assignedToId !== task.assignedToId) {
+    if (notify && notifyUser && assignedToId && assignedToId !== task.assignedToId) {
       notifyUser(assignedToId, `שויכה אליך משימה: ${task.title}`, { tab: "tasks", taskId: task.id });
     }
   }
@@ -9147,6 +9165,37 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
         </div>
       )}
 
+      {reassignTask && (
+        <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setReassignTask(null)}>
+          <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 480, maxHeight: "85vh", overflowY: "auto", borderRadius: "20px 20px 0 0", padding: 18, margin: "0 auto" }}>
+            <div className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>👤 העבר משימה לעובד</div>
+            <div className="text-sm mb-3" style={{ color: C.steel }}>{reassignTask.title}</div>
+
+            <label className="flex items-center gap-2 mb-3 cursor-pointer p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+              <input type="checkbox" checked={reassignNotify} onChange={(e) => setReassignNotify(e.target.checked)} style={{ width: 18, height: 18 }} />
+              <span className="text-sm font-bold" style={{ color: C.ink }}>🔔 שלח התראה לעובד</span>
+            </label>
+
+            <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>בחר עובד:</div>
+            <div className="flex flex-col gap-2">
+              {users.map((u) => (
+                <button
+                  key={u.id}
+                  onClick={() => { const t = reassignTask; setReassignTask(null); reassign(t, u.id, reassignNotify); showToast(`המשימה הועברה ל${u.name}`); }}
+                  className="w-full text-right p-3 rounded-2xl text-sm font-bold"
+                  style={{ background: u.id === reassignTask.assignedToId ? C.accent : C.kraft, color: u.id === reassignTask.assignedToId ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
+                >
+                  {u.name}{u.id === reassignTask.assignedToId ? " (נוכחי)" : ""}
+                </button>
+              ))}
+            </div>
+            <button onClick={() => setReassignTask(null)} className="w-full mt-3 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+              ביטול
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col gap-3">
         {visible.length === 0 && (
           <p className="text-sm text-center py-8" style={{ color: C.steel }}>אין משימות להצגה</p>
@@ -9250,6 +9299,13 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
                   style={{ background: C.accent, color: "#fff" }}
                 >
                   ✏️ ערוך
+                </button>
+                <button
+                  onClick={() => { setReassignTask(t); setReassignNotify(true); }}
+                  className="px-3 py-1 rounded-2xl text-sm font-bold"
+                  style={{ background: C.brand, color: "#fff" }}
+                >
+                  👤 העבר לעובד
                 </button>
                 {(() => {
                   const loc = (locations || []).find((l) => l.id === t.locationId);
