@@ -4833,6 +4833,7 @@ function App() {
             stockLog={stockLog}
             locations={locations}
             persistLocations={persistLocations}
+            deleteLocationById={deleteLocationById}
             dishTypes={dishTypes}
             persistDishTypes={persistDishTypes}
             taskCategories={taskCategories}
@@ -10190,7 +10191,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, persistTasks, orderHistory, unitTemplates, persistUnitTemplates, personalPurchases, persistPersonalPurchases }) {
+function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, deleteLocationById, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, persistTasks, orderHistory, unitTemplates, persistUnitTemplates, personalPurchases, persistPersonalPurchases }) {
   const [section, setSection] = useState(initialSection || "products");
 
   // A notification can deep-link straight into a specific admin screen. Sync whenever
