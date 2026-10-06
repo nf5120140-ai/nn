@@ -351,6 +351,25 @@ async function loadTasksFresh() {
   return merged;
 }
 
+/* Generic version of loadTasksFresh for any list of id'd items (map rooms, locations):
+   server truth unioned with local cache by id, so a read-modify-write never drops items
+   another device added and never loses this device's unsynced additions. */
+async function loadListFresh(baseKey) {
+  const key = nsKey(baseKey);
+  const cached = await cacheGet(key);
+  let server = null;
+  if (isOnline()) {
+    try { const res = await window.storage.get(key, true); if (res) server = JSON.parse(res.value); } catch (e) {}
+  }
+  if (!Array.isArray(server)) return Array.isArray(cached) ? cached : null;
+  const byId = new Map();
+  server.forEach((x) => { if (x && x.id) byId.set(x.id, x); });
+  (Array.isArray(cached) ? cached : []).forEach((x) => { if (x && x.id && !byId.has(x.id)) byId.set(x.id, x); });
+  const merged = [...byId.values()];
+  try { await cacheSet(key, merged); } catch (e) {}
+  return merged;
+}
+
 async function loadKey(baseKey, fallback) {
   const key = nsKey(baseKey);
   const cached = await cacheGet(key);
@@ -3859,11 +3878,41 @@ function App() {
       [KEYS.menuItems]: async () => setMenuItems((await loadKey(KEYS.menuItems, [])) || []),
       [KEYS.weeklyMenu]: async () => setWeeklyMenu((await loadKey(KEYS.weeklyMenu, {})) || {}),
       [KEYS.savedMenus]: async () => setSavedMenus((await loadKey(KEYS.savedMenus, [])) || []),
-      [KEYS.mapRooms]: async () => setMapRooms((await loadKey(KEYS.mapRooms, [])) || []),
+      [KEYS.mapRooms]: async () => {
+        const server = (await loadKey(KEYS.mapRooms, [])) || [];
+        let dels = []; try { dels = (await loadKey("map-deletes", [])) || []; } catch (e) {}
+        const delSet = new Set(dels);
+        setMapRooms((local) => {
+          const byId = new Map();
+          server.forEach((r) => { if (r && r.id) byId.set(r.id, r); });
+          (local || []).forEach((lr) => { if (lr && lr.id && !byId.has(lr.id)) byId.set(lr.id, lr); });
+          return [...byId.values()].filter((r) => !delSet.has(r.id));
+        });
+      },
+      "map-deletes": async () => {
+        let dels = []; try { dels = (await loadKey("map-deletes", [])) || []; } catch (e) {}
+        const delSet = new Set(dels);
+        setMapRooms((local) => (local || []).filter((r) => !delSet.has(r.id)));
+      },
       [KEYS.reminders]: async () => setReminders((await loadKey(KEYS.reminders, [])) || []),
       [KEYS.stockLog]: async () => setStockLog((await loadKey(KEYS.stockLog, [])) || []),
       [KEYS.orderHistory]: async () => setOrderHistory((await loadKey(KEYS.orderHistory, [])) || []),
-      [KEYS.locations]: async () => setLocations((await loadKey(KEYS.locations, [])) || []),
+      [KEYS.locations]: async () => {
+        const server = (await loadKey(KEYS.locations, [])) || [];
+        let dels = []; try { dels = (await loadKey("loc-deletes", [])) || []; } catch (e) {}
+        const delSet = new Set(dels);
+        setLocations((local) => {
+          const byId = new Map();
+          server.forEach((l) => { if (l && l.id) byId.set(l.id, l); });
+          (local || []).forEach((ll) => { if (ll && ll.id && !byId.has(ll.id)) byId.set(ll.id, ll); });
+          return [...byId.values()].filter((l) => !delSet.has(l.id));
+        });
+      },
+      "loc-deletes": async () => {
+        let dels = []; try { dels = (await loadKey("loc-deletes", [])) || []; } catch (e) {}
+        const delSet = new Set(dels);
+        setLocations((local) => (local || []).filter((l) => !delSet.has(l.id)));
+      },
       [KEYS.dishTypes]: async () => setDishTypes((await loadKey(KEYS.dishTypes, [])) || []),
       [KEYS.taskCategories]: async () => setTaskCategories((await loadKey(KEYS.taskCategories, [])) || []),
       [KEYS.orderRequests]: async () => setOrderRequests((await loadKey(KEYS.orderRequests, [])) || []),
@@ -4130,7 +4179,33 @@ function App() {
   const [mapRooms, setMapRooms] = useState([]);
   async function persistMapRooms(next) {
     setMapRooms(next);
-    await saveKey(KEYS.mapRooms, next);
+    // Union with the freshest server copy so this write can't drop rooms another device
+    // added. Items this device explicitly deleted are tracked in a tombstone list.
+    let merged = next;
+    try {
+      const fresh = await loadListFresh(KEYS.mapRooms);
+      let dels = [];
+      try { dels = (await loadKey("map-deletes", [])) || []; } catch (e) {}
+      const delSet = new Set(dels);
+      if (Array.isArray(fresh)) {
+        const nextIds = new Set(next.map((r) => r.id));
+        const extra = fresh.filter((r) => r.id && !nextIds.has(r.id) && !delSet.has(r.id));
+        merged = [...next, ...extra];
+      }
+      merged = merged.filter((r) => !delSet.has(r.id));
+    } catch (e) {}
+    setMapRooms(merged);
+    await saveKey(KEYS.mapRooms, merged);
+  }
+  async function deleteMapRoomById(id) {
+    let dels = [];
+    try { dels = (await loadKey("map-deletes", [])) || []; } catch (e) {}
+    const nextDels = Array.from(new Set([...dels, id])).slice(-2000);
+    await saveKey("map-deletes", nextDels);
+    const fresh = (await loadListFresh(KEYS.mapRooms)) || mapRooms || [];
+    const merged = fresh.filter((r) => r.id !== id);
+    setMapRooms(merged);
+    await saveKey(KEYS.mapRooms, merged);
   }
   useEffect(() => {
     if (!currentUser) return;
@@ -4222,7 +4297,31 @@ function App() {
   }
   async function persistLocations(next) {
     setLocations(next);
-    await saveKey(KEYS.locations, next);
+    let merged = next;
+    try {
+      const fresh = await loadListFresh(KEYS.locations);
+      let dels = [];
+      try { dels = (await loadKey("loc-deletes", [])) || []; } catch (e) {}
+      const delSet = new Set(dels);
+      if (Array.isArray(fresh)) {
+        const nextIds = new Set(next.map((l) => l.id));
+        const extra = fresh.filter((l) => l.id && !nextIds.has(l.id) && !delSet.has(l.id));
+        merged = [...next, ...extra];
+      }
+      merged = merged.filter((l) => !delSet.has(l.id));
+    } catch (e) {}
+    setLocations(merged);
+    await saveKey(KEYS.locations, merged);
+  }
+  async function deleteLocationById(id) {
+    let dels = [];
+    try { dels = (await loadKey("loc-deletes", [])) || []; } catch (e) {}
+    const nextDels = Array.from(new Set([...dels, id])).slice(-2000);
+    await saveKey("loc-deletes", nextDels);
+    const fresh = (await loadListFresh(KEYS.locations)) || locations || [];
+    const merged = fresh.filter((l) => l.id !== id);
+    setLocations(merged);
+    await saveKey(KEYS.locations, merged);
   }
   async function persistDishTypes(next) {
     setDishTypes(next);
@@ -4663,6 +4762,7 @@ function App() {
           <MapTab
             mapRooms={mapRooms}
             persistMapRooms={persistMapRooms}
+            deleteMapRoomById={deleteMapRoomById}
             tasks={tasks}
             persistTasks={persistTasks}
             currentUser={currentUser}
@@ -8243,7 +8343,7 @@ const MAP_STATUS = {
   done: { label: "נוקה", color: "#22C55E", text: "#fff" },
 };
 
-function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, showToast, notifyManagers, notifyUser, onOpenTask, users, taskCategories, locations }) {
+function MapTab({ mapRooms, persistMapRooms, deleteMapRoomById, tasks, persistTasks, currentUser, showToast, notifyManagers, notifyUser, onOpenTask, users, taskCategories, locations }) {
   const [activeBuilding, setActiveBuilding] = useState(null);
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
@@ -8437,7 +8537,7 @@ function MapTab({ mapRooms, persistMapRooms, tasks, persistTasks, currentUser, s
   }
 
   async function deleteRoom(id) {
-    await persistMapRooms((mapRooms || []).filter((r) => r.id !== id));
+    await deleteMapRoomById(id);
     setSheetRoom(null);
   }
 
@@ -10201,7 +10301,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
         <TaskCategoriesAdmin taskCategories={taskCategories} persistTaskCategories={persistTaskCategories} showToast={showToast} />
       )}
       {section === "locations" && (
-        <LocationsAdmin locations={locations} persistLocations={persistLocations} showToast={showToast} />
+        <LocationsAdmin locations={locations} persistLocations={persistLocations} deleteLocationById={deleteLocationById} showToast={showToast} />
       )}
       {section === "reminders" && (
         <RemindersAdmin reminders={reminders} persistReminders={persistReminders} products={products} users={users} showToast={showToast} />
@@ -11050,7 +11150,7 @@ function OldAnalyticsAdmin({ products, stockLog }) {
   );
 }
 
-function LocationsAdmin({ locations, persistLocations, showToast }) {
+function LocationsAdmin({ locations, persistLocations, deleteLocationById, showToast }) {
   const empty = { name: "", group: "", imageData: null };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
@@ -11162,7 +11262,7 @@ function LocationsAdmin({ locations, persistLocations, showToast }) {
   }
 
   async function remove(id) {
-    await persistLocations(locations.filter((l) => l.id !== id));
+    await deleteLocationById(id);
   }
 
   const filtered = locations.filter((l) => !search || l.name.includes(search) || (l.group || "").includes(search));
