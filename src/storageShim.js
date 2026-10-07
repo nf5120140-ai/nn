@@ -156,6 +156,27 @@ async function list(prefix = "", shared = false) {
   return { keys: (data || []).map((r) => r.key), prefix, shared };
 }
 
+/* ---------- Image uploads to Storage ----------
+   מעלה קובץ תמונה (Blob/File) לדלי "task-images" ומחזיר כתובת ציבורית קצרה.
+   כך התמונה נשמרת כקובץ קבוע ולא כ-base64 בתוך הבלוב - הבלוב נשאר קטן,
+   הסנכרון בזמן אמת לא נחסם, והקובץ עצמו לא משתנה. */
+async function uploadImage(blob, ext = "jpg") {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const uid = sessionData?.session?.user?.id;
+  if (!uid) throw new Error("not signed in");
+  const orgId = (await getOrgId()) || "noorg";
+  const rand = Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+  const path = `${orgId}/${rand}.${ext}`;
+  const { error } = await supabase.storage.from("task-images").upload(path, blob, {
+    contentType: (blob && blob.type) || "image/jpeg",
+    cacheControl: "31536000",
+    upsert: false,
+  });
+  if (error) throw error;
+  const { data } = supabase.storage.from("task-images").getPublicUrl(path);
+  return data.publicUrl;
+}
+
 /* ---------- Web Push ---------- */
 
 /** מפתח VAPID מגיע כ-base64url; ה-API של הדפדפן דורש Uint8Array. */
@@ -293,7 +314,7 @@ async function subscribeToOrgChanges(onChange) {
   };
 }
 
-window.storage = { get, set, delete: del, list };
+window.storage = { get, set, delete: del, list, uploadImage };
 window.auth = {
   signUpCreateOrg,
   signUpJoinOrg,
