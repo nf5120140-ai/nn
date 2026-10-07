@@ -9087,11 +9087,12 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
       return;
     }
 
-    // IMPORTANT: navigator.share() must be invoked inside the user gesture.
-    // dataUrlToFile is synchronous so the gesture survives.
+    // Build the image File to share. For inline photos this is instant; for a
+    // Storage URL we fetch the file first (works on Android/Chrome; iOS may fall
+    // back to the manual-attach path below).
     let file = null;
     try {
-      file = dataUrlToFile(photo, "task.jpg");
+      file = await photoToFile(photo, "task.jpg");
     } catch (e) {
       console.error("could not build file from image data", e);
       showToast("שגיאה: לא ניתן לקרוא את התמונה השמורה");
@@ -9131,7 +9132,7 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
       showToast("הדפדפן לא תומך בשיתוף - התמונה תרד לצירוף ידני");
     }
     try { await navigator.clipboard.writeText(text); } catch (_) {}
-    downloadDataUrl(photo, `task-${task.id}.jpg`);
+    await downloadPhoto(photo, `task-${task.id}.jpg`);
     openWhatsapp(waDigits, text);
     showToast("התמונה ירדה והטקסט הועתק - צרף את התמונה בוואטסאפ ידנית");
   }
@@ -9704,6 +9705,119 @@ function resizeImageToDataUrl(file, maxDim = 900, quality = 0.7) {
   });
 }
 
+/* ===== Image storage helpers =====
+   Images are uploaded to Supabase Storage (bucket "task-images") and only their
+   short public URL is stored in the data blob. This keeps the shared blob tiny so
+   Realtime never drops it, and the file itself is permanent/immutable. Old images
+   that were saved inline as base64 ("data:...") keep working everywhere. */
+
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onerror = reject;
+    r.onload = () => resolve(r.result);
+    r.readAsDataURL(blob);
+  });
+}
+
+function dataUrlToBlob(dataUrl) {
+  const [header, base64] = String(dataUrl).split(",");
+  const mime = (header.match(/:(.*?);/) || [])[1] || "image/jpeg";
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
+/* Resize a picked file to a small JPEG Blob (same dimensions/quality as before). */
+function resizeImageToBlob(file, maxDim = 900, quality = 0.7) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        let { width, height } = img;
+        if (width > height && width > maxDim) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        } else if (height > maxDim) {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        canvas.getContext("2d").drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (b) => (b ? resolve(b) : reject(new Error("toBlob failed"))),
+          "image/jpeg",
+          quality
+        );
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/* Pick -> resize -> upload to Storage -> return public URL.
+   If the upload fails (e.g. offline), falls back to an inline data URL so the
+   user never loses the photo; it will simply be inline until re-saved online. */
+async function uploadPickedImage(file) {
+  const blob = await resizeImageToBlob(file);
+  try {
+    if (window.storage && window.storage.uploadImage) {
+      return await window.storage.uploadImage(blob, "jpg");
+    }
+  } catch (e) {
+    console.error("image upload failed, keeping inline copy", e);
+  }
+  return await blobToDataUrl(blob);
+}
+
+/* Upload an annotated image (produced as a data URL by the canvas) and return its URL. */
+async function uploadDataUrlImage(dataUrl) {
+  try {
+    if (window.storage && window.storage.uploadImage) {
+      const blob = dataUrlToBlob(dataUrl);
+      return await window.storage.uploadImage(blob, "jpg");
+    }
+  } catch (e) {
+    console.error("annotated image upload failed, keeping inline copy", e);
+  }
+  return dataUrl;
+}
+
+/* Turn any stored photo (inline data URL OR https Storage URL) into a File for sharing. */
+async function photoToFile(photo, filename) {
+  if (!photo) throw new Error("no photo");
+  if (String(photo).startsWith("data:")) return dataUrlToFile(photo, filename);
+  const res = await fetch(photo, { mode: "cors", cache: "no-store" });
+  if (!res.ok) throw new Error("fetch failed: " + res.status);
+  const blob = await res.blob();
+  return new File([blob], filename, { type: blob.type || "image/jpeg" });
+}
+
+/* Download any stored photo (inline data URL OR https Storage URL). */
+async function downloadPhoto(photo, filename) {
+  try {
+    if (String(photo).startsWith("data:")) {
+      downloadDataUrl(photo, filename);
+      return;
+    }
+    const res = await fetch(photo, { mode: "cors", cache: "no-store" });
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    downloadDataUrl(url, filename);
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (e) {
+    console.error("download failed", e);
+    window.open(photo, "_blank");
+  }
+}
+
 /* Draw/annotate on an image: opens the photo on a canvas and lets you mark it with a
    finger/pen, then flattens the drawing onto the image and returns a new data URL. */
 function ImageAnnotator({ src, onSave, onCancel }) {
@@ -9718,6 +9832,7 @@ function ImageAnnotator({ src, onSave, onCancel }) {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     const img = new Image();
+    img.crossOrigin = "anonymous"; // allow toDataURL on Storage-hosted images
     img.onload = () => {
       const maxDim = 1000;
       let { width, height } = img;
@@ -9998,7 +10113,7 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
               </button>
               <label className="flex-1 text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
                 🖼️ החלף מהגלריה
-                <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
+                <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await uploadPickedImage(f)); } catch (err) {} } e.target.value = ""; }} />
               </label>
               <button onClick={() => setImageData(null)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>🗑️ הסר</button>
             </div>
@@ -10007,17 +10122,17 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
           <div className="flex gap-2">
             <label className="flex-1 block text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px dashed ${C.kraftDark}` }}>
               🖼️ מהגלריה
-              <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await uploadPickedImage(f)); } catch (err) {} } e.target.value = ""; }} />
             </label>
             <label className="flex-1 block text-center py-2 rounded-2xl font-bold text-sm cursor-pointer" style={{ background: C.kraft, color: C.ink, border: `1px dashed ${C.kraftDark}` }}>
               📷 מצלמה
-              <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await resizeImageToDataUrl(f)); } catch (err) {} } e.target.value = ""; }} />
+              <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await uploadPickedImage(f)); } catch (err) {} } e.target.value = ""; }} />
             </label>
           </div>
         )}
       </div>
       {annotating && imageData && (
-        <ImageAnnotator src={imageData} onSave={(d) => { setImageData(d); setAnnotating(false); }} onCancel={() => setAnnotating(false)} />
+        <ImageAnnotator src={imageData} onSave={async (d) => { setImageData(await uploadDataUrlImage(d)); setAnnotating(false); }} onCancel={() => setAnnotating(false)} />
       )}
 
       <div className="flex gap-2">
@@ -10051,8 +10166,8 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
     if (!file) return;
     setImageBusy(true);
     try {
-      const dataUrl = await resizeImageToDataUrl(file);
-      setImageData(dataUrl);
+      const url = await uploadPickedImage(file);
+      setImageData(url);
     } catch (err) {
       console.error(err);
     } finally {
@@ -10124,7 +10239,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
           </div>
         )}
         {annotating && imageData && (
-          <ImageAnnotator src={imageData} onSave={(d) => { setImageData(d); setAnnotating(false); }} onCancel={() => setAnnotating(false)} />
+          <ImageAnnotator src={imageData} onSave={async (d) => { setImageData(await uploadDataUrlImage(d)); setAnnotating(false); }} onCancel={() => setAnnotating(false)} />
         )}
       </div>
 
@@ -11191,8 +11306,8 @@ function LocationsAdmin({ locations, persistLocations, deleteLocationById, showT
     if (!file) return;
     setImageBusy(true);
     try {
-      const dataUrl = await resizeImageToDataUrl(file);
-      setForm((f) => ({ ...f, imageData: dataUrl }));
+      const url = await uploadPickedImage(file);
+      setForm((f) => ({ ...f, imageData: url }));
     } catch (err) {
       console.error(err);
     } finally {
@@ -13915,8 +14030,8 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
     if (!file) return;
     setPhotoBusy(true);
     try {
-      const dataUrl = await resizeImageToDataUrl(file);
-      setForm((f) => ({ ...f, imageData: dataUrl }));
+      const url = await uploadPickedImage(file);
+      setForm((f) => ({ ...f, imageData: url }));
     } catch (err) {
       console.error(err);
     } finally {
