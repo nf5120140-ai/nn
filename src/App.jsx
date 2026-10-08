@@ -271,6 +271,21 @@ function hasAnyAdminSection(user) {
   if (!isSupervisor(user)) return false;
   return ADMIN_SECTIONS.some((s) => user?.permissions?.admin?.[s.id]);
 }
+
+/** The screen a user should land on. A worker with access to exactly one area opens
+ *  straight on that area (e.g. only warehouse requests -> opens on the requests screen)
+ *  instead of the generic home dashboard. Managers and multi-area users get the home. */
+function computeLandingTab(user) {
+  if (!user || isManager(user)) return "dashboard";
+  const perms = { ...DEFAULT_PERMISSIONS, ...(user.permissions || {}) };
+  const areas = [];
+  if (perms.tasks !== false) areas.push("tasks");
+  if (perms.inventory !== false) areas.push("inventory");
+  if (perms.order !== false) areas.push("order");
+  if (perms.unitRequest === true) areas.push("unitrequest");
+  if (hasAnyAdminSection(user)) areas.push("admin");
+  return areas.length === 1 ? areas[0] : "dashboard";
+}
 /** Only a manager may push an order out to a supplier. Everyone else requests approval. */
 function canSendOrders(user) {
   return isManager(user);
@@ -3512,6 +3527,9 @@ function App() {
     } catch (e) {}
     return "dashboard";
   });
+  // Set when the app was opened via a deep-link (push notification / shortcut), so the
+  // per-worker landing redirect below doesn't override where the notification sent them.
+  const deepLinkRef = useRef(false);
   const [scannerOpen, setScannerOpen] = useState(false);
   const [scanResult, setScanResult] = useState(null); // { code, product|null }
   const [toast, setToast] = useState("");
@@ -3534,6 +3552,7 @@ function App() {
       const tk = params.get("taskId");
       const action = params.get("action");
       if (t || s || tk || action) {
+        deepLinkRef.current = true;
         if (s) setAdminSection(s);
         if (tk) setFocusTaskId(tk);
         if (action === "new-task") {
@@ -3660,21 +3679,36 @@ function App() {
   useEffect(() => {
     if (!currentUser) return;
     if (isManager(currentUser)) return;
-    const perms = currentUser.permissions || DEFAULT_PERMISSIONS;
+    const perms = { ...DEFAULT_PERMISSIONS, ...(currentUser.permissions || {}) };
 
-    // A unit user (e.g. the daycare) whose only permission is requesting from stock
-    // should land straight on that screen instead of an empty inventory tab.
-    if (perms.unitRequest === true && perms.inventory === false && perms.order === false && perms.tasks === false) {
-      if (tab !== "unitrequest") setTab("unitrequest");
-      return;
+    // Initial landing: a worker with access to a single area opens straight on it
+    // (e.g. only warehouse requests -> the requests screen), instead of the generic
+    // home. Only applies when they're on the default home and weren't deep-linked
+    // here by a notification/shortcut.
+    if (!deepLinkRef.current && tab === "dashboard") {
+      const landing = computeLandingTab(currentUser);
+      if (landing !== "dashboard") {
+        setTab(landing);
+        return;
+      }
     }
 
+    // Safety: if they're sitting on a tab they no longer have access to, move them off it.
     if (tab === "tasks" && perms.tasks === false) {
       if (perms.inventory !== false) setTab("inventory");
       else if (perms.order !== false) setTab("order");
+      else if (perms.unitRequest === true) setTab("unitrequest");
+      else setTab("dashboard");
     } else if (tab === "inventory" && perms.inventory === false) {
       if (perms.order !== false) setTab("order");
       else if (perms.tasks !== false) setTab("tasks");
+      else if (perms.unitRequest === true) setTab("unitrequest");
+      else setTab("dashboard");
+    } else if (tab === "order" && perms.order === false) {
+      if (perms.tasks !== false) setTab("tasks");
+      else if (perms.inventory !== false) setTab("inventory");
+      else if (perms.unitRequest === true) setTab("unitrequest");
+      else setTab("dashboard");
     }
   }, [currentUser]);
 
