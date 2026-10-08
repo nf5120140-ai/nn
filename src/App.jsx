@@ -2484,15 +2484,22 @@ function UnitRequestTab({
                       >
                         +
                       </button>
-                      <button
-                        onClick={() => setQty(p, q > 0 ? q : step, isBox ? (p.unit || "יח׳") : "ארגז")}
+                      <select
+                        value={u}
+                        onChange={(e) => {
+                          const nu = e.target.value;
+                          const ns = nu === "ארגז" ? 0.5 : 1;
+                          setQty(p, q > 0 ? q : ns, nu);
+                        }}
                         disabled={locked}
-                        title="החלף בין יחידות לארגזים"
-                        className="px-2 h-8 rounded-xl font-bold text-xs whitespace-nowrap"
+                        title="בחר יחידה: יח׳ / קרטון / ארגז"
+                        className="px-1 h-8 rounded-xl font-bold text-xs"
                         style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}
                       >
-                        {isBox ? "🧺 ארגז" : (p.unit || "יח׳")}
-                      </button>
+                        {Array.from(new Set(["יח׳", "קרטון", "ארגז", p.unit || "יח׳"])).map((opt) => (
+                          <option key={opt} value={opt}>{opt}</option>
+                        ))}
+                      </select>
                     </div>
                   </div>
                 </ShelfTag>
