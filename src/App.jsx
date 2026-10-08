@@ -225,6 +225,7 @@ const DEFAULT_PERMISSIONS = {
   unitRequest: false,
   taskScope: "own",            // "own" | "categories" | "all"
   visibleTaskCategories: [],   // used only when taskScope === "categories"
+  hideDashboard: false,        // true -> this worker never sees the home dashboard
   admin: {},
 };
 
@@ -272,18 +273,31 @@ function hasAnyAdminSection(user) {
   return ADMIN_SECTIONS.some((s) => user?.permissions?.admin?.[s.id]);
 }
 
-/** The screen a user should land on. A worker with access to exactly one area opens
- *  straight on that area (e.g. only warehouse requests -> opens on the requests screen)
- *  instead of the generic home dashboard. Managers and multi-area users get the home. */
-function computeLandingTab(user) {
-  if (!user || isManager(user)) return "dashboard";
-  const perms = { ...DEFAULT_PERMISSIONS, ...(user.permissions || {}) };
+/** Has the manager chosen that this worker shouldn't see the home dashboard at all? */
+function hidesDashboard(user) {
+  if (!user || isManager(user)) return false;
+  return (user.permissions || {}).hideDashboard === true;
+}
+
+/** The list of main areas a worker can reach, in landing-priority order. */
+function workerAreas(user) {
+  const perms = { ...DEFAULT_PERMISSIONS, ...(user?.permissions || {}) };
   const areas = [];
   if (perms.tasks !== false) areas.push("tasks");
   if (perms.inventory !== false) areas.push("inventory");
   if (perms.order !== false) areas.push("order");
   if (perms.unitRequest === true) areas.push("unitrequest");
   if (hasAnyAdminSection(user)) areas.push("admin");
+  return areas;
+}
+
+/** The screen a user should land on. If the manager turned off the home dashboard for
+ *  this worker, they always land on their first area. Otherwise, a worker with access to
+ *  exactly one area opens straight on it; managers and multi-area users get the home. */
+function computeLandingTab(user) {
+  if (!user || isManager(user)) return "dashboard";
+  const areas = workerAreas(user);
+  if (hidesDashboard(user)) return areas[0] || "tasks";
   return areas.length === 1 ? areas[0] : "dashboard";
 }
 /** Only a manager may push an order out to a supplier. Everyone else requests approval. */
@@ -3712,6 +3726,15 @@ function App() {
     }
   }, [currentUser]);
 
+  // A worker set to "no home dashboard" must never land on it - including via the
+  // Back button or a stale history entry. Bounce them to their first area.
+  useEffect(() => {
+    if (!currentUser) return;
+    if (hidesDashboard(currentUser) && tab === "dashboard") {
+      setTab(computeLandingTab(currentUser));
+    }
+  }, [tab, currentUser]);
+
   useEffect(() => {
     if (!currentUser) return;
     setLoaded(false);
@@ -4906,7 +4929,9 @@ function App() {
               <div className="text-xs" style={{ color: "#fff" }}>{currentUser.name} · {roleLabel(currentUser.role)}</div>
             </div>
             <div className="flex flex-col p-3 gap-2 flex-1">
-              <DrawerItem label="🏠 בית" active={tab === "dashboard"} onClick={() => { setTab("dashboard"); setShowMenu(false); }} />
+              {!hidesDashboard(currentUser) && (
+                <DrawerItem label="🏠 בית" active={tab === "dashboard"} onClick={() => { setTab("dashboard"); setShowMenu(false); }} />
+              )}
               {(isManager(currentUser) || currentUser.permissions?.inventory !== false) && (
                 <DrawerItem label="מלאי" active={tab === "inventory"} onClick={() => { setTab("inventory"); setShowMenu(false); }} />
               )}
@@ -15167,6 +15192,20 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
                         בקשה מהמחסן
                         <span className="block text-xs" style={{ color: C.steel }}>
                           ליחידות כמו המעון - מזמינים מהמלאי שלך ואתה מנפיק. אם זו ההרשאה היחידה, הם יראו רק את המסך הזה.
+                        </span>
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2 text-sm" style={{ color: C.ink }}>
+                      <input
+                        type="checkbox"
+                        checked={perms.hideDashboard === true}
+                        onChange={(e) => setPerm("hideDashboard", e.target.checked)}
+                        style={{ marginTop: 4 }}
+                      />
+                      <span>
+                        בלי מסך בית (דשבורד)
+                        <span className="block text-xs" style={{ color: C.steel }}>
+                          העובד ייכנס ישר למסך הראשון שלו ולא יראה את מסך הבית כלל - גם לא בתפריט.
                         </span>
                       </span>
                     </label>
