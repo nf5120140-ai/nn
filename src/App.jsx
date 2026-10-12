@@ -2073,7 +2073,7 @@ function UnitRequestTab({
   // draft can be started immediately — the unit can have several pending requests.
   const current = mine.find((r) => r.status === "open");
   const myPendingReqs = mine.filter((r) => r.status === "submitted").sort((a, b) => (b.submittedAt || b.createdAt) - (a.submittedAt || a.createdAt));
-  const history = mine.filter((r) => r !== current && r.status !== "submitted").sort((a, b) => b.createdAt - a.createdAt);
+  const history = mine.filter((r) => r !== current && r.status !== "submitted" && r.status !== "fulfilled").sort((a, b) => b.createdAt - a.createdAt);
   const template = (unitTemplates || {})[currentUser.id] || [];
 
   // Only products the manager exposed to units.
@@ -2086,6 +2086,14 @@ function UnitRequestTab({
   const isSubmitted = current?.status === "submitted";
   const [addingMore, setAddingMore] = useState(false);
   const locked = isSubmitted && !addingMore;
+  const [weeklyOpen, setWeeklyOpen] = useState(true); // "ההזמנה השבועית" collapse
+  const [openReqId, setOpenReqId] = useState(null);   // which sent request is expanded for receipt-marking
+
+  // Sent requests (waiting for warehouse or already issued), newest first.
+  const sentReqs = mine
+    .filter((r) => r.status === "submitted" || r.status === "fulfilled")
+    .sort((a, b) => (b.submittedAt || b.createdAt) - (a.submittedAt || a.createdAt))
+    .slice(0, 12);
 
   useEffect(() => { setNoteDraft(current?.note || ""); }, [current?.id, current?.status]);
 
@@ -2207,6 +2215,90 @@ function UnitRequestTab({
     showToast("הבקשה הועתקה לעריכה — אפשר לשנות ולשלוח מחדש");
   }
 
+  // Edit a row in the accumulating weekly order (works for catalog and custom items).
+  async function setRowQty(pid, qty) {
+    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
+    const q = Math.max(0, Number(qty) || 0);
+    const items = (current?.items || [])
+      .map((i) => (i.productId === pid ? { ...i, qty: q } : i))
+      .filter((i) => Number(i.qty) > 0);
+    await upsertCurrent(items);
+  }
+  async function setRowUnit(pid, unit) {
+    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
+    const items = (current?.items || []).map((i) => (i.productId === pid ? { ...i, unit } : i));
+    await upsertCurrent(items);
+  }
+
+  // Receipt tracking on a sent request: tap an item to toggle "missing".
+  // Anything NOT marked counts as arrived.
+  async function toggleMissing(reqId, pid) {
+    const req = (unitRequests || []).find((r) => r.id === reqId);
+    if (!req) return;
+    const items = (req.items || []).map((i) => (i.productId === pid ? { ...i, missing: !i.missing } : i));
+    const others = (unitRequests || []).filter((r) => r.id !== reqId);
+    await persistUnitRequests([...others, { ...req, items }]);
+  }
+  async function reportMissing(reqId) {
+    const req = (unitRequests || []).find((r) => r.id === reqId);
+    if (!req) return;
+    const missing = (req.items || []).filter((i) => i.missing);
+    if (missing.length === 0) return showToast("לא סימנת פריטים כחסרים");
+    const text =
+      `❗ חוסרים בבקשה של ${currentUser.name} (${missing.length} פריטים):\n` +
+      missing.map((i) => `• ${i.name} — ${i.qty} ${i.unit || ""}`).join("\n");
+    if (notifyManagers) await notifyManagers(text, { tab: "admin", section: "unitrequests" });
+    const others = (unitRequests || []).filter((r) => r.id !== reqId);
+    await persistUnitRequests([...others, { ...req, missingReportedAt: Date.now() }]);
+    showToast("רשימת החוסרים נשלחה למנהל ✓");
+  }
+
+  // Delete a request the unit sent (e.g. sent twice by mistake).
+  async function deleteRequest(reqId) {
+    if (!window.confirm("למחוק את הבקשה הזו? (למשל אם נשלחה בטעות פעמיים)")) return;
+    const others = (unitRequests || []).filter((r) => r.id !== reqId);
+    await persistUnitRequests(others);
+    if (notifyManagers) await notifyManagers(`🗑️ ${currentUser.name} מחק בקשה שנשלחה`, { tab: "admin", section: "unitrequests" });
+    showToast("הבקשה נמחקה");
+  }
+
+  // The item list of a sent request with per-item "arrived / missing" toggles.
+  function receiptBlock(r) {
+    const missingCount = (r.items || []).filter((i) => i.missing).length;
+    return (
+      <div className="mt-2 flex flex-col gap-1">
+        {(r.items || []).map((i) => (
+          <button
+            key={i.productId}
+            onClick={() => toggleMissing(r.id, i.productId)}
+            className="flex justify-between items-center text-sm p-2 rounded-xl"
+            style={{
+              background: i.missing ? "rgba(255,90,95,0.15)" : C.kraft,
+              border: `1px solid ${i.missing ? C.stamp : C.kraftDark}`,
+            }}
+          >
+            <span style={{ color: C.ink, textDecoration: i.missing ? "line-through" : "none" }}>{i.name}</span>
+            <span className="font-bold text-xs whitespace-nowrap" style={{ color: i.missing ? C.stamp : C.sage }}>
+              {i.qty} {i.unit || ""} · {i.missing ? "✗ חסר" : "✓ הגיע"}
+            </span>
+          </button>
+        ))}
+        <button
+          onClick={() => reportMissing(r.id)}
+          className="mt-1 py-2 rounded-xl text-xs font-bold"
+          style={{ background: missingCount > 0 ? C.stamp : C.kraft, color: missingCount > 0 ? "#fff" : C.steel, border: `1px solid ${C.kraftDark}` }}
+        >
+          📨 דווח חוסרים למנהל {missingCount > 0 ? `(${missingCount})` : ""}
+        </button>
+        {r.missingReportedAt && (
+          <div className="text-xs text-center" style={{ color: C.steel }}>
+            דווח למנהל · {new Date(r.missingReportedAt).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function printRequest(req) {
     const r = req || current;
     const printItems = (r && r.status === "fulfilled" && Array.isArray(r.issuedItems) && r.issuedItems.length) ? r.issuedItems : (r ? r.items : []);
@@ -2302,116 +2394,8 @@ function UnitRequestTab({
 
       {view === "current" && (
         <>
-          {myPendingReqs.length > 0 && (
-            <ShelfTag accent={C.mustard} style={{ marginBottom: 16 }}>
-              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>
-                ⏳ ממתינות לאישור המחסן ({myPendingReqs.length})
-              </div>
-              <div className="flex flex-col gap-2">
-                {myPendingReqs.map((r) => (
-                  <div key={r.id} className="flex justify-between items-center text-sm p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
-                    <span style={{ color: C.ink }}>
-                      {(r.items || []).length} מוצרים · {new Date(r.submittedAt || r.createdAt).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                    </span>
-                    <div className="flex gap-1">
-                      <button onClick={() => printRequest(r)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.accent, color: "#fff" }} title="הדפסה ממחשב">🖨️</button>
-                      <button onClick={() => shareRequestImage(r)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.sage, color: "#fff" }} title="שיתוף / הדפסה מהטלפון">📱</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <p className="text-xs mt-2" style={{ color: C.steel }}>אפשר להכין ולשלוח בקשה נוספת למטה - כל בקשה נשלחת בנפרד.</p>
-            </ShelfTag>
-          )}
-          <ShelfTag accent={current ? UNIT_STATUS[current.status].color : C.steel} style={{ marginBottom: 16 }}>
-            <div className="flex justify-between items-center">
-              <div>
-                <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
-                  {current ? "בקשה חדשה" : "בקשה חדשה"}
-                </div>
-                <div className="text-xs mt-0.5" style={{ color: C.steel }}>
-                  {current ? `${totalItems} מוצרים · טיוטה` : "הוסף מוצרים למטה כדי להתחיל בקשה"}
-                </div>
-              </div>
-              {template.length > 0 && !locked && (
-                <button onClick={loadFromTemplate} className="text-xs font-bold px-3 py-2 rounded-2xl" style={{ background: C.accent, color: "#fff" }}>
-                  טען רשימה קבועה
-                </button>
-              )}
-            </div>
-            {isSubmitted && !addingMore && (
-              <div className="flex gap-2 mt-2">
-                <button onClick={() => setAddingMore(true)} className="flex-1 py-2 rounded-2xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>
-                  ➕ הוסף עוד לבקשה
-                </button>
-                <button onClick={reopen} className="flex-1 py-2 rounded-2xl text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>
-                  פתח מחדש לעריכה
-                </button>
-              </div>
-            )}
-            {addingMore && (
-              <div className="mt-2">
-                <div className="text-xs mb-2 p-2 rounded-xl" style={{ background: "rgba(232,168,77,0.15)", color: C.ink }}>
-                  מצב הוספה: הוסף פריטים למטה (חיפוש / מוצר חדש), והם יתווספו לבקשה שכבר נשלחה.
-                </div>
-                <button onClick={finishAddMore} className="w-full py-2 rounded-2xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>
-                  ✓ סיום - עדכן את המחסן
-                </button>
-              </div>
-            )}
-            {totalItems > 0 && (
-              <>
-                <button
-                  onClick={() => printRequest()}
-                  className="w-full mt-2 py-2.5 rounded-2xl font-bold text-sm"
-                  style={{ background: C.accent, color: "#fff" }}
-                >
-                  🖨️ הדפס טבלה (מחשב)
-                </button>
-                <button
-                  onClick={() => shareRequestImage()}
-                  className="w-full mt-1 py-2.5 rounded-2xl font-bold text-sm"
-                  style={{ background: C.sage, color: "#fff" }}
-                >
-                  📱 שתף / הדפס מהטלפון
-                </button>
-              </>
-            )}
-          </ShelfTag>
-
-          {totalItems > 0 && (
-            <ShelfTag accent={C.sage} style={{ marginBottom: 16 }}>
-              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>מה ביקשת</div>
-              <div className="flex flex-col gap-1.5">
-                {(current.items || []).map((i) => (
-                  <div key={i.productId} className="flex justify-between text-sm">
-                    <span style={{ color: C.ink }}>{i.name}</span>
-                    <span className="font-bold" style={{ color: C.ink }}>{i.qty} {i.unit}</span>
-                  </div>
-                ))}
-              </div>
-              <textarea
-                value={noteDraft}
-                onChange={(e) => setNoteDraft(e.target.value)}
-                onBlur={() => saveNote(noteDraft)}
-                disabled={locked}
-                placeholder="הערה למחסן (לא חובה)..."
-                className="w-full mt-3 p-2 rounded-2xl border text-sm"
-                style={{ borderColor: C.kraftDark, minHeight: 56, resize: "vertical", background: locked ? C.kraft : C.kraft }}
-              />
-              {!isSubmitted && (
-                <div className="flex gap-2 mt-3">
-                  <button onClick={submit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
-                    שלח למחסן
-                  </button>
-                  <button onClick={saveAsTemplate} className="px-3 py-2 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink }}>
-                    שמור כקבועה
-                  </button>
-                </div>
-              )}
-            </ShelfTag>
-          )}
-
+          {/* ===== 1) Add products (top) ===== */}
+          <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>➕ הוספת מוצרים</div>
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -2419,41 +2403,19 @@ function UnitRequestTab({
             className="w-full p-3 rounded-2xl border mb-3"
             style={{ borderColor: C.kraftDark, background: C.kraft }}
           />
-
-          {!locked && (
-            <div className="flex gap-2 mb-3">
-              <input
-                value={customName}
-                onChange={(e) => setCustomName(e.target.value)}
-                onKeyDown={(e) => { if (e.key === "Enter") addCustomItem(); }}
-                placeholder="מוצר שלא ברשימה..."
-                className="flex-1 p-3 rounded-2xl border"
-                style={{ borderColor: C.kraftDark, background: C.kraft }}
-              />
-              <button onClick={addCustomItem} className="px-4 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
-                הוסף
-              </button>
-            </div>
-          )}
-
-          {customItems.length > 0 && (
-            <ShelfTag accent={C.mustard} style={{ marginBottom: 12 }}>
-              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>מוצרים שהוספת ידנית</div>
-              <div className="flex flex-col gap-2">
-                {customItems.map((i) => (
-                  <div key={i.productId} className="flex justify-between items-center">
-                    <span className="font-bold text-sm" style={{ color: C.ink }}>{i.name}</span>
-                    <div className="flex items-center gap-1">
-                      <button onClick={() => updateCustomQty(i.productId, i.qty - 1)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}>−</button>
-                      <input type="number" value={i.qty === 0 ? "" : i.qty} onChange={(e) => updateCustomQty(i.productId, e.target.value)} disabled={locked} className="w-12 text-center p-1.5 rounded-xl border" style={{ borderColor: C.kraftDark }} />
-                      <button onClick={() => updateCustomQty(i.productId, i.qty + 1)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.brand, color: "#fff", opacity: locked ? 0.4 : 1 }}>+</button>
-                      <button onClick={() => removeItem(i.productId)} disabled={locked} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </ShelfTag>
-          )}
+          <div className="flex gap-2 mb-3">
+            <input
+              value={customName}
+              onChange={(e) => setCustomName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") addCustomItem(); }}
+              placeholder="מוצר שלא ברשימה..."
+              className="flex-1 p-3 rounded-2xl border"
+              style={{ borderColor: C.kraftDark, background: C.kraft }}
+            />
+            <button onClick={addCustomItem} className="px-4 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
+              הוסף
+            </button>
+          </div>
 
           <div className="flex gap-2 overflow-x-auto pb-2 mb-3">
             <button
@@ -2487,7 +2449,7 @@ function UnitRequestTab({
             </ShelfTag>
           )}
 
-          <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-2 mb-4">
             {filtered.map((p) => {
               const q = qtyOf(p.id);
               const u = unitOf(p);
@@ -2508,9 +2470,9 @@ function UnitRequestTab({
                     <div className="flex items-center gap-1">
                       <button
                         onClick={() => setQty(p, Math.max(0, q - step), u)}
-                        disabled={locked || q === 0}
+                        disabled={q === 0}
                         className="w-8 h-8 rounded-xl font-bold"
-                        style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked || q === 0 ? 0.4 : 1 }}
+                        style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: q === 0 ? 0.4 : 1 }}
                       >
                         −
                       </button>
@@ -2519,16 +2481,14 @@ function UnitRequestTab({
                         step={step}
                         value={q === 0 ? "" : q}
                         onChange={(e) => setQty(p, e.target.value, u)}
-                        disabled={locked}
                         placeholder="0"
                         className="w-14 text-center p-1.5 rounded-xl border"
                         style={{ borderColor: C.kraftDark }}
                       />
                       <button
                         onClick={() => setQty(p, q + step, u)}
-                        disabled={locked}
                         className="w-8 h-8 rounded-xl font-bold"
-                        style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}
+                        style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}
                       >
                         +
                       </button>
@@ -2539,10 +2499,9 @@ function UnitRequestTab({
                           const ns = nu === "ארגז" ? 0.5 : 1;
                           setQty(p, q > 0 ? q : ns, nu);
                         }}
-                        disabled={locked}
                         title="בחר יחידה: יח׳ / קרטון / ארגז"
                         className="px-1 h-8 rounded-xl font-bold text-xs"
-                        style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}`, opacity: locked ? 0.4 : 1 }}
+                        style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
                       >
                         {Array.from(new Set(["יח׳", "קרטון", "ארגז", p.unit || "יח׳"])).map((opt) => (
                           <option key={opt} value={opt}>{opt}</option>
@@ -2554,6 +2513,107 @@ function UnitRequestTab({
               );
             })}
           </div>
+
+          {/* ===== 2) The accumulating weekly order ===== */}
+          {totalItems > 0 && (
+            <ShelfTag accent={C.sage} style={{ marginBottom: 16 }}>
+              <button onClick={() => setWeeklyOpen((o) => !o)} className="w-full flex justify-between items-center">
+                <span className="wh-display font-bold text-sm" style={{ color: C.ink }}>📋 ההזמנה השבועית ({totalItems})</span>
+                <span style={{ color: C.steel }}>{weeklyOpen ? "▲" : "▼"}</span>
+              </button>
+
+              {weeklyOpen && (
+                <>
+                  {template.length > 0 && (
+                    <button onClick={loadFromTemplate} className="w-full mt-2 py-2 rounded-2xl text-xs font-bold" style={{ background: C.accent, color: "#fff" }}>
+                      טען רשימה שבועית קבועה
+                    </button>
+                  )}
+
+                  <div className="flex flex-col gap-1 mt-2">
+                    {(current.items || []).map((i) => {
+                      const isBox = i.unit === "ארגז";
+                      const step = isBox ? 0.5 : 1;
+                      const opts = Array.from(new Set(["יח׳", "קרטון", "ארגז", i.unit || "יח׳"]));
+                      return (
+                        <div key={i.productId} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
+                          <span className="font-bold text-sm flex-1" style={{ color: C.ink }}>{i.name}</span>
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => setRowQty(i.productId, Math.max(0, (Number(i.qty) || 0) - step))} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>−</button>
+                            <input type="number" step={step} value={i.qty === 0 ? "" : i.qty} onChange={(e) => setRowQty(i.productId, e.target.value)} className="w-12 text-center p-1 rounded-lg border text-sm" style={{ borderColor: C.kraftDark }} />
+                            <button onClick={() => setRowQty(i.productId, (Number(i.qty) || 0) + step)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>+</button>
+                            <select value={i.unit || "יח׳"} onChange={(e) => setRowUnit(i.productId, e.target.value)} className="px-1 h-7 rounded-lg font-bold text-xs" style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                              {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+                            </select>
+                            <button onClick={() => removeItem(i.productId)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <textarea
+                    value={noteDraft}
+                    onChange={(e) => setNoteDraft(e.target.value)}
+                    onBlur={() => saveNote(noteDraft)}
+                    placeholder="הערה למחסן (לא חובה)..."
+                    className="w-full mt-3 p-2 rounded-2xl border text-sm"
+                    style={{ borderColor: C.kraftDark, minHeight: 52, resize: "vertical", background: C.kraft }}
+                  />
+
+                  <div className="flex gap-2 mt-3">
+                    <button onClick={submit} className="flex-1 py-2.5 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
+                      📤 שלח למחסן
+                    </button>
+                    <button onClick={saveAsTemplate} className="px-3 py-2.5 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                      שמור כקבועה
+                    </button>
+                  </div>
+
+                  <div className="flex gap-2 mt-2">
+                    <button onClick={() => printRequest()} className="flex-1 py-2 rounded-2xl font-bold text-xs" style={{ background: C.accent, color: "#fff" }}>
+                      🖨️ הדפס (מחשב)
+                    </button>
+                    <button onClick={() => shareRequestImage()} className="flex-1 py-2 rounded-2xl font-bold text-xs" style={{ background: C.sage, color: "#fff" }}>
+                      📱 שתף / הדפס (טלפון)
+                    </button>
+                  </div>
+                </>
+              )}
+            </ShelfTag>
+          )}
+
+          {/* ===== 3) Sent requests: receipt tracking + delete ===== */}
+          {sentReqs.length > 0 && (
+            <ShelfTag accent={C.mustard} style={{ marginBottom: 16 }}>
+              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>📦 בקשות שנשלחו למחסן</div>
+              <div className="flex flex-col gap-2">
+                {sentReqs.map((r) => {
+                  const st = UNIT_STATUS[r.status] || UNIT_STATUS.submitted;
+                  const isOpen = openReqId === r.id;
+                  return (
+                    <div key={r.id} className="p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                      <div className="flex justify-between items-center gap-2">
+                        <button onClick={() => setOpenReqId(isOpen ? null : r.id)} className="text-right flex-1">
+                          <div className="text-sm font-bold" style={{ color: C.ink }}>
+                            {(r.items || []).length} מוצרים · {new Date(r.submittedAt || r.createdAt).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                          </div>
+                          <div className="text-xs font-bold" style={{ color: st.color }}>{st.label} · {isOpen ? "▲ סגור" : "▼ סמן חסרים"}</div>
+                        </button>
+                        <div className="flex gap-1">
+                          <button onClick={() => printRequest(r)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.accent, color: "#fff" }} title="הדפסה ממחשב">🖨️</button>
+                          <button onClick={() => shareRequestImage(r)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.sage, color: "#fff" }} title="שיתוף / הדפסה מהטלפון">📱</button>
+                          <button onClick={() => deleteRequest(r.id)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }} title="מחק בקשה">🗑️</button>
+                        </div>
+                      </div>
+                      {isOpen && receiptBlock(r)}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-xs mt-2" style={{ color: C.steel }}>פתח בקשה כדי לסמן מה חסר (מה שלא מסומן נחשב שהגיע), ואז "דווח חוסרים".</p>
+            </ShelfTag>
+          )}
         </>
       )}
 
@@ -2614,6 +2674,9 @@ function UnitRequestTab({
                   </button>
                   <button onClick={() => shareRequestImage(r)} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.sage, color: "#fff" }}>
                     📱 טלפון
+                  </button>
+                  <button onClick={() => deleteRequest(r.id)} className="px-3 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.stamp, color: "#fff" }} title="מחק בקשה">
+                    🗑️
                   </button>
                 </div>
               </ShelfTag>
