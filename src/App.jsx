@@ -2463,6 +2463,38 @@ function UnitRequestTab({
             </ShelfTag>
           )}
 
+          {/* ===== 3) Sent requests: receipt tracking + delete ===== */}
+          {sentReqs.length > 0 && (
+            <ShelfTag accent={C.mustard} style={{ marginBottom: 16 }}>
+              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>📦 בקשות שנשלחו למחסן</div>
+              <div className="flex flex-col gap-2">
+                {sentReqs.map((r) => {
+                  const st = UNIT_STATUS[r.status] || UNIT_STATUS.submitted;
+                  const isOpen = openReqId === r.id;
+                  return (
+                    <div key={r.id} className="p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                      <div className="flex justify-between items-center gap-2">
+                        <button onClick={() => setOpenReqId(isOpen ? null : r.id)} className="text-right flex-1">
+                          <div className="text-sm font-bold" style={{ color: C.ink }}>
+                            {(r.items || []).length} מוצרים · {new Date(r.submittedAt || r.createdAt).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                          </div>
+                          <div className="text-xs font-bold" style={{ color: st.color }}>{st.label} · {isOpen ? "▲ סגור" : "▼ סמן חסרים"}</div>
+                        </button>
+                        <div className="flex gap-1">
+                          <button onClick={() => printRequest(r)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.accent, color: "#fff" }} title="הדפסה ממחשב">🖨️</button>
+                          <button onClick={() => shareRequestImage(r)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.sage, color: "#fff" }} title="שיתוף / הדפסה מהטלפון">📱</button>
+                          <button onClick={() => deleteRequest(r.id)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }} title="מחק בקשה">🗑️</button>
+                        </div>
+                      </div>
+                      {isOpen && receiptBlock(r)}
+                    </div>
+                  );
+                })}
+              </div>
+              <p className="text-xs mt-2" style={{ color: C.steel }}>פתח בקשה כדי לסמן מה חסר (מה שלא מסומן נחשב שהגיע), ואז "דווח חוסרים".</p>
+            </ShelfTag>
+          )}
+
           {/* ===== 1) Add products (top) ===== */}
           <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>➕ הוספת מוצרים</div>
           <input
@@ -2582,39 +2614,6 @@ function UnitRequestTab({
               );
             })}
           </div>
-
-
-          {/* ===== 3) Sent requests: receipt tracking + delete ===== */}
-          {sentReqs.length > 0 && (
-            <ShelfTag accent={C.mustard} style={{ marginBottom: 16 }}>
-              <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>📦 בקשות שנשלחו למחסן</div>
-              <div className="flex flex-col gap-2">
-                {sentReqs.map((r) => {
-                  const st = UNIT_STATUS[r.status] || UNIT_STATUS.submitted;
-                  const isOpen = openReqId === r.id;
-                  return (
-                    <div key={r.id} className="p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
-                      <div className="flex justify-between items-center gap-2">
-                        <button onClick={() => setOpenReqId(isOpen ? null : r.id)} className="text-right flex-1">
-                          <div className="text-sm font-bold" style={{ color: C.ink }}>
-                            {(r.items || []).length} מוצרים · {new Date(r.submittedAt || r.createdAt).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
-                          </div>
-                          <div className="text-xs font-bold" style={{ color: st.color }}>{st.label} · {isOpen ? "▲ סגור" : "▼ סמן חסרים"}</div>
-                        </button>
-                        <div className="flex gap-1">
-                          <button onClick={() => printRequest(r)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.accent, color: "#fff" }} title="הדפסה ממחשב">🖨️</button>
-                          <button onClick={() => shareRequestImage(r)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.sage, color: "#fff" }} title="שיתוף / הדפסה מהטלפון">📱</button>
-                          <button onClick={() => deleteRequest(r.id)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }} title="מחק בקשה">🗑️</button>
-                        </div>
-                      </div>
-                      {isOpen && receiptBlock(r)}
-                    </div>
-                  );
-                })}
-              </div>
-              <p className="text-xs mt-2" style={{ color: C.steel }}>פתח בקשה כדי לסמן מה חסר (מה שלא מסומן נחשב שהגיע), ואז "דווח חוסרים".</p>
-            </ShelfTag>
-          )}
         </>
       )}
 
