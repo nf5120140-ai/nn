@@ -9718,9 +9718,10 @@ function renderWeeklyMenuPng({ title, subtitle, days, types, slots, weeklyMenu, 
   return canvas.toDataURL("image/png");
 }
 
-/* Print an HTML document reliably - including inside an installed PWA, where
-   window.open popups are blocked and a plain print button silently does nothing.
-   Prints via a hidden iframe (no popup needed) and falls back to a popup window. */
+/* Print an HTML document straight to the print dialog - including inside an installed
+   PWA on Android, where window.open popups are blocked (that showed a blank page and
+   never printed). Loads the document into a hidden iframe via a Blob URL (reliable
+   onload) and calls print() on it; no visible tab. Popup is only a last resort. */
 function printHtmlDoc(html, onBlocked) {
   try {
     const old = document.getElementById("app-print-frame");
@@ -9731,11 +9732,9 @@ function printHtmlDoc(html, onBlocked) {
     Object.assign(iframe.style, {
       position: "fixed", right: "0", bottom: "0", width: "0", height: "0", border: "0",
     });
-    document.body.appendChild(iframe);
-    const doc = iframe.contentWindow.document;
-    doc.open();
-    doc.write(html);
-    doc.close();
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    iframe.src = url;
     let printed = false;
     const go = () => {
       if (printed) return;
@@ -9746,10 +9745,12 @@ function printHtmlDoc(html, onBlocked) {
       } catch (e) {
         console.error("iframe print failed", e);
       }
+      setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) {} }, 60000);
     };
-    iframe.onload = () => setTimeout(go, 250);
-    // onload doesn't always fire after document.write - trigger as a backup too.
-    setTimeout(go, 700);
+    iframe.onload = () => setTimeout(go, 300);
+    document.body.appendChild(iframe);
+    // Backup trigger in case onload doesn't fire in this browser.
+    setTimeout(go, 1500);
     return true;
   } catch (e) {
     console.error("iframe print failed, trying popup", e);
@@ -9759,10 +9760,14 @@ function printHtmlDoc(html, onBlocked) {
         if (onBlocked) onBlocked();
         return false;
       }
-      win.document.write(html);
+      // Auto-print then close so the blank tab doesn't strand the user.
+      const docHtml = html.replace(
+        "</body>",
+        "<script>window.onload=function(){setTimeout(function(){window.print();},300);};window.onafterprint=function(){window.close();};<\/script></body>"
+      );
+      win.document.write(docHtml);
       win.document.close();
       win.focus();
-      setTimeout(() => { try { win.print(); } catch (_) {} }, 300);
       return true;
     } catch (e2) {
       console.error("popup print failed", e2);
