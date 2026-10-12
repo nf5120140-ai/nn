@@ -9718,62 +9718,30 @@ function renderWeeklyMenuPng({ title, subtitle, days, types, slots, weeklyMenu, 
   return canvas.toDataURL("image/png");
 }
 
-/* Print an HTML document straight to the print dialog - including inside an installed
-   PWA on Android, where window.open popups are blocked (that showed a blank page and
-   never printed). Loads the document into a hidden iframe via a Blob URL (reliable
-   onload) and calls print() on it; no visible tab. Popup is only a last resort. */
+/* Print an HTML document. Opens the document in a new tab and triggers the print
+   dialog automatically on load, then closes the tab after printing. This is the
+   pattern that works inside the installed PWA on Android (iframe.print() is a no-op
+   there). The tab appears only for the instant before the print dialog opens. */
 function printHtmlDoc(html, onBlocked) {
+  const docHtml = String(html).replace(
+    "</body>",
+    "<script>window.onload=function(){setTimeout(function(){try{window.focus();window.print();}catch(e){}},200);};window.onafterprint=function(){try{window.close();}catch(e){}};<\/script></body>"
+  );
   try {
-    const old = document.getElementById("app-print-frame");
-    if (old) old.remove();
-    const iframe = document.createElement("iframe");
-    iframe.id = "app-print-frame";
-    iframe.setAttribute("aria-hidden", "true");
-    Object.assign(iframe.style, {
-      position: "fixed", right: "0", bottom: "0", width: "0", height: "0", border: "0",
-    });
-    const blob = new Blob([html], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    iframe.src = url;
-    let printed = false;
-    const go = () => {
-      if (printed) return;
-      printed = true;
-      try {
-        iframe.contentWindow.focus();
-        iframe.contentWindow.print();
-      } catch (e) {
-        console.error("iframe print failed", e);
-      }
-      setTimeout(() => { try { URL.revokeObjectURL(url); } catch (_) {} }, 60000);
-    };
-    iframe.onload = () => setTimeout(go, 300);
-    document.body.appendChild(iframe);
-    // Backup trigger in case onload doesn't fire in this browser.
-    setTimeout(go, 1500);
-    return true;
-  } catch (e) {
-    console.error("iframe print failed, trying popup", e);
-    try {
-      const win = window.open("", "_blank");
-      if (!win) {
-        if (onBlocked) onBlocked();
-        return false;
-      }
-      // Auto-print then close so the blank tab doesn't strand the user.
-      const docHtml = html.replace(
-        "</body>",
-        "<script>window.onload=function(){setTimeout(function(){window.print();},300);};window.onafterprint=function(){window.close();};<\/script></body>"
-      );
-      win.document.write(docHtml);
-      win.document.close();
-      win.focus();
-      return true;
-    } catch (e2) {
-      console.error("popup print failed", e2);
+    const win = window.open("", "_blank");
+    if (!win) {
       if (onBlocked) onBlocked();
       return false;
     }
+    win.document.open();
+    win.document.write(docHtml);
+    win.document.close();
+    try { win.focus(); } catch (_) {}
+    return true;
+  } catch (e) {
+    console.error("print failed", e);
+    if (onBlocked) onBlocked();
+    return false;
   }
 }
 
