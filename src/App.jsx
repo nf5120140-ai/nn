@@ -9718,57 +9718,23 @@ function renderWeeklyMenuPng({ title, subtitle, days, types, slots, weeklyMenu, 
   return canvas.toDataURL("image/png");
 }
 
-/* Print an HTML document reliably - including inside an installed PWA, where
-   window.open popups are blocked and a plain print button silently does nothing.
-   Prints via a hidden iframe (no popup needed) and falls back to a popup window. */
+/* Print an HTML document: open it in a new tab showing the printable page (the user
+   prints from the browser menu). This is the behaviour that worked on the user's
+   device; auto-print via iframe/script was unreliable inside the installed PWA. */
 function printHtmlDoc(html, onBlocked) {
   try {
-    const old = document.getElementById("app-print-frame");
-    if (old) old.remove();
-    const iframe = document.createElement("iframe");
-    iframe.id = "app-print-frame";
-    iframe.setAttribute("aria-hidden", "true");
-    Object.assign(iframe.style, {
-      position: "fixed", right: "0", bottom: "0", width: "0", height: "0", border: "0",
-    });
-    document.body.appendChild(iframe);
-    const doc = iframe.contentWindow.document;
-    doc.open();
-    doc.write(html);
-    doc.close();
-    let printed = false;
-    const go = () => {
-      if (printed) return;
-      printed = true;
-      try {
-        iframe.contentWindow.focus();
-        iframe.contentWindow.print();
-      } catch (e) {
-        console.error("iframe print failed", e);
-      }
-    };
-    iframe.onload = () => setTimeout(go, 250);
-    // onload doesn't always fire after document.write - trigger as a backup too.
-    setTimeout(go, 700);
-    return true;
-  } catch (e) {
-    console.error("iframe print failed, trying popup", e);
-    try {
-      const win = window.open("", "_blank");
-      if (!win) {
-        if (onBlocked) onBlocked();
-        return false;
-      }
-      win.document.write(html);
-      win.document.close();
-      win.focus();
-      setTimeout(() => { try { win.print(); } catch (_) {} }, 300);
-      return true;
-    } catch (e2) {
-      console.error("popup print failed", e2);
+    const win = window.open("", "_blank");
+    if (!win) {
       if (onBlocked) onBlocked();
       return false;
     }
+    win.document.write(html);
+    win.document.close();
+    return true;
+  } catch (e) {
+    console.error("print failed", e);
+    if (onBlocked) onBlocked();
+    return false;
   }
 }
 
