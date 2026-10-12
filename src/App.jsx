@@ -2242,6 +2242,44 @@ function UnitRequestTab({
     printHtmlDoc(html, () => showToast("הדפדפן חסם את ההדפסה - נסה שוב, או אשר חלונות קופצים ונסה שוב"));
   }
 
+  // Phone-friendly: render the request as an image and open the Android share sheet
+  // (which includes Print / Save), since in-PWA printing on the phone is unreliable.
+  async function shareRequestImage(req) {
+    const r = req || current;
+    const printItems = (r && r.status === "fulfilled" && Array.isArray(r.issuedItems) && r.issuedItems.length) ? r.issuedItems : (r ? r.items : []);
+    if (!r || (printItems || []).length === 0) return showToast("אין מה להדפיס");
+    const heading = r.status === "fulfilled" ? "בקשה שאושרה מהמחסן" : "בקשה מהמחסן";
+    const sub = `${r.unitName || currentUser.name || ""} · ${new Date(r.fulfilledAt || r.submittedAt || r.updatedAt || r.createdAt || Date.now()).toLocaleDateString("he-IL")}`;
+    const noteText = (req ? r.managerNote || r.note : (noteDraft || r.note)) || "";
+    const rows = (printItems || []).map((i, idx) => ({ idx: idx + 1, name: i.name, qty: `${i.qty} ${i.unit || ""}` }));
+
+    let dataUrl;
+    try {
+      dataUrl = drawRequestImageDataUrl(heading, sub, rows, noteText);
+    } catch (e) {
+      console.error("could not draw request image", e);
+      return showToast("שגיאה ביצירת התמונה");
+    }
+
+    let file = null;
+    try { file = dataUrlToFile(dataUrl, "request.png"); } catch (e) {}
+
+    if (file && navigator.share) {
+      try {
+        if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: heading });
+          return;
+        }
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+        console.error("share failed", e);
+      }
+    }
+    // No share support (or it failed): download the image so it can be printed from the gallery.
+    downloadDataUrl(dataUrl, "בקשה.png");
+    showToast("התמונה ירדה - אפשר להדפיס או לשתף אותה מהגלריה");
+  }
+
   const qtyOf = (id) => (current?.items || []).find((i) => i.productId === id)?.qty || 0;
   const unitOf = (p) => (current?.items || []).find((i) => i.productId === p.id)?.unit || p.unit;
   const totalItems = (current?.items || []).length;
@@ -2275,7 +2313,10 @@ function UnitRequestTab({
                     <span style={{ color: C.ink }}>
                       {(r.items || []).length} מוצרים · {new Date(r.submittedAt || r.createdAt).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
                     </span>
-                    <button onClick={() => printRequest(r)} className="px-3 py-1 rounded-lg text-xs font-bold" style={{ background: C.accent, color: "#fff" }}>🖨️ הדפס</button>
+                    <div className="flex gap-1">
+                      <button onClick={() => printRequest(r)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.accent, color: "#fff" }} title="הדפסה ממחשב">🖨️</button>
+                      <button onClick={() => shareRequestImage(r)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.sage, color: "#fff" }} title="שיתוף / הדפסה מהטלפון">📱</button>
+                    </div>
                   </div>
                 ))}
               </div>
@@ -2319,13 +2360,22 @@ function UnitRequestTab({
               </div>
             )}
             {totalItems > 0 && (
-              <button
-                onClick={() => printRequest()}
-                className="w-full mt-2 py-2.5 rounded-2xl font-bold text-sm"
-                style={{ background: C.accent, color: "#fff" }}
-              >
-                🖨️ הדפס טבלה עכשיו (בלי צורך באישור מנהל)
-              </button>
+              <>
+                <button
+                  onClick={() => printRequest()}
+                  className="w-full mt-2 py-2.5 rounded-2xl font-bold text-sm"
+                  style={{ background: C.accent, color: "#fff" }}
+                >
+                  🖨️ הדפס טבלה (מחשב)
+                </button>
+                <button
+                  onClick={() => shareRequestImage()}
+                  className="w-full mt-1 py-2.5 rounded-2xl font-bold text-sm"
+                  style={{ background: C.sage, color: "#fff" }}
+                >
+                  📱 שתף / הדפס מהטלפון
+                </button>
+              </>
             )}
           </ShelfTag>
 
@@ -2560,7 +2610,10 @@ function UnitRequestTab({
                     📋 פתח וערוך מחדש
                   </button>
                   <button onClick={() => printRequest(r)} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
-                    🖨️ הדפס טבלה
+                    🖨️ מחשב
+                  </button>
+                  <button onClick={() => shareRequestImage(r)} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.sage, color: "#fff" }}>
+                    📱 טלפון
                   </button>
                 </div>
               </ShelfTag>
@@ -9201,6 +9254,25 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
     showToast("התמונה ירדה והטקסט הועתק - צרף את התמונה בוואטסאפ ידנית");
   }
 
+  // Open the phone's SMS app with the task details pre-filled to the assigned worker.
+  function sendTaskSms(task) {
+    const user = users.find((u) => u.id === task.assignedToId);
+    if (!user || !user.phone) {
+      showToast("לא הוגדר מספר טלפון לעובד זה");
+      return;
+    }
+    const priorityLabel = { low: "נמוכה", normal: "רגילה", urgent: "דחופה" }[task.priority] || "רגילה";
+    const cat = catById(task.categoryId);
+    const text = `משימה/תקלה חדשה\nכותרת: ${task.title}${cat ? `\nקטגוריה: ${cat.name}` : ""}${task.location ? `\nמקום: ${task.location}` : ""}\nפירוט: ${task.description || "—"}\nעדיפות: ${priorityLabel}`;
+    const digits = user.phone.replace(/\D/g, "");
+    try {
+      window.location.href = `sms:+${digits}?&body=${encodeURIComponent(text)}`;
+    } catch (e) {
+      console.error("sms open failed", e);
+      showToast("לא ניתן לפתוח SMS במכשיר הזה");
+    }
+  }
+
   return (
     <div>
       <div className="flex justify-between items-center mb-3">
@@ -9511,6 +9583,13 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
                       >
                         💬 שלח לצ'אט
                       </button>
+                      <button
+                        onClick={() => sendTaskSms(t)}
+                        className="px-3 py-1 rounded-2xl text-sm font-bold"
+                        style={{ background: C.accent2 || C.steel, color: "#fff" }}
+                      >
+                        ✉️ SMS
+                      </button>
                       {hasPhoto && (
                         <button
                           onClick={() => notifyWhatsapp(t, "share")}
@@ -9736,6 +9815,113 @@ function printHtmlDoc(html, onBlocked) {
     if (onBlocked) onBlocked();
     return false;
   }
+}
+
+/* Render a request (heading + sub + rows [{idx,name,qty}] + optional note) as a PNG
+   data URL, so it can be shared/printed from a phone via the Android share sheet. */
+function drawRequestImageDataUrl(heading, sub, rows, note) {
+  const W = 760, pad = 28, titleH = 40, subH = 26, gap = 14;
+  const headerRowH = 46, rowH = 42;
+  // rough note height (wrapped)
+  const noteLines = note ? Math.max(1, Math.ceil(("הערה: " + note).length / 70)) : 0;
+  const noteBlockH = note ? 16 + noteLines * 22 + 16 : 0;
+  const tableTop = pad + titleH + subH + gap;
+  const tableH = headerRowH + rows.length * rowH;
+  const H = tableTop + tableH + (note ? 18 + noteBlockH : 0) + pad;
+
+  const scale = 2;
+  const canvas = document.createElement("canvas");
+  canvas.width = W * scale;
+  canvas.height = H * scale;
+  const ctx = canvas.getContext("2d");
+  ctx.scale(scale, scale);
+  try { ctx.direction = "rtl"; } catch (e) {}
+  ctx.fillStyle = "#fff";
+  ctx.fillRect(0, 0, W, H);
+
+  // title + sub
+  ctx.textBaseline = "middle";
+  ctx.textAlign = "center";
+  ctx.fillStyle = "#111";
+  ctx.font = "bold 26px Arial";
+  ctx.fillText(heading, W / 2, pad + titleH / 2);
+  ctx.fillStyle = "#555";
+  ctx.font = "14px Arial";
+  ctx.fillText(sub, W / 2, pad + titleH + subH / 2);
+
+  // table geometry (RTL: # on the right, כמות on the left)
+  const tableX = pad, tableW = W - pad * 2;
+  const colHashW = 50, colQtyW = 160, colNameW = tableW - colHashW - colQtyW;
+  const xHash = tableX + tableW - colHashW; // rightmost column (left coord)
+  const xName = tableX + colQtyW;
+  const xQty = tableX;
+
+  let y = tableTop;
+  // header
+  ctx.fillStyle = "#3E8FCB";
+  ctx.fillRect(tableX, y, tableW, headerRowH);
+  ctx.fillStyle = "#fff";
+  ctx.font = "bold 15px Arial";
+  ctx.textAlign = "center";
+  ctx.fillText("#", xHash + colHashW / 2, y + headerRowH / 2);
+  ctx.fillText("מוצר", xName + colNameW / 2, y + headerRowH / 2);
+  ctx.fillText("כמות", xQty + colQtyW / 2, y + headerRowH / 2);
+  y += headerRowH;
+
+  // rows
+  rows.forEach((row, i) => {
+    ctx.fillStyle = i % 2 ? "#EAF3FB" : "#fff";
+    ctx.fillRect(tableX, y, tableW, rowH);
+    ctx.fillStyle = "#111";
+    ctx.textAlign = "center";
+    ctx.font = "15px Arial";
+    ctx.fillText(String(row.idx), xHash + colHashW / 2, y + rowH / 2);
+    ctx.fillText(row.qty, xQty + colQtyW / 2, y + rowH / 2);
+    ctx.textAlign = "right";
+    ctx.font = "bold 15px Arial";
+    ctx.fillText(row.name, xName + colNameW - 10, y + rowH / 2);
+    y += rowH;
+  });
+
+  // borders
+  ctx.strokeStyle = "#444";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(tableX, tableTop, tableW, tableH);
+  ctx.beginPath();
+  ctx.moveTo(xHash, tableTop); ctx.lineTo(xHash, tableTop + tableH);
+  ctx.moveTo(xName, tableTop); ctx.lineTo(xName, tableTop + tableH);
+  for (let i = 0; i <= rows.length; i++) {
+    const yy = tableTop + headerRowH + i * rowH;
+    ctx.moveTo(tableX, yy); ctx.lineTo(tableX + tableW, yy);
+  }
+  ctx.stroke();
+
+  // note (wrapped)
+  if (note) {
+    const ny = tableTop + tableH + 18;
+    ctx.strokeStyle = "#888";
+    ctx.setLineDash([4, 3]);
+    ctx.strokeRect(tableX, ny, tableW, noteBlockH);
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#111";
+    ctx.textAlign = "right";
+    ctx.font = "14px Arial";
+    const words = ("הערה: " + note).split(/\s+/);
+    let line = "", ly = ny + 22;
+    const maxW = tableW - 20;
+    words.forEach((w) => {
+      const test = line ? line + " " + w : w;
+      if (ctx.measureText(test).width > maxW && line) {
+        ctx.fillText(line, tableX + tableW - 10, ly);
+        line = w; ly += 22;
+      } else {
+        line = test;
+      }
+    });
+    if (line) ctx.fillText(line, tableX + tableW - 10, ly);
+  }
+
+  return canvas.toDataURL("image/png");
 }
 
 function dataUrlToFile(dataUrl, filename) {
