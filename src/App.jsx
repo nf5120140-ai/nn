@@ -9065,21 +9065,33 @@ function MapTab({ mapRooms, persistMapRooms, deleteMapRoomById, tasks, persistTa
       {resolveId && (
         <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setResolveId(null)}>
           <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 480, borderRadius: "20px 20px 0 0", padding: 18, margin: "0 auto" }}>
-            <div className="wh-display font-black text-lg mb-3" style={{ color: C.ink }}>איך סודר?</div>
-            <textarea value={mFix} onChange={(e) => setMFix(e.target.value)} rows={3} autoFocus placeholder="כתוב בקצרה מה נעשה / איך סודר" className="w-full p-3 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+            <div className="wh-display font-black text-lg mb-3" style={{ color: C.ink }}>סגירת משימה</div>
+            <button
+              onClick={() => {
+                const id = resolveId;
+                setResolveId(null);
+                markTaskDoneFromRoom(id, { fix: "ללא בעיות" });
+                showToast("המשימה נסגרה ✓");
+              }}
+              className="w-full py-3 rounded-2xl font-bold mb-3"
+              style={{ background: C.sage, color: "#fff" }}
+            >
+              ✓ ללא בעיות (סגור מהר)
+            </button>
+            <textarea value={mFix} onChange={(e) => setMFix(e.target.value)} rows={2} placeholder="לא חובה - כתוב אם יש משהו לדווח / איך סודר" className="w-full p-3 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
             <div className="flex gap-2">
               <button
                 onClick={() => {
-                  if (!mFix.trim()) { showToast("כתוב איך סודר כדי לסגור"); return; }
+                  if (!mFix.trim()) { showToast("כתוב הערה, או לחץ 'ללא בעיות'"); return; }
                   const id = resolveId;
                   setResolveId(null);
                   markTaskDoneFromRoom(id, { fix: mFix });
                   showToast("המשימה נסגרה ✓");
                 }}
                 className="flex-1 py-3 rounded-2xl font-bold"
-                style={{ background: C.sage, color: "#fff" }}
+                style={{ background: C.accent, color: "#fff" }}
               >
-                ✓ סגור משימה
+                ✓ סגור עם הערה
               </button>
               <button onClick={() => setResolveId(null)} className="px-5 py-3 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
                 ביטול
@@ -9461,24 +9473,37 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
       {resolveTask && (
         <div className="fixed inset-0 z-[60] flex items-end sm:items-center justify-center" style={{ background: "rgba(35,31,61,0.55)" }} onClick={() => setResolveTask(null)}>
           <div dir="rtl" onClick={(e) => e.stopPropagation()} style={{ background: C.paper, width: "100%", maxWidth: 480, borderRadius: "20px 20px 0 0", padding: 18, margin: "0 auto" }}>
-            <div className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>איך סודר?</div>
+            <div className="wh-display font-black text-lg mb-1" style={{ color: C.ink }}>סגירת משימה</div>
             <div className="text-sm mb-3" style={{ color: C.steel }}>{resolveTask.title}</div>
 
-            <textarea value={resFix} onChange={(e) => setResFix(e.target.value)} rows={3} autoFocus placeholder="כתוב בקצרה מה נעשה / איך סודר" className="w-full p-3 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+            <button
+              onClick={() => {
+                const t = resolveTask;
+                setResolveTask(null);
+                updateStatus(t, "done", { fix: "ללא בעיות" });
+                showToast("המשימה נסגרה ✓");
+              }}
+              className="w-full py-3 rounded-2xl font-bold mb-3"
+              style={{ background: C.sage, color: "#fff" }}
+            >
+              ✓ ללא בעיות (סגור מהר)
+            </button>
+
+            <textarea value={resFix} onChange={(e) => setResFix(e.target.value)} rows={2} placeholder="לא חובה - כתוב אם יש משהו לדווח / איך סודר" className="w-full p-3 rounded-2xl border text-sm mb-3" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
 
             <div className="flex gap-2">
               <button
                 onClick={() => {
-                  if (!resFix.trim()) { showToast("כתוב איך סודר כדי לסגור"); return; }
+                  if (!resFix.trim()) { showToast("כתוב הערה, או לחץ 'ללא בעיות'"); return; }
                   const t = resolveTask;
                   setResolveTask(null);
                   updateStatus(t, "done", { fix: resFix });
                   showToast("המשימה נסגרה ✓");
                 }}
                 className="flex-1 py-3 rounded-2xl font-bold"
-                style={{ background: C.sage, color: "#fff" }}
+                style={{ background: C.accent, color: "#fff" }}
               >
-                ✓ סגור משימה
+                ✓ סגור עם הערה
               </button>
               <button
                 onClick={() => setResolveTask(null)}
