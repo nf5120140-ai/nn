@@ -2394,6 +2394,75 @@ function UnitRequestTab({
 
       {view === "current" && (
         <>
+          {/* ===== 2) The accumulating weekly order ===== */}
+          {totalItems > 0 && (
+            <ShelfTag accent={C.sage} style={{ marginBottom: 16 }}>
+              <button onClick={() => setWeeklyOpen((o) => !o)} className="w-full flex justify-between items-center">
+                <span className="wh-display font-bold text-sm" style={{ color: C.ink }}>📋 ההזמנה השבועית ({totalItems})</span>
+                <span style={{ color: C.steel }}>{weeklyOpen ? "▲" : "▼"}</span>
+              </button>
+
+              {weeklyOpen && (
+                <>
+                  {template.length > 0 && (
+                    <button onClick={loadFromTemplate} className="w-full mt-2 py-2 rounded-2xl text-xs font-bold" style={{ background: C.accent, color: "#fff" }}>
+                      טען רשימה שבועית קבועה
+                    </button>
+                  )}
+
+                  <div className="flex flex-col gap-1 mt-2">
+                    {(current.items || []).map((i) => {
+                      const isBox = i.unit === "ארגז";
+                      const step = isBox ? 0.5 : 1;
+                      const opts = Array.from(new Set(["יח׳", "קרטון", "ארגז", i.unit || "יח׳"]));
+                      return (
+                        <div key={i.productId} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
+                          <span className="font-bold text-sm flex-1" style={{ color: C.ink }}>{i.name}</span>
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => setRowQty(i.productId, Math.max(0, (Number(i.qty) || 0) - step))} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>−</button>
+                            <input type="number" step={step} value={i.qty === 0 ? "" : i.qty} onChange={(e) => setRowQty(i.productId, e.target.value)} className="w-12 text-center p-1 rounded-lg border text-sm" style={{ borderColor: C.kraftDark }} />
+                            <button onClick={() => setRowQty(i.productId, (Number(i.qty) || 0) + step)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>+</button>
+                            <select value={i.unit || "יח׳"} onChange={(e) => setRowUnit(i.productId, e.target.value)} className="px-1 h-7 rounded-lg font-bold text-xs" style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                              {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+                            </select>
+                            <button onClick={() => removeItem(i.productId)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <textarea
+                    value={noteDraft}
+                    onChange={(e) => setNoteDraft(e.target.value)}
+                    onBlur={() => saveNote(noteDraft)}
+                    placeholder="הערה למחסן (לא חובה)..."
+                    className="w-full mt-3 p-2 rounded-2xl border text-sm"
+                    style={{ borderColor: C.kraftDark, minHeight: 52, resize: "vertical", background: C.kraft }}
+                  />
+
+                  <div className="flex gap-2 mt-3">
+                    <button onClick={submit} className="flex-1 py-2.5 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
+                      📤 שלח למחסן
+                    </button>
+                    <button onClick={saveAsTemplate} className="px-3 py-2.5 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                      שמור כקבועה
+                    </button>
+                  </div>
+
+                  <div className="flex gap-2 mt-2">
+                    <button onClick={() => printRequest()} className="flex-1 py-2 rounded-2xl font-bold text-xs" style={{ background: C.accent, color: "#fff" }}>
+                      🖨️ הדפס (מחשב)
+                    </button>
+                    <button onClick={() => shareRequestImage()} className="flex-1 py-2 rounded-2xl font-bold text-xs" style={{ background: C.sage, color: "#fff" }}>
+                      📱 שתף / הדפס (טלפון)
+                    </button>
+                  </div>
+                </>
+              )}
+            </ShelfTag>
+          )}
+
           {/* ===== 1) Add products (top) ===== */}
           <div className="wh-display font-bold text-sm mb-2" style={{ color: C.ink }}>➕ הוספת מוצרים</div>
           <input
@@ -2514,74 +2583,6 @@ function UnitRequestTab({
             })}
           </div>
 
-          {/* ===== 2) The accumulating weekly order ===== */}
-          {totalItems > 0 && (
-            <ShelfTag accent={C.sage} style={{ marginBottom: 16 }}>
-              <button onClick={() => setWeeklyOpen((o) => !o)} className="w-full flex justify-between items-center">
-                <span className="wh-display font-bold text-sm" style={{ color: C.ink }}>📋 ההזמנה השבועית ({totalItems})</span>
-                <span style={{ color: C.steel }}>{weeklyOpen ? "▲" : "▼"}</span>
-              </button>
-
-              {weeklyOpen && (
-                <>
-                  {template.length > 0 && (
-                    <button onClick={loadFromTemplate} className="w-full mt-2 py-2 rounded-2xl text-xs font-bold" style={{ background: C.accent, color: "#fff" }}>
-                      טען רשימה שבועית קבועה
-                    </button>
-                  )}
-
-                  <div className="flex flex-col gap-1 mt-2">
-                    {(current.items || []).map((i) => {
-                      const isBox = i.unit === "ארגז";
-                      const step = isBox ? 0.5 : 1;
-                      const opts = Array.from(new Set(["יח׳", "קרטון", "ארגז", i.unit || "יח׳"]));
-                      return (
-                        <div key={i.productId} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
-                          <span className="font-bold text-sm flex-1" style={{ color: C.ink }}>{i.name}</span>
-                          <div className="flex items-center gap-1">
-                            <button onClick={() => setRowQty(i.productId, Math.max(0, (Number(i.qty) || 0) - step))} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>−</button>
-                            <input type="number" step={step} value={i.qty === 0 ? "" : i.qty} onChange={(e) => setRowQty(i.productId, e.target.value)} className="w-12 text-center p-1 rounded-lg border text-sm" style={{ borderColor: C.kraftDark }} />
-                            <button onClick={() => setRowQty(i.productId, (Number(i.qty) || 0) + step)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>+</button>
-                            <select value={i.unit || "יח׳"} onChange={(e) => setRowUnit(i.productId, e.target.value)} className="px-1 h-7 rounded-lg font-bold text-xs" style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
-                              {opts.map((o) => <option key={o} value={o}>{o}</option>)}
-                            </select>
-                            <button onClick={() => removeItem(i.productId)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  <textarea
-                    value={noteDraft}
-                    onChange={(e) => setNoteDraft(e.target.value)}
-                    onBlur={() => saveNote(noteDraft)}
-                    placeholder="הערה למחסן (לא חובה)..."
-                    className="w-full mt-3 p-2 rounded-2xl border text-sm"
-                    style={{ borderColor: C.kraftDark, minHeight: 52, resize: "vertical", background: C.kraft }}
-                  />
-
-                  <div className="flex gap-2 mt-3">
-                    <button onClick={submit} className="flex-1 py-2.5 rounded-2xl font-bold" style={{ background: C.sage, color: "#fff" }}>
-                      📤 שלח למחסן
-                    </button>
-                    <button onClick={saveAsTemplate} className="px-3 py-2.5 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
-                      שמור כקבועה
-                    </button>
-                  </div>
-
-                  <div className="flex gap-2 mt-2">
-                    <button onClick={() => printRequest()} className="flex-1 py-2 rounded-2xl font-bold text-xs" style={{ background: C.accent, color: "#fff" }}>
-                      🖨️ הדפס (מחשב)
-                    </button>
-                    <button onClick={() => shareRequestImage()} className="flex-1 py-2 rounded-2xl font-bold text-xs" style={{ background: C.sage, color: "#fff" }}>
-                      📱 שתף / הדפס (טלפון)
-                    </button>
-                  </div>
-                </>
-              )}
-            </ShelfTag>
-          )}
 
           {/* ===== 3) Sent requests: receipt tracking + delete ===== */}
           {sentReqs.length > 0 && (
