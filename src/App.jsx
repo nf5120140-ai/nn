@@ -2301,7 +2301,7 @@ function UnitRequestTab({
         </button>
         {r.missingReportedAt && (
           <div className="text-xs text-center" style={{ color: C.steel }}>
-            דווח למנהל · {new Date(r.missingReportedAt).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+            דווח למנהל · {new Date(r.missingReportedAt).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
           </div>
         )}
       </div>
@@ -2485,7 +2485,7 @@ function UnitRequestTab({
                       <div className="flex justify-between items-center gap-2">
                         <button onClick={() => setOpenReqId(isOpen ? null : r.id)} className="text-right flex-1">
                           <div className="text-sm font-bold" style={{ color: C.ink }}>
-                            {(r.items || []).length} מוצרים · {new Date(r.submittedAt || r.createdAt).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+                            {(r.items || []).length} מוצרים · {new Date(r.submittedAt || r.createdAt).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
                           </div>
                           <div className="text-xs font-bold" style={{ color: st.color }}>{st.label} · {isOpen ? "▲ סגור" : "▼ סמן חסרים"}</div>
                         </button>
