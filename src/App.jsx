@@ -6453,7 +6453,6 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
     const tracked = (products || [])
       .map((p) => ({ p, s: usageStatus(p) }))
       .filter((x) => x.s.tracked);
-    if (tracked.length === 0) return null;
     // Reorder-needed first, then by least cover remaining.
     tracked.sort((a, b) => (a.s.remainingWeeks || 0) - (b.s.remainingWeeks || 0));
     const needCount = tracked.filter((x) => x.s.needsReorder).length;
@@ -6465,7 +6464,12 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
           </span>
           <span style={{ color: C.steel }}>{showUsage ? "▲" : "▼"}</span>
         </button>
-        {showUsage && (
+        {showUsage && tracked.length === 0 && (
+          <div className="mt-2 text-sm p-2 rounded-xl" style={{ color: C.steel, background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+            עדיין לא הוגדרו מוצרים למעקב. כדי להתחיל: <b>ניהול ← מוצרים ← ערוך מוצר</b> ומלא <b>"צריכה שבועית"</b> (למשל 33 לבשר). אחרי זה המוצר יופיע כאן אוטומטית ותוכל לרשום "קיבלתי".
+          </div>
+        )}
+        {showUsage && tracked.length > 0 && (
           <div className="mt-2 flex flex-col gap-2">
             {tracked.map(({ p, s }) => {
               const weeks = s.started ? s.remainingWeeks : 0;
