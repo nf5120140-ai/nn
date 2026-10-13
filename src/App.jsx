@@ -4923,6 +4923,7 @@ function App() {
           <OrderTab
             lowStock={lowStock}
             products={products}
+            persistProducts={persistProducts}
             settings={settings}
             tasks={tasks}
             persistTasks={persistTasks}
@@ -5997,7 +5998,31 @@ function HebrewCalendarWidget() {
   );
 }
 
-function OrderTab({ lowStock, products, settings, persistSettings, isManager, tasks, persistTasks, deleteTasksById, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry, savedMenus, persistSavedMenus }) {
+/* Consumption tracking: a product with a weekly-usage rate "burns down" its last
+   received amount over time, so the app can flag a reorder without any stock count.
+   coverageQty = units covered as of coverageAt; it depletes by weeklyUsage per week. */
+function usageStatus(p, now) {
+  const t = now || Date.now();
+  const rate = Number(p && p.weeklyUsage) || 0;
+  if (rate <= 0) return { tracked: false };
+  const qty = Number(p.coverageQty) || 0;
+  const at = p.coverageAt || 0;
+  if (!at || qty <= 0) {
+    return { tracked: true, started: !!at, remainingUnits: 0, remainingWeeks: 0, needsReorder: true };
+  }
+  const weeksElapsed = (t - at) / (7 * 24 * 3600 * 1000);
+  const remainingUnits = Math.max(0, qty - rate * weeksElapsed);
+  const remainingWeeks = remainingUnits / rate;
+  return {
+    tracked: true,
+    started: true,
+    remainingUnits,
+    remainingWeeks,
+    needsReorder: remainingWeeks <= 1, // less than ~a week of cover left
+  };
+}
+
+function OrderTab({ lowStock, products, persistProducts, settings, persistSettings, isManager, tasks, persistTasks, deleteTasksById, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry, savedMenus, persistSavedMenus }) {
   const mayApprove = canSendOrders(currentUser);
   const myPending = (orderRequests || []).filter((r) => r.createdById === currentUser?.id && r.status === "pending");
   const suppliers = settings.suppliers || [];
@@ -6022,6 +6047,10 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
   const [supplierOverrides, setSupplierOverrides] = useState({}); // productId -> supplierId chosen at order time (overrides the product's default)
   const [adHocItems, setAdHocItems] = useState([]); // free-text products not in the catalog: { id, name, qty, supplierId }
   const [adHocName, setAdHocName] = useState("");
+  const [showOrderSummary, setShowOrderSummary] = useState(false); // "סיכום לפי ספק" collapse in the menu order modes
+  const [showUsage, setShowUsage] = useState(false);               // consumption-tracking panel (hidden by default)
+  const [receiveFor, setReceiveFor] = useState(null);              // product id we're entering a received amount for
+  const [receiveQty, setReceiveQty] = useState("");
   const [orderNote, setOrderNote] = useState("שלום, הזמנה לשבוע:");
   // Suppliers already sent this round — their send button is hidden until the selection changes.
   const [sentSuppliers, setSentSuppliers] = useState([]);
@@ -6360,6 +6389,132 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
     return groups;
   }
 
+  // A read-only review of the whole order, grouped by supplier, showing exactly the
+  // text that will go out to each one - so nothing gets missed before sending.
+  function orderSummaryPanel(rows) {
+    const list = (rows || []).filter((r) => Number(r.qty) > 0);
+    if (list.length === 0) return null;
+    const groups = groupRowsBySupplier(list);
+    const lineFor = (r) =>
+      `- ${r.qty} ${r.product.unit || ""} ${(r.product.orderName && r.product.orderName.trim()) || r.product.name}`
+        .replace(/\s+/g, " ")
+        .trim();
+    return (
+      <ShelfTag accent={C.accent} style={{ marginBottom: 12 }}>
+        <button onClick={() => setShowOrderSummary((s) => !s)} className="w-full flex justify-between items-center">
+          <span className="wh-display font-bold text-sm" style={{ color: C.ink }}>📋 סיכום ההזמנה לפי ספק ({list.length} מוצרים)</span>
+          <span style={{ color: C.steel }}>{showOrderSummary ? "▲" : "▼"}</span>
+        </button>
+        {showOrderSummary && (
+          <div className="mt-2 flex flex-col gap-3">
+            {Object.entries(groups).map(([sid, items]) => {
+              const supplierName = sid === "__unassigned__" ? "ספק כללי (לא משויך)" : suppliers.find((s) => s.id === sid)?.name || "ספק";
+              const alreadySent = sentSuppliers.includes(sid);
+              const body = orderNote.trim() ? `${orderNote.trim()}\n\n${items.map(lineFor).join("\n")}` : items.map(lineFor).join("\n");
+              return (
+                <div key={sid} className="p-2 rounded-xl" style={{ background: "#fff", border: `1px solid ${alreadySent ? C.sage : C.kraftDark}` }}>
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="font-bold text-sm" style={{ color: C.ink }}>🏷️ {supplierName}</span>
+                    <span className="text-xs font-bold" style={{ color: alreadySent ? C.sage : C.steel }}>{alreadySent ? "✓ נשלח" : `${items.length} מוצרים`}</span>
+                  </div>
+                  <div className="text-sm p-2 rounded-lg" style={{ color: C.ink, whiteSpace: "pre-wrap", direction: "rtl", background: C.kraft }}>
+                    {body}
+                  </div>
+                </div>
+              );
+            })}
+            <div className="text-xs" style={{ color: C.steel }}>זה בדיוק מה שיישלח לכל ספק. ודא שלא פספסת, ואז שלח לכל ספק בכפתורים למטה.</div>
+          </div>
+        )}
+      </ShelfTag>
+    );
+  }
+
+
+  // Record how much of a product just arrived. Extends its remaining coverage and
+  // restarts the burn-down clock from now. No stock count needed.
+  async function receiveStock(product, arrived) {
+    if (!persistProducts) return;
+    const add = Number(arrived) || 0;
+    if (add <= 0) return showToast("כתוב כמה הגיע");
+    const prev = usageStatus(product);
+    const base = prev.tracked ? Math.max(0, prev.remainingUnits || 0) : 0;
+    const next = products.map((p) =>
+      p.id === product.id ? { ...p, coverageQty: base + add, coverageAt: Date.now() } : p
+    );
+    await persistProducts(next);
+    setReceiveFor(null);
+    setReceiveQty("");
+    showToast(`נרשם: הגיעו ${add} ${product.unit || ""} ${product.name} ✓`);
+  }
+
+  // The hidden consumption-tracking panel for the Orders screen.
+  function usagePanel() {
+    const tracked = (products || [])
+      .map((p) => ({ p, s: usageStatus(p) }))
+      .filter((x) => x.s.tracked);
+    if (tracked.length === 0) return null;
+    // Reorder-needed first, then by least cover remaining.
+    tracked.sort((a, b) => (a.s.remainingWeeks || 0) - (b.s.remainingWeeks || 0));
+    const needCount = tracked.filter((x) => x.s.needsReorder).length;
+    return (
+      <ShelfTag accent={needCount > 0 ? C.stamp : C.steel} style={{ marginBottom: 12 }}>
+        <button onClick={() => setShowUsage((s) => !s)} className="w-full flex justify-between items-center">
+          <span className="wh-display font-bold text-sm" style={{ color: C.ink }}>
+            ⏰ מעקב צריכה {needCount > 0 ? `· ${needCount} להזמין` : ""}
+          </span>
+          <span style={{ color: C.steel }}>{showUsage ? "▲" : "▼"}</span>
+        </button>
+        {showUsage && (
+          <div className="mt-2 flex flex-col gap-2">
+            {tracked.map(({ p, s }) => {
+              const weeks = s.started ? s.remainingWeeks : 0;
+              const weeksTxt = !s.started
+                ? "טרם נרשמה קבלה"
+                : weeks <= 0
+                ? "נגמר - להזמין!"
+                : `נשאר ~${weeks.toFixed(1)} שבועות (${Math.round(s.remainingUnits)} ${p.unit || ""})`;
+              const isOpen = receiveFor === p.id;
+              return (
+                <div key={p.id} className="p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${s.needsReorder ? C.stamp : C.kraftDark}` }}>
+                  <div className="flex justify-between items-center gap-2">
+                    <div className="flex-1">
+                      <div className="font-bold text-sm" style={{ color: C.ink }}>
+                        {s.needsReorder ? "🔴 " : "🟢 "}{p.name}
+                      </div>
+                      <div className="text-xs" style={{ color: s.needsReorder ? C.stamp : C.steel }}>
+                        {weeksTxt} · {p.weeklyUsage} {p.unit || ""}/שבוע
+                      </div>
+                    </div>
+                    <button onClick={() => { setReceiveFor(isOpen ? null : p.id); setReceiveQty(""); }} className="px-3 py-1.5 rounded-xl text-xs font-bold" style={{ background: C.sage, color: "#fff" }}>
+                      📥 קיבלתי
+                    </button>
+                  </div>
+                  {isOpen && (
+                    <div className="flex gap-2 mt-2">
+                      <input
+                        type="number"
+                        autoFocus
+                        value={receiveQty}
+                        onChange={(e) => setReceiveQty(e.target.value)}
+                        placeholder={`כמה ${p.unit || "יח׳"} הגיעו?`}
+                        className="flex-1 p-2 rounded-xl border text-sm"
+                        style={{ borderColor: C.kraftDark }}
+                      />
+                      <button onClick={() => receiveStock(p, receiveQty)} className="px-4 rounded-xl font-bold text-sm" style={{ background: C.brand, color: "#fff" }}>
+                        שמור
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <p className="text-xs" style={{ color: C.steel }}>כל פעם שמגיע משלוח - לחץ "קיבלתי" ורשום כמה. האפליקציה סופרת לבד לפי הצריכה השבועית ומתריעה כשנגמר.</p>
+          </div>
+        )}
+      </ShelfTag>
+    );
+  }
 
   function buildStockMessage() {
     const lines = products
@@ -7309,6 +7464,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
 
   return (
     <div>
+      {usagePanel()}
       {drafts.length > 0 && (
         <details className="mb-4">
           <summary className="text-sm font-bold cursor-pointer" style={{ color: C.accent }}>💾 טיוטות שמורות ({drafts.length})</summary>
@@ -7837,6 +7993,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                     ✓ כבר נשלח ({sentSuppliers.length}) — <button onClick={() => setSentSuppliers([])} style={{ textDecoration: "underline", color: C.accent, fontWeight: 700 }}>הצג שוב לשליחה חוזרת</button>
                   </div>
                 )}
+                {orderSummaryPanel(buildOrderRows(menuNeeds, menuQtys))}
                 {Object.entries(groupRowsBySupplier(buildOrderRows(menuNeeds, menuQtys))).filter(([supplierId]) => !sentSuppliers.includes(supplierId)).map(([supplierId, items]) => {
                   const supplierName = supplierId === "__unassigned__" ? "ספק כללי" : suppliers.find((s) => s.id === supplierId)?.name || "ספק";
                   return (
@@ -8205,6 +8362,7 @@ function OrderTab({ lowStock, products, settings, persistSettings, isManager, ta
                     ✓ כבר נשלח ({sentSuppliers.length}) — <button onClick={() => setSentSuppliers([])} style={{ textDecoration: "underline", color: C.accent, fontWeight: 700 }}>הצג שוב לשליחה חוזרת</button>
                   </div>
                 )}
+                {orderSummaryPanel(buildOrderRows(weekNeeds.rows, weekQtys))}
                 {Object.entries(groupRowsBySupplier(buildOrderRows(weekNeeds.rows, weekQtys))).filter(([supplierId]) => !sentSuppliers.includes(supplierId)).map(([supplierId, items]) => {
                   const supplierName = supplierId === "__unassigned__" ? "ספק כללי" : suppliers.find((s) => s.id === supplierId)?.name || "ספק";
                   return (
@@ -9785,7 +9943,7 @@ function renderWeeklyMenuPng({ title, subtitle, days, types, slots, weeklyMenu, 
       return { headLines, cells, height: maxLines * LINE_H + ROW_PAD };
     });
 
-    plan.push({ slotLabel, rows });
+    plan.push({ slotKey, slotLabel, rows });
   });
 
   if (!plan.length) return "";
@@ -9840,21 +9998,27 @@ function renderWeeklyMenuPng({ title, subtitle, days, types, slots, weeklyMenu, 
   let y = PAD + TITLE_BLOCK;
 
   plan.forEach((table) => {
+    // Each meal slot gets its own colour, mirroring the on-screen table
+    // (lunch = cool blue, dinner = warm orange).
+    const pal = table.slotKey === "dinner"
+      ? { strong: "#F6D2A6", weak: "#FCEBD4", head: "#DE9542" }
+      : { strong: "#BBD9F2", weak: "#E6F1FB", head: "#3E8FCB" };
+
     ctx.textAlign = "right";
     ctx.font = FONT_SLOT;
-    ctx.fillStyle = "#111111";
+    ctx.fillStyle = pal.head;
     ctx.fillText(`ארוחת ${table.slotLabel}`, width - PAD, y + SLOT_H / 2);
     ctx.textAlign = "center";
     y += SLOT_H;
 
     // header: empty corner over the label column, then a day per column
-    cellBox(labelX, y, LABEL_W, HEAD_H, BLUE);
+    cellBox(labelX, y, LABEL_W, HEAD_H, pal.head);
     days.forEach(([, label], i) => {
       const d = parseIsoLocal(weekStart);
       d.setDate(d.getDate() + i);
       const dateStr = d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" });
       const x = colX(i);
-      cellBox(x, y, COL_W, HEAD_H, BLUE);
+      cellBox(x, y, COL_W, HEAD_H, pal.head);
       ctx.fillStyle = "#FFFFFF";
       ctx.font = FONT_DAY;
       ctx.fillText(label, x + COL_W / 2, y + HEAD_H / 2 - 8);
@@ -9865,12 +10029,12 @@ function renderWeeklyMenuPng({ title, subtitle, days, types, slots, weeklyMenu, 
 
     table.rows.forEach((row, rIdx) => {
       const h = row.height;
-      cellBox(labelX, y, LABEL_W, h, ROWHEAD_BG);
+      cellBox(labelX, y, LABEL_W, h, pal.strong);
       ctx.textAlign = "right";
       drawLines(row.headLines, width - PAD - 10, y + h / 2, FONT_ROWHEAD, "#111111");
       ctx.textAlign = "center";
 
-      const stripe = rIdx % 2 === 1 ? STRIPE : "#FFFFFF";
+      const stripe = rIdx % 2 === 1 ? pal.weak : "#FFFFFF";
       row.cells.forEach((lines, i) => {
         const x = colX(i);
         cellBox(x, y, COL_W, h, stripe);
@@ -14358,7 +14522,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
     await persistCategories(next);
   }
 
-  const empty = { name: "", orderName: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, category: "", supplierId: "", unitVisible: true, imageData: null };
+  const empty = { name: "", orderName: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, weeklyUsage: 0, category: "", supplierId: "", unitVisible: true, imageData: null };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
   const [scanningBarcode, setScanningBarcode] = useState(false);
@@ -14903,6 +15067,11 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
         <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>יחידות בקרטון (אופציונלי)</label>
           <input type="number" placeholder="יחידות בקרטון" value={form.unitsPerCarton || ""} onChange={(e) => setForm({ ...form, unitsPerCarton: Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+        </div>
+        <div>
+          <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>צריכה שבועית (למעקב הזמנות)</label>
+          <input type="number" placeholder={`כמה ${form.unit || "יח׳"} נגמר כל שבוע`} value={form.weeklyUsage || ""} onChange={(e) => setForm({ ...form, weeklyUsage: Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+          <p className="text-xs mt-1" style={{ color: C.steel }}>אם תמלא כאן (למשל 33), במסך ההזמנות תירשם כמה הגיע והאפליקציה תתריע להזמין לפני שייגמר.</p>
         </div>
         <div>
           <div className="flex justify-between items-center mb-1">
