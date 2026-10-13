@@ -101,6 +101,14 @@ const MEAL_SLOTS = [
   ["dinner", "ערב"],
 ];
 
+/* Units of measure offered in the quantity pickers. The manager can edit the list in
+   Settings; it's stored in settings.units. Falls back to this default set. */
+const DEFAULT_UNITS = ["יח׳", "קרטון", "ארגז", "שק", 'ק"ג', "קופסה", "בקבוק", "מארז"];
+function unitOptions(settings, extra) {
+  const base = settings && Array.isArray(settings.units) && settings.units.length ? settings.units : DEFAULT_UNITS;
+  return Array.from(new Set([...base, ...((extra || []).filter(Boolean))]));
+}
+
 /* ---------- Offline layer ----------
    Everything is mirrored into IndexedDB (not localStorage - photos would blow past
    the 5MB quota). Writes go to the cache first and are queued when there's no
@@ -2053,6 +2061,7 @@ const UNIT_STATUS = {
 
 function UnitRequestTab({
   products,
+  settings,
   unitRequests,
   persistUnitRequests,
   unitTemplates,
@@ -2414,7 +2423,7 @@ function UnitRequestTab({
                     {(current.items || []).map((i) => {
                       const isBox = i.unit === "ארגז";
                       const step = isBox ? 0.5 : 1;
-                      const opts = Array.from(new Set(["יח׳", "קרטון", "ארגז", i.unit || "יח׳"]));
+                      const opts = unitOptions(settings, [i.unit]);
                       return (
                         <div key={i.productId} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
                           <span className="font-bold text-sm flex-1" style={{ color: C.ink }}>{i.name}</span>
@@ -2604,7 +2613,7 @@ function UnitRequestTab({
                         className="px-1 h-8 rounded-xl font-bold text-xs"
                         style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
                       >
-                        {Array.from(new Set(["יח׳", "קרטון", "ארגז", p.unit || "יח׳"])).map((opt) => (
+                        {unitOptions(settings, [p.unit]).map((opt) => (
                           <option key={opt} value={opt}>{opt}</option>
                         ))}
                       </select>
@@ -4983,6 +4992,7 @@ function App() {
         {tab === "unitrequest" && canRequestFromStock(currentUser) && (
           <UnitRequestTab
             products={products}
+            settings={settings}
             unitRequests={unitRequests}
             persistUnitRequests={persistUnitRequests}
             unitTemplates={unitTemplates}
@@ -7849,7 +7859,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                               className="px-1 rounded-xl font-bold text-xs"
                               style={{ height: 30, background: (orderUnits[p.id] || p.unit) === "ארגז" ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
                             >
-                              {Array.from(new Set(["יח׳", "קרטון", "ארגז", p.unit || "יח׳"])).map((o) => (
+                              {unitOptions(settings, [p.unit]).map((o) => (
                                 <option key={o} value={o}>{o}</option>
                               ))}
                             </select>
@@ -12208,6 +12218,45 @@ function WelcomeTextEditor({ settings, persistSettings, showToast }) {
   );
 }
 
+function UnitsEditor({ settings, persistSettings, showToast }) {
+  const units = settings && Array.isArray(settings.units) && settings.units.length ? settings.units : DEFAULT_UNITS;
+  const [newUnit, setNewUnit] = useState("");
+  async function addUnit() {
+    const v = newUnit.trim();
+    if (!v) return;
+    if (units.includes(v)) { setNewUnit(""); return showToast("היחידה כבר קיימת"); }
+    await persistSettings({ ...settings, units: [...units, v] });
+    setNewUnit("");
+    showToast("נוספה יחידה ✓");
+  }
+  async function removeUnit(u) {
+    await persistSettings({ ...settings, units: units.filter((x) => x !== u) });
+  }
+  return (
+    <div>
+      <div className="flex flex-wrap gap-2 mb-2">
+        {units.map((u) => (
+          <span key={u} className="flex items-center gap-1 px-3 py-1.5 rounded-full text-sm font-bold" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+            {u}
+            <button onClick={() => removeUnit(u)} style={{ color: C.stamp, fontWeight: 900, marginRight: 2 }}>✕</button>
+          </span>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        <input
+          value={newUnit}
+          onChange={(e) => setNewUnit(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") addUnit(); }}
+          placeholder="יחידה חדשה (למשל: תבנית, ליטר)"
+          className="flex-1 p-2 rounded-2xl border text-sm"
+          style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}
+        />
+        <button onClick={addUnit} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>הוסף</button>
+      </div>
+    </div>
+  );
+}
+
 function GroupLinkEditor({ settings, persistSettings, showToast }) {
   const [link, setLink] = useState(settings?.whatsappGroupLink || "");
   const waApp = settings?.whatsappApp || "wa";
@@ -12339,6 +12388,13 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
           הטקסט שמופיע מתחת ל"ברוכים הבאים" במסך הפתיחה (למשל: לניהול ישיבת קרית מלאכי).
         </p>
         <WelcomeTextEditor settings={settings} persistSettings={persistSettings} showToast={showToast} />
+      </ShelfTag>
+      <ShelfTag accent={C.sage} style={{ marginBottom: 16 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>📦 יחידות מידה</div>
+        <p className="text-xs mb-2" style={{ color: C.steel }}>
+          היחידות שיופיעו בבורר בהזמנות ובבקשות (יח׳ / קרטון / ארגז / שק…). הוסף או הסר כרצונך.
+        </p>
+        <UnitsEditor settings={settings} persistSettings={persistSettings} showToast={showToast} />
       </ShelfTag>
       <ShelfTag accent="#128C7E" style={{ marginBottom: 16 }}>
         <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>👥 קבוצת וואטסאפ להזמנות</div>
