@@ -6032,6 +6032,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
   const [channel, setChannel] = useState("whatsapp"); // "whatsapp" | "sms" | "email"
   const [orderMode, setOrderMode] = useState("stock"); // "stock" | "menu" | "week"
   const [qtys, setQtys] = useState({}); // start empty - no quantity is pre-filled; the user types what they want
+  const [orderUnits, setOrderUnits] = useState({}); // productId -> chosen unit (יח׳/קרטון/ארגז) for this order, overrides the product's unit
   const [selectedMenuIds, setSelectedMenuIds] = useState([]);
   const [portions, setPortions] = useState(1);
   const [weekPortions, setWeekPortions] = useState(1);
@@ -6525,7 +6526,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
       .filter((p) => selectedForOrder.includes(p.id))
       .map((p) => ({ p, qty: qtys[p.id] ?? 1 }))
       .filter(({ qty }) => Number(qty) > 0)
-      .map(({ p, qty }) => `- ${qty} ${p.unit} ${p.name}`);
+      .map(({ p, qty }) => `- ${qty} ${orderUnits[p.id] || p.unit} ${p.name}`);
     return lines.join("\n");
   }
 
@@ -6550,7 +6551,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
     }
     const items = products
       .filter((p) => selectedForOrder.includes(p.id))
-      .map((p) => ({ product: p, qty: qtys[p.id] ?? 1 }))
+      .map((p) => ({ product: { ...p, unit: orderUnits[p.id] || p.unit }, qty: qtys[p.id] ?? 1 }))
       .filter(({ qty }) => Number(qty) > 0);
 
     if (items.length === 0) {
@@ -7841,6 +7842,17 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                             >
                               +
                             </button>
+                            <select
+                              value={orderUnits[p.id] || p.unit || "יח׳"}
+                              onChange={(e) => { setOrderUnits((u) => ({ ...u, [p.id]: e.target.value })); setSelectedForOrder((cur) => cur.includes(p.id) ? cur : [...cur, p.id]); }}
+                              title="בחר יחידה: יח׳ / קרטון / ארגז"
+                              className="px-1 rounded-xl font-bold text-xs"
+                              style={{ height: 30, background: (orderUnits[p.id] || p.unit) === "ארגז" ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}`, flexShrink: 0 }}
+                            >
+                              {Array.from(new Set(["יח׳", "קרטון", "ארגז", p.unit || "יח׳"])).map((o) => (
+                                <option key={o} value={o}>{o}</option>
+                              ))}
+                            </select>
                           </div>
                         </div>
                       </ShelfTag>
@@ -7864,7 +7876,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                 onClick={() => {
                   const items = products
                     .filter((p) => selectedForOrder.includes(p.id))
-                    .map((p) => ({ product: p, qty: qtys[p.id] ?? 1 }));
+                    .map((p) => ({ product: { ...p, unit: orderUnits[p.id] || p.unit }, qty: qtys[p.id] ?? 1 }));
                   submitOrderRequest(items, selectedSupplierId, "הזמנה");
                 }}
                 className="w-full py-3 rounded-2xl wh-display font-bold"
