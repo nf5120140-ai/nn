@@ -6062,6 +6062,11 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
   const [showUsage, setShowUsage] = useState(false);               // consumption-tracking panel (hidden by default)
   const [receiveFor, setReceiveFor] = useState(null);              // product id we're entering a received amount for
   const [receiveQty, setReceiveQty] = useState("");
+  const [showToBuy, setShowToBuy] = useState(false);               // "to buy" notes panel (per supplier)
+  const [toBuyName, setToBuyName] = useState("");
+  const [toBuyQty, setToBuyQty] = useState("");
+  const [toBuyUnit, setToBuyUnit] = useState("");
+  const [toBuySupplier, setToBuySupplier] = useState("__unassigned__");
   const [orderNote, setOrderNote] = useState("שלום, הזמנה לשבוע:");
   // Suppliers already sent this round — their send button is hidden until the selection changes.
   const [sentSuppliers, setSentSuppliers] = useState([]);
@@ -6525,6 +6530,92 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
               );
             })}
             <p className="text-xs" style={{ color: C.steel }}>כל פעם שמגיע משלוח - לחץ "קיבלתי" ורשום כמה. האפליקציה סופרת לבד לפי הצריכה השבועית ומתריעה כשנגמר.</p>
+          </div>
+        )}
+      </ShelfTag>
+    );
+  }
+
+  // "To buy" notes: jot down what you need to order from each supplier; opening an
+  // order for that supplier loads the notes straight into the order summary.
+  const toBuyList = settings && Array.isArray(settings.toBuy) ? settings.toBuy : [];
+  async function addToBuy() {
+    const name = toBuyName.trim();
+    if (!name) return showToast("כתוב שם מוצר");
+    const item = { id: genId(), name, qty: Number(toBuyQty) || 1, unit: toBuyUnit || "", supplierId: toBuySupplier || "__unassigned__" };
+    await persistSettings({ ...settings, toBuy: [...toBuyList, item] });
+    setToBuyName(""); setToBuyQty("");
+    showToast("נוסף לרשימת הקנייה ✓");
+  }
+  async function removeToBuy(id) {
+    await persistSettings({ ...settings, toBuy: toBuyList.filter((x) => x.id !== id) });
+  }
+  async function clearToBuySupplier(supplierId) {
+    await persistSettings({ ...settings, toBuy: toBuyList.filter((x) => (x.supplierId || "__unassigned__") !== supplierId) });
+  }
+  function openOrderFromToBuy(supplierId) {
+    const notes = toBuyList.filter((x) => (x.supplierId || "__unassigned__") === supplierId);
+    if (notes.length === 0) return;
+    const items = notes.map((n) => ({
+      product: { id: n.id, name: n.name, unit: n.unit || "", price: 0, quantity: 0, supplierId: supplierId === "__unassigned__" ? null : supplierId },
+      qty: Number(n.qty) || 1,
+    }));
+    const supName = supplierId === "__unassigned__" ? "ספק כללי" : (suppliers.find((s) => s.id === supplierId)?.name || "ספק");
+    setSelectedSupplierId(supplierId !== "__unassigned__" && suppliers.some((s) => s.id === supplierId) ? supplierId : "__manual__");
+    setPendingOrder({ items, title: `הזמנה — ${supName}`, supplierId, isRequest: !mayApprove, sourceLabel: "רשימת לקנות" });
+  }
+
+  function toBuyPanel() {
+    const groups = {};
+    toBuyList.forEach((it) => { const k = it.supplierId || "__unassigned__"; (groups[k] = groups[k] || []).push(it); });
+    const total = toBuyList.length;
+    return (
+      <ShelfTag accent={C.mustard} style={{ marginBottom: 12 }}>
+        <button onClick={() => setShowToBuy((s) => !s)} className="w-full flex justify-between items-center">
+          <span className="wh-display font-bold text-sm" style={{ color: C.ink }}>🛒 לקנות (לפי ספק) {total > 0 ? `· ${total}` : ""}</span>
+          <span style={{ color: C.steel }}>{showToBuy ? "▲" : "▼"}</span>
+        </button>
+        {showToBuy && (
+          <div className="mt-2">
+            <div className="flex flex-col gap-2 mb-3">
+              <input value={toBuyName} onChange={(e) => setToBuyName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addToBuy(); }} placeholder="מה צריך לקנות..." className="p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+              <div className="flex gap-2">
+                <input type="number" value={toBuyQty} onChange={(e) => setToBuyQty(e.target.value)} placeholder="כמות" className="w-20 p-2 rounded-2xl border text-sm text-center" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+                <select value={toBuyUnit} onChange={(e) => setToBuyUnit(e.target.value)} className="p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}>
+                  <option value="">יחידה</option>
+                  {unitOptions(settings).map((u) => <option key={u} value={u}>{u}</option>)}
+                </select>
+                <select value={toBuySupplier} onChange={(e) => setToBuySupplier(e.target.value)} className="flex-1 p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}>
+                  <option value="__unassigned__">ספק כללי</option>
+                  {suppliers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                </select>
+              </div>
+              <button onClick={addToBuy} className="py-2 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>➕ הוסף לרשימה</button>
+            </div>
+            {total === 0 ? (
+              <p className="text-xs text-center" style={{ color: C.steel }}>הרשימה ריקה. רשום מה שצריך לקנות ולאיזה ספק — וכשתפתח הזמנה לספק, זה יקפוץ מוכן.</p>
+            ) : (
+              Object.entries(groups).map(([sid, items]) => {
+                const supName = sid === "__unassigned__" ? "ספק כללי" : (suppliers.find((s) => s.id === sid)?.name || "ספק");
+                return (
+                  <div key={sid} className="mb-2 p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                    <div className="flex justify-between items-center mb-1">
+                      <span className="font-bold text-sm" style={{ color: C.ink }}>🏷️ {supName} ({items.length})</span>
+                      <div className="flex gap-1">
+                        <button onClick={() => openOrderFromToBuy(sid)} className="px-3 py-1 rounded-lg text-xs font-bold" style={{ background: C.brand, color: "#fff" }}>📤 פתח הזמנה</button>
+                        <button onClick={() => clearToBuySupplier(sid)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }} title="נקה את כל הרשימה לספק">🗑️</button>
+                      </div>
+                    </div>
+                    {items.map((it) => (
+                      <div key={it.id} className="flex justify-between items-center text-sm py-0.5">
+                        <span style={{ color: C.ink }}>• {it.name}{it.qty ? ` · ${it.qty} ${it.unit || ""}` : ""}</span>
+                        <button onClick={() => removeToBuy(it.id)} style={{ color: C.stamp, fontWeight: 900 }}>✕</button>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })
+            )}
           </div>
         )}
       </ShelfTag>
@@ -7479,6 +7570,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
 
   return (
     <div>
+      {toBuyPanel()}
       {usagePanel()}
       {drafts.length > 0 && (
         <details className="mb-4">
