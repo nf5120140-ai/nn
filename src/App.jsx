@@ -2106,55 +2106,101 @@ function UnitRequestTab({
 
   useEffect(() => { setNoteDraft(current?.note || ""); }, [current?.id, current?.status]);
 
-  // ---- Single source of truth for editing the open draft ----
-  // Every edit goes through a functional updater that reads the FRESHEST list
-  // (via persistUnitRequests's functional form), finds this unit's open draft,
-  // and patches it. Because each edit re-derives from the latest items, two
-  // quick edits can never build on a stale copy and drop a sibling product.
-  function makeDraftBase() {
-    return {
-      id: genId(),
-      unitId: currentUser.id,
-      unitName: currentUser.name,
-      weekOf: thisWeek,
-      status: "open",
-      createdAt: Date.now(),
-      items: [],
-      note: "",
-    };
-  }
+  // ===== Open-draft buffer =====
+  // The weekly order (the open draft) is rendered from LOCAL state, updated
+  // synchronously on every tap, so rows never flicker or vanish for a frame while
+  // a background save / realtime echo is in flight. Saves are coalesced (~0.7s) so
+  // rapid +/- presses collapse into one write ("sync every few seconds").
+  const [draftItems, setDraftItems] = useState(() => (current?.items ? current.items.map((x) => ({ ...x })) : []));
+  const draftIdRef = useRef(current?.id || null);
+  const draftItemsRef = useRef(draftItems);
+  const noteRef = useRef(noteDraft);
+  const saveTimer = useRef(null);
+  useEffect(() => { draftItemsRef.current = draftItems; }, [draftItems]);
+  useEffect(() => { noteRef.current = noteDraft; }, [noteDraft]);
 
-  async function updateCurrentDraft(patch) {
+  // Re-seed the local buffer only when the open draft's IDENTITY changes from the
+  // outside (after submit / reopen / reuse / first load) — never on every echo, so
+  // an in-flight edit is never clobbered mid-typing.
+  useEffect(() => {
+    if ((current?.id || null) !== draftIdRef.current) {
+      draftIdRef.current = current?.id || null;
+      setDraftItems(current?.items ? current.items.map((x) => ({ ...x })) : []);
+      setNoteDraft(current?.note || "");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current?.id]);
+
+  async function flushDraftSave(items, note) {
     await persistUnitRequests((list) => {
       const arr = list || [];
-      const existing = arr.find((r) => r.unitId === currentUser.id && r.status === "open");
-      const base = existing || makeDraftBase();
-      const changed = typeof patch === "function" ? patch(base) : { ...base, ...patch };
-      const updated = { ...changed, updatedAt: Date.now() };
+      const existing =
+        arr.find((r) => r.id === draftIdRef.current && r.status === "open") ||
+        arr.find((r) => r.unitId === currentUser.id && r.status === "open");
+      const base = existing || {
+        id: genId(),
+        unitId: currentUser.id,
+        unitName: currentUser.name,
+        weekOf: thisWeek,
+        status: "open",
+        createdAt: Date.now(),
+        items: [],
+        note: "",
+      };
+      draftIdRef.current = base.id;
+      const updated = { ...base, items, note, status: "open", updatedAt: Date.now() };
       const others = arr.filter((r) => r.id !== updated.id);
       return [...others, updated];
     });
   }
 
-  async function updateCurrentItems(mutator) {
-    await updateCurrentDraft((base) => ({ ...base, items: mutator(base.items || []) }));
+  function scheduleDraftSave(items, note) {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      saveTimer.current = null;
+      flushDraftSave(items, note);
+    }, 700);
   }
 
-  // kept for any remaining callers — now routes through the freshest-list updater
-  async function upsertCurrent(items) {
-    await updateCurrentItems(() => items);
+  // Flush any pending save when leaving the screen so nothing is lost.
+  useEffect(() => {
+    return () => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+        flushDraftSave(draftItemsRef.current || [], noteRef.current || "");
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Every item edit: update the visible buffer synchronously, then schedule a save.
+  function editDraftItems(mutator) {
+    if (locked) { showToast("הבקשה כבר נשלחה - לא ניתן לשנות"); return; }
+    setDraftItems((prev) => {
+      const next = mutator(prev || []);
+      scheduleDraftSave(next, noteRef.current || "");
+      return next;
+    });
   }
+
+  // ---- Editing the open draft ----
+  // All edits mutate the LOCAL buffer (draftItems) synchronously via editDraftItems,
+  // so the screen updates instantly and the background save is coalesced. This is the
+  // single source of truth for the open draft; `current` is only used to seed it.
 
   async function saveNote(text) {
     if (locked) return;
-    if ((current?.note || "") === (text || "")) return;
-    await updateCurrentDraft((base) => ({ ...base, note: text }));
+    setNoteDraft(text);
+    noteRef.current = text;
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    await flushDraftSave(draftItemsRef.current || [], text || "");
   }
 
   async function setQty(product, qty, unit) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const q = Math.max(0, Number(qty) || 0);
-    await updateCurrentItems((items) => {
+    editDraftItems((items) => {
       const idx = items.findIndex((i) => i.productId === product.id);
       const u = unit || (idx >= 0 ? items[idx].unit : undefined) || product.unit;
       if (q <= 0) return items.filter((i) => i.productId !== product.id);
@@ -2164,24 +2210,24 @@ function UnitRequestTab({
   }
 
   // Add a free-text product that isn't in the catalog.
-  async function addCustomItem() {
+  function addCustomItem() {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const name = customName.trim();
     if (!name) return;
-    await updateCurrentItems((items) => [...items, { productId: "custom-" + genId(), name, unit: "", qty: 1, custom: true }]);
+    editDraftItems((items) => [...items, { productId: "custom-" + genId(), name, unit: "", qty: 1, custom: true }]);
     setCustomName("");
   }
-  async function updateCustomQty(pid, qty) {
+  function updateCustomQty(pid, qty) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const q = Math.max(0, Number(qty) || 0);
-    await updateCurrentItems((items) => items.map((i) => (i.productId === pid ? { ...i, qty: q } : i)));
+    editDraftItems((items) => items.map((i) => (i.productId === pid ? { ...i, qty: q } : i)));
   }
-  async function removeItem(pid) {
+  function removeItem(pid) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    await updateCurrentItems((items) => items.filter((i) => i.productId !== pid));
+    editDraftItems((items) => items.filter((i) => i.productId !== pid));
   }
 
-  async function loadFromTemplate() {
+  function loadFromTemplate() {
     if (locked) return showToast("הבקשה כבר נשלחה");
     if (template.length === 0) return showToast("לא הוגדרה רשימה שבועית קבועה");
     const tItems = template
@@ -2190,30 +2236,52 @@ function UnitRequestTab({
         return p ? { productId: p.id, name: p.name, unit: p.unit, qty: t.qty } : null;
       })
       .filter(Boolean);
-    await updateCurrentItems(() => tItems);
+    editDraftItems(() => tItems);
     showToast(`נטענו ${tItems.length} מוצרים מהרשימה הקבועה`);
   }
 
   async function saveAsTemplate() {
-    const items = (current?.items || []).map((i) => ({ productId: i.productId, qty: i.qty }));
+    const items = (draftItems || []).map((i) => ({ productId: i.productId, qty: i.qty }));
     if (items.length === 0) return showToast("אין מוצרים לשמור");
     await persistUnitTemplates({ ...(unitTemplates || {}), [currentUser.id]: items });
     showToast("נשמר כרשימה שבועית קבועה ✓");
   }
 
   async function submit() {
-    if (!current || (current.items || []).length === 0) return showToast("הבקשה ריקה");
-    const others = (unitRequests || []).filter((r) => r.id !== current.id);
-    await persistUnitRequests([...others, { ...current, note: noteDraft, status: "submitted", submittedAt: Date.now() }]);
+    const items = (draftItems || []).filter((i) => Number(i.qty) > 0);
+    if (items.length === 0) return showToast("הבקשה ריקה");
+    if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+    const submittedId = draftIdRef.current;
+    await persistUnitRequests((list) => {
+      const arr = list || [];
+      const existing =
+        arr.find((r) => r.id === submittedId && r.status === "open") ||
+        arr.find((r) => r.unitId === currentUser.id && r.status === "open");
+      const base = existing || {
+        id: submittedId || genId(),
+        unitId: currentUser.id,
+        unitName: currentUser.name,
+        weekOf: thisWeek,
+        createdAt: Date.now(),
+      };
+      const updated = { ...base, items, note: noteRef.current || "", status: "submitted", submittedAt: Date.now(), updatedAt: Date.now() };
+      const others = arr.filter((r) => r.id !== updated.id);
+      return [...others, updated];
+    });
     if (notifyManagers) {
-      await notifyManagers(`🧺 ${currentUser.name} שלח בקשה (${current.items.length} מוצרים) - ממתינה לאישורך`, { tab: "admin", section: "unitrequests" });
+      await notifyManagers(`🧺 ${currentUser.name} שלח בקשה (${items.length} מוצרים) - ממתינה לאישורך`, { tab: "admin", section: "unitrequests" });
     }
+    // Start a fresh empty draft.
+    draftIdRef.current = null;
+    setDraftItems([]);
     setNoteDraft("");
+    noteRef.current = "";
     setAddingMore(false);
     showToast("הבקשה נשלחה ✓ אפשר להכין בקשה נוספת");
   }
 
   async function reopen() {
+    if (!current) return;
     const others = (unitRequests || []).filter((r) => r.id !== current.id);
     await persistUnitRequests([...others, { ...current, status: "open" }]);
     showToast("הבקשה נפתחה מחדש לעריכה");
@@ -2225,33 +2293,28 @@ function UnitRequestTab({
     showToast("הפריטים נוספו לבקשה והמחסן עודכן");
   }
 
-  // Load a previous request's items into this week's request, so it can be edited and re-sent.
-  async function reuseRequest(r) {
-    if (locked && current?.status === "submitted") {
-      // fine — reuse replaces into a fresh editable request below
-    }
+  // Load a previous request's items into this week's draft, so it can be edited and re-sent.
+  function reuseRequest(r) {
     const items = (r.items || []).map((i) => ({ ...i }));
-    await upsertCurrent(items);
+    editDraftItems(() => items);
     setView("current");
     showToast("הבקשה הועתקה לעריכה — אפשר לשנות ולשלוח מחדש");
   }
 
-  // Edit a row in the accumulating weekly order BY POSITION (index), so two items that
-  // happen to share a productId stay independent - fixes "changing one changes several".
-  async function setRowQty(idx, qty) {
+  // Edit a row in the weekly order BY POSITION (index): only that row changes, so two
+  // items that share a productId stay independent and a tap never touches a sibling.
+  function setRowQty(idx, qty) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const q = Math.max(0, Number(qty) || 0);
-    // Only the row at this position changes; others stay exactly as they are
-    // (no auto-filtering of zero rows, so typing a qty never removes a sibling).
-    await updateCurrentItems((items) => items.map((i, j) => (j === idx ? { ...i, qty: q } : i)));
+    editDraftItems((items) => items.map((i, j) => (j === idx ? { ...i, qty: q } : i)));
   }
-  async function setRowUnit(idx, unit) {
+  function setRowUnit(idx, unit) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    await updateCurrentItems((items) => items.map((i, j) => (j === idx ? { ...i, unit } : i)));
+    editDraftItems((items) => items.map((i, j) => (j === idx ? { ...i, unit } : i)));
   }
-  async function removeRow(idx) {
+  function removeRow(idx) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    await updateCurrentItems((items) => items.filter((_, j) => j !== idx));
+    editDraftItems((items) => items.filter((_, j) => j !== idx));
   }
 
   // Receipt tracking on a sent request: tap an item to toggle "missing".
@@ -2396,10 +2459,10 @@ function UnitRequestTab({
     showToast("התמונה ירדה - אפשר להדפיס או לשתף אותה מהגלריה");
   }
 
-  const qtyOf = (id) => (current?.items || []).find((i) => i.productId === id)?.qty || 0;
-  const unitOf = (p) => (current?.items || []).find((i) => i.productId === p.id)?.unit || p.unit;
-  const totalItems = (current?.items || []).length;
-  const customItems = (current?.items || []).filter((i) => i.custom);
+  const qtyOf = (id) => (draftItems || []).find((i) => i.productId === id)?.qty || 0;
+  const unitOf = (p) => (draftItems || []).find((i) => i.productId === p.id)?.unit || p.unit;
+  const totalItems = (draftItems || []).length;
+  const customItems = (draftItems || []).filter((i) => i.custom);
 
   return (
     <div>
@@ -2435,9 +2498,9 @@ function UnitRequestTab({
                   )}
 
                   <div className="flex flex-col gap-1 mt-2">
-                    {(current.items || []).map((i, idx) => {
+                    {(draftItems || []).map((i, idx) => {
                       const isBox = i.unit === "ארגז";
-                      const step = isBox ? 0.5 : 1;
+                      const step = 1; // whole-unit steps for every unit (incl. ארגז)
                       const opts = unitOptions(settings, [i.unit]);
                       return (
                         <div key={idx} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
@@ -2579,7 +2642,7 @@ function UnitRequestTab({
               const q = qtyOf(p.id);
               const u = unitOf(p);
               const isBox = u === "ארגז";
-              const step = isBox ? 0.5 : 1;
+              const step = 1; // whole-unit steps for every unit (incl. ארגז)
               return (
                 <ShelfTag key={p.id} accent={q > 0 ? C.sage : C.kraftDark}>
                   <div className="flex justify-between items-center">
@@ -2621,8 +2684,8 @@ function UnitRequestTab({
                         value={u}
                         onChange={(e) => {
                           const nu = e.target.value;
-                          const ns = nu === "ארגז" ? 0.5 : 1;
-                          setQty(p, q > 0 ? q : ns, nu);
+                          // keep the current qty; if none yet, start at 1 (never a half unit)
+                          setQty(p, q > 0 ? q : 1, nu);
                         }}
                         title="בחר יחידה: יח׳ / קרטון / ארגז"
                         className="px-1 h-8 rounded-xl font-bold text-xs"
@@ -8044,7 +8107,9 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                 onClick={() => {
                   const items = products
                     .filter((p) => selectedForOrder.includes(p.id))
-                    .map((p) => ({ product: { ...p, unit: orderUnits[p.id] || p.unit }, qty: qtys[p.id] ?? 1 }));
+                    .map((p) => ({ product: { ...p, unit: orderUnits[p.id] || p.unit }, qty: qtys[p.id] ?? 1 }))
+                    .filter(({ qty }) => Number(qty) > 0);
+                  if (items.length === 0) { showToast("אין מוצרים עם כמות גדולה מאפס"); return; }
                   submitOrderRequest(items, selectedSupplierId, "הזמנה");
                 }}
                 className="w-full py-3 rounded-2xl wh-display font-bold"
