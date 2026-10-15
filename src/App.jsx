@@ -2106,9 +2106,13 @@ function UnitRequestTab({
 
   useEffect(() => { setNoteDraft(current?.note || ""); }, [current?.id, current?.status]);
 
-  async function saveNote(text) {
-    if (locked) return;
-    const base = current || {
+  // ---- Single source of truth for editing the open draft ----
+  // Every edit goes through a functional updater that reads the FRESHEST list
+  // (via persistUnitRequests's functional form), finds this unit's open draft,
+  // and patches it. Because each edit re-derives from the latest items, two
+  // quick edits can never build on a stale copy and drop a sibling product.
+  function makeDraftBase() {
+    return {
       id: genId(),
       unitId: currentUser.id,
       unitName: currentUser.name,
@@ -2118,35 +2122,45 @@ function UnitRequestTab({
       items: [],
       note: "",
     };
-    if ((base.note || "") === (text || "")) return;
-    const updated = { ...base, note: text, updatedAt: Date.now() };
-    const others = (unitRequests || []).filter((r) => r.id !== updated.id);
-    await persistUnitRequests([...others, updated]);
   }
 
+  async function updateCurrentDraft(patch) {
+    await persistUnitRequests((list) => {
+      const arr = list || [];
+      const existing = arr.find((r) => r.unitId === currentUser.id && r.status === "open");
+      const base = existing || makeDraftBase();
+      const changed = typeof patch === "function" ? patch(base) : { ...base, ...patch };
+      const updated = { ...changed, updatedAt: Date.now() };
+      const others = arr.filter((r) => r.id !== updated.id);
+      return [...others, updated];
+    });
+  }
+
+  async function updateCurrentItems(mutator) {
+    await updateCurrentDraft((base) => ({ ...base, items: mutator(base.items || []) }));
+  }
+
+  // kept for any remaining callers — now routes through the freshest-list updater
   async function upsertCurrent(items) {
-    const base = current || {
-      id: genId(),
-      unitId: currentUser.id,
-      unitName: currentUser.name,
-      weekOf: thisWeek,
-      status: "open",
-      createdAt: Date.now(),
-      items: [],
-      note: "",
-    };
-    const updated = { ...base, items, updatedAt: Date.now() };
-    const others = (unitRequests || []).filter((r) => r.id !== updated.id);
-    await persistUnitRequests([...others, updated]);
+    await updateCurrentItems(() => items);
+  }
+
+  async function saveNote(text) {
+    if (locked) return;
+    if ((current?.note || "") === (text || "")) return;
+    await updateCurrentDraft((base) => ({ ...base, note: text }));
   }
 
   async function setQty(product, qty, unit) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const q = Math.max(0, Number(qty) || 0);
-    const u = unit || (current?.items || []).find((i) => i.productId === product.id)?.unit || product.unit;
-    const items = (current?.items || []).filter((i) => i.productId !== product.id);
-    if (q > 0) items.push({ productId: product.id, name: product.name, unit: u, qty: q });
-    await upsertCurrent(items);
+    await updateCurrentItems((items) => {
+      const idx = items.findIndex((i) => i.productId === product.id);
+      const u = unit || (idx >= 0 ? items[idx].unit : undefined) || product.unit;
+      if (q <= 0) return items.filter((i) => i.productId !== product.id);
+      if (idx >= 0) return items.map((i) => (i.productId === product.id ? { ...i, qty: q, unit: u } : i));
+      return [...items, { productId: product.id, name: product.name, unit: u, qty: q }];
+    });
   }
 
   // Add a free-text product that isn't in the catalog.
@@ -2154,32 +2168,30 @@ function UnitRequestTab({
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const name = customName.trim();
     if (!name) return;
-    const items = [...(current?.items || []), { productId: "custom-" + genId(), name, unit: "", qty: 1, custom: true }];
-    await upsertCurrent(items);
+    await updateCurrentItems((items) => [...items, { productId: "custom-" + genId(), name, unit: "", qty: 1, custom: true }]);
     setCustomName("");
   }
   async function updateCustomQty(pid, qty) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const q = Math.max(0, Number(qty) || 0);
-    const items = (current?.items || []).map((i) => (i.productId === pid ? { ...i, qty: q } : i));
-    await upsertCurrent(items);
+    await updateCurrentItems((items) => items.map((i) => (i.productId === pid ? { ...i, qty: q } : i)));
   }
   async function removeItem(pid) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    await upsertCurrent((current?.items || []).filter((i) => i.productId !== pid));
+    await updateCurrentItems((items) => items.filter((i) => i.productId !== pid));
   }
 
   async function loadFromTemplate() {
     if (locked) return showToast("הבקשה כבר נשלחה");
     if (template.length === 0) return showToast("לא הוגדרה רשימה שבועית קבועה");
-    const items = template
+    const tItems = template
       .map((t) => {
         const p = catalog.find((x) => x.id === t.productId);
         return p ? { productId: p.id, name: p.name, unit: p.unit, qty: t.qty } : null;
       })
       .filter(Boolean);
-    await upsertCurrent(items);
-    showToast(`נטענו ${items.length} מוצרים מהרשימה הקבועה`);
+    await updateCurrentItems(() => tItems);
+    showToast(`נטענו ${tItems.length} מוצרים מהרשימה הקבועה`);
   }
 
   async function saveAsTemplate() {
@@ -2229,19 +2241,17 @@ function UnitRequestTab({
   async function setRowQty(idx, qty) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const q = Math.max(0, Number(qty) || 0);
-    const items = (current?.items || [])
-      .map((i, j) => (j === idx ? { ...i, qty: q } : i))
-      .filter((i) => Number(i.qty) > 0);
-    await upsertCurrent(items);
+    // Only the row at this position changes; others stay exactly as they are
+    // (no auto-filtering of zero rows, so typing a qty never removes a sibling).
+    await updateCurrentItems((items) => items.map((i, j) => (j === idx ? { ...i, qty: q } : i)));
   }
   async function setRowUnit(idx, unit) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    const items = (current?.items || []).map((i, j) => (j === idx ? { ...i, unit } : i));
-    await upsertCurrent(items);
+    await updateCurrentItems((items) => items.map((i, j) => (j === idx ? { ...i, unit } : i)));
   }
   async function removeRow(idx) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    await upsertCurrent((current?.items || []).filter((_, j) => j !== idx));
+    await updateCurrentItems((items) => items.filter((_, j) => j !== idx));
   }
 
   // Receipt tracking on a sent request: tap an item to toggle "missing".
@@ -3662,6 +3672,8 @@ function App() {
   const [taskCategories, setTaskCategories] = useState([]);
   const [orderRequests, setOrderRequests] = useState([]);
   const [unitRequests, setUnitRequests] = useState([]);
+  const unitRequestsRef = useRef([]); // always holds the latest list, so rapid edits chain correctly
+  useEffect(() => { unitRequestsRef.current = unitRequests; }, [unitRequests]);
   const [unitTemplates, setUnitTemplates] = useState({});
   const [personalPurchases, setPersonalPurchases] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
@@ -4115,16 +4127,17 @@ function App() {
         // local one; otherwise the local (just-edited) version is kept.
         const server = (await loadKey(KEYS.unitRequests, [])) || [];
         const ts = (r) => Number(r && (r.updatedAt || r.fulfilledAt || r.submittedAt || r.createdAt)) || 0;
-        setUnitRequests((local) => {
-          const byId = new Map();
-          (local || []).forEach((r) => { if (r && r.id) byId.set(r.id, r); });
-          server.forEach((r) => {
-            if (!r || !r.id) return;
-            const cur = byId.get(r.id);
-            if (!cur || ts(r) > ts(cur)) byId.set(r.id, r);
-          });
-          return [...byId.values()];
+        const local = unitRequestsRef.current || [];
+        const byId = new Map();
+        local.forEach((r) => { if (r && r.id) byId.set(r.id, r); });
+        server.forEach((r) => {
+          if (!r || !r.id) return;
+          const cur = byId.get(r.id);
+          if (!cur || ts(r) > ts(cur)) byId.set(r.id, r);
         });
+        const merged = [...byId.values()];
+        unitRequestsRef.current = merged; // keep the live ref authoritative for the next edit
+        setUnitRequests(merged);
       },
       [KEYS.unitTemplates]: async () => setUnitTemplates((await loadKey(KEYS.unitTemplates, {})) || {}),
       [KEYS.personalPurchases]: async () => setPersonalPurchases((await loadKey(KEYS.personalPurchases, [])) || []),
@@ -4594,8 +4607,13 @@ function App() {
   }
 
   async function persistUnitRequests(next) {
-    setUnitRequests(next);
-    await saveKey(KEYS.unitRequests, next);
+    // Supports a functional updater: next(latestList) => newList. Using the live ref
+    // (not a possibly-stale closure) means rapid successive edits each build on the
+    // freshest list, so changing one item never drops another.
+    const resolved = typeof next === "function" ? next(unitRequestsRef.current || []) : next;
+    unitRequestsRef.current = resolved;
+    setUnitRequests(resolved);
+    await saveKey(KEYS.unitRequests, resolved);
   }
   async function persistUnitTemplates(next) {
     setUnitTemplates(next);
