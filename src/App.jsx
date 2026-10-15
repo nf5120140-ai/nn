@@ -2106,30 +2106,59 @@ function UnitRequestTab({
 
   useEffect(() => { setNoteDraft(current?.note || ""); }, [current?.id, current?.status]);
 
-  // ===== Open-draft buffer =====
-  // The weekly order (the open draft) is rendered from LOCAL state, updated
-  // synchronously on every tap, so rows never flicker or vanish for a frame while
-  // a background save / realtime echo is in flight. Saves are coalesced (~0.7s) so
-  // rapid +/- presses collapse into one write ("sync every few seconds").
-  const [draftItems, setDraftItems] = useState(() => (current?.items ? current.items.map((x) => ({ ...x, uid: x.uid || genId() })) : []));
+  // ===== Open-draft editing — same model as the orders screen (OrderTab) =====
+  // Quantities live in plain productId-keyed maps (reqQtys / reqUnits), plus a small
+  // list for free-text items. Each edit is an isolated, synchronous map update keyed
+  // by product — so one product can never affect another, the number appears at once,
+  // and there are no positional keys to confuse React. Saves are coalesced (~0.7s).
+  const isCustomItem = (i) => !!(i && (i.custom || String(i.productId || "").startsWith("custom-")));
+  function seedFromItems(items) {
+    const nq = {}, nu = {}, cust = [];
+    (items || []).forEach((i) => {
+      if (!i) return;
+      if (isCustomItem(i)) cust.push({ id: i.productId || ("custom-" + genId()), name: i.name, qty: Number(i.qty) || 0, unit: i.unit || "" });
+      else { nq[i.productId] = Number(i.qty) || 0; if (i.unit) nu[i.productId] = i.unit; }
+    });
+    return { nq, nu, cust };
+  }
+
+  const [reqQtys, setReqQtys] = useState(() => seedFromItems(current?.items).nq);
+  const [reqUnits, setReqUnits] = useState(() => seedFromItems(current?.items).nu);
+  const [customList, setCustomList] = useState(() => seedFromItems(current?.items).cust);
   const draftIdRef = useRef(current?.id || null);
-  const draftItemsRef = useRef(draftItems);
+  const reqQtysRef = useRef(reqQtys);
+  const reqUnitsRef = useRef(reqUnits);
+  const customRef = useRef(customList);
   const noteRef = useRef(noteDraft);
   const saveTimer = useRef(null);
-  useEffect(() => { draftItemsRef.current = draftItems; }, [draftItems]);
+  useEffect(() => { reqQtysRef.current = reqQtys; }, [reqQtys]);
+  useEffect(() => { reqUnitsRef.current = reqUnits; }, [reqUnits]);
+  useEffect(() => { customRef.current = customList; }, [customList]);
   useEffect(() => { noteRef.current = noteDraft; }, [noteDraft]);
 
-  // Re-seed the local buffer only when the open draft's IDENTITY changes from the
-  // outside (after submit / reopen / reuse / first load) — never on every echo, so
-  // an in-flight edit is never clobbered mid-typing.
+  // Re-seed only when the open draft's IDENTITY changes from the outside (after submit /
+  // reuse / first async load) — never on an echo, so an in-flight edit is never clobbered.
   useEffect(() => {
     if ((current?.id || null) !== draftIdRef.current) {
       draftIdRef.current = current?.id || null;
-      setDraftItems(current?.items ? current.items.map((x) => ({ ...x, uid: x.uid || genId() })) : []);
-      setNoteDraft(current?.note || "");
+      const { nq, nu, cust } = seedFromItems(current?.items);
+      reqQtysRef.current = nq; reqUnitsRef.current = nu; customRef.current = cust; noteRef.current = current?.note || "";
+      setReqQtys(nq); setReqUnits(nu); setCustomList(cust); setNoteDraft(current?.note || "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current?.id]);
+
+  // Build the request's items[] from the current maps (catalog products first, then custom).
+  function buildCurrentItems() {
+    const prods = catalog
+      .map((p) => ({ p, qty: Number(reqQtysRef.current[p.id]) || 0 }))
+      .filter(({ qty }) => qty > 0)
+      .map(({ p, qty }) => ({ productId: p.id, name: p.name, unit: reqUnitsRef.current[p.id] || p.unit, qty }));
+    const cust = (customRef.current || [])
+      .filter((c) => Number(c.qty) > 0)
+      .map((c) => ({ productId: c.id, name: c.name, unit: c.unit || "", qty: Number(c.qty), custom: true }));
+    return [...prods, ...cust];
+  }
 
   async function flushDraftSave(items, note) {
     await persistUnitRequests((list) => {
@@ -2154,11 +2183,12 @@ function UnitRequestTab({
     });
   }
 
-  function scheduleDraftSave(items, note) {
+  function scheduleSave() {
+    if (locked) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => {
       saveTimer.current = null;
-      flushDraftSave(items, note);
+      flushDraftSave(buildCurrentItems(), noteRef.current || "");
     }, 700);
   }
 
@@ -2168,45 +2198,43 @@ function UnitRequestTab({
       if (saveTimer.current) {
         clearTimeout(saveTimer.current);
         saveTimer.current = null;
-        flushDraftSave(draftItemsRef.current || [], noteRef.current || "");
+        flushDraftSave(buildCurrentItems(), noteRef.current || "");
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Every item edit: update the visible buffer synchronously, then schedule a save.
-  function editDraftItems(mutator) {
+  // --- Synchronous map setters (read refs so the newest value is always the base) ---
+  function applyQty(pid, qty, unit) {
     if (locked) { showToast("הבקשה כבר נשלחה - לא ניתן לשנות"); return; }
-    setDraftItems((prev) => {
-      const next = mutator(prev || []);
-      scheduleDraftSave(next, noteRef.current || "");
-      return next;
-    });
+    const q = Math.max(0, Number(qty) || 0);
+    const nq = { ...reqQtysRef.current, [pid]: q };
+    reqQtysRef.current = nq; setReqQtys(nq);
+    if (unit !== undefined) {
+      const nu = { ...reqUnitsRef.current, [pid]: unit };
+      reqUnitsRef.current = nu; setReqUnits(nu);
+    }
+    scheduleSave();
+  }
+  function setCustom(nextArr) {
+    if (locked) { showToast("הבקשה כבר נשלחה - לא ניתן לשנות"); return; }
+    customRef.current = nextArr; setCustomList(nextArr);
+    scheduleSave();
   }
 
-  // ---- Editing the open draft ----
-  // All edits mutate the LOCAL buffer (draftItems) synchronously via editDraftItems,
-  // so the screen updates instantly and the background save is coalesced. This is the
-  // single source of truth for the open draft; `current` is only used to seed it.
+  // ---- Editing the open draft (map model, identical in spirit to OrderTab) ----
 
   async function saveNote(text) {
     if (locked) return;
     setNoteDraft(text);
     noteRef.current = text;
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
-    await flushDraftSave(draftItemsRef.current || [], text || "");
+    await flushDraftSave(buildCurrentItems(), text || "");
   }
 
-  async function setQty(product, qty, unit) {
-    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    const q = Math.max(0, Number(qty) || 0);
-    editDraftItems((items) => {
-      const idx = items.findIndex((i) => i.productId === product.id);
-      const u = unit || (idx >= 0 ? items[idx].unit : undefined) || product.unit;
-      if (q <= 0) return items.filter((i) => i.productId !== product.id);
-      if (idx >= 0) return items.map((i) => (i.productId === product.id ? { ...i, qty: q, unit: u } : i));
-      return [...items, { productId: product.id, name: product.name, unit: u, qty: q, uid: genId() }];
-    });
+  // Catalog quantity/unit: a plain keyed update, exactly like OrderTab's setQtys.
+  function setQty(product, qty, unit) {
+    applyQty(product.id, qty, unit);
   }
 
   // Add a free-text product that isn't in the catalog.
@@ -2214,41 +2242,31 @@ function UnitRequestTab({
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const name = customName.trim();
     if (!name) return;
-    editDraftItems((items) => [...items, { productId: "custom-" + genId(), name, unit: "", qty: 1, custom: true, uid: genId() }]);
+    setCustom([...(customRef.current || []), { id: "custom-" + genId(), name, qty: 1, unit: "" }]);
     setCustomName("");
-  }
-  function updateCustomQty(pid, qty) {
-    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    const q = Math.max(0, Number(qty) || 0);
-    editDraftItems((items) => items.map((i) => (i.productId === pid ? { ...i, qty: q } : i)));
-  }
-  function removeItem(pid) {
-    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    editDraftItems((items) => items.filter((i) => i.productId !== pid));
   }
 
   function loadFromTemplate() {
     if (locked) return showToast("הבקשה כבר נשלחה");
     if (template.length === 0) return showToast("לא הוגדרה רשימה שבועית קבועה");
-    const tItems = template
-      .map((t) => {
-        const p = catalog.find((x) => x.id === t.productId);
-        return p ? { productId: p.id, name: p.name, unit: p.unit, qty: t.qty, uid: genId() } : null;
-      })
-      .filter(Boolean);
-    editDraftItems(() => tItems);
-    showToast(`נטענו ${tItems.length} מוצרים מהרשימה הקבועה`);
+    const nq = { ...reqQtysRef.current };
+    let n = 0;
+    template.forEach((t) => {
+      if (catalog.find((x) => x.id === t.productId)) { nq[t.productId] = Number(t.qty) || 0; n++; }
+    });
+    reqQtysRef.current = nq; setReqQtys(nq); scheduleSave();
+    showToast(`נטענו ${n} מוצרים מהרשימה הקבועה`);
   }
 
   async function saveAsTemplate() {
-    const items = (draftItems || []).map((i) => ({ productId: i.productId, qty: i.qty }));
+    const items = buildCurrentItems().filter((i) => !isCustomItem(i)).map((i) => ({ productId: i.productId, qty: i.qty }));
     if (items.length === 0) return showToast("אין מוצרים לשמור");
     await persistUnitTemplates({ ...(unitTemplates || {}), [currentUser.id]: items });
     showToast("נשמר כרשימה שבועית קבועה ✓");
   }
 
   async function submit() {
-    const items = (draftItems || []).filter((i) => Number(i.qty) > 0);
+    const items = buildCurrentItems();
     if (items.length === 0) return showToast("הבקשה ריקה");
     if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
     const submittedId = draftIdRef.current;
@@ -2273,9 +2291,8 @@ function UnitRequestTab({
     }
     // Start a fresh empty draft.
     draftIdRef.current = null;
-    setDraftItems([]);
-    setNoteDraft("");
-    noteRef.current = "";
+    reqQtysRef.current = {}; reqUnitsRef.current = {}; customRef.current = []; noteRef.current = "";
+    setReqQtys({}); setReqUnits({}); setCustomList([]); setNoteDraft("");
     setAddingMore(false);
     showToast("הבקשה נשלחה ✓ אפשר להכין בקשה נוספת");
   }
@@ -2295,26 +2312,36 @@ function UnitRequestTab({
 
   // Load a previous request's items into this week's draft, so it can be edited and re-sent.
   function reuseRequest(r) {
-    const items = (r.items || []).map((i) => ({ ...i, uid: i.uid || genId() }));
-    editDraftItems(() => items);
+    const { nq, nu, cust } = seedFromItems(r.items);
+    reqQtysRef.current = nq; reqUnitsRef.current = nu; customRef.current = cust;
+    setReqQtys(nq); setReqUnits(nu); setCustomList(cust);
+    scheduleSave();
     setView("current");
     showToast("הבקשה הועתקה לעריכה — אפשר לשנות ולשלוח מחדש");
   }
 
-  // Edit a row in the weekly order BY POSITION (index): only that row changes, so two
-  // items that share a productId stay independent and a tap never touches a sibling.
-  function setRowQty(idx, qty) {
-    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    const q = Math.max(0, Number(qty) || 0);
-    editDraftItems((items) => items.map((i, j) => (j === idx ? { ...i, qty: q } : i)));
+  // Row edits in the weekly order, by the item's own identity (productId / custom id),
+  // so one row never touches another — the same keyed model as the orders screen.
+  function rowSetQty(item, qty) {
+    if (isCustomItem(item)) {
+      setCustom((customRef.current || []).map((c) => (c.id === item.productId ? { ...c, qty: Math.max(0, Number(qty) || 0) } : c)));
+    } else {
+      applyQty(item.productId, qty);
+    }
   }
-  function setRowUnit(idx, unit) {
-    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    editDraftItems((items) => items.map((i, j) => (j === idx ? { ...i, unit } : i)));
+  function rowSetUnit(item, unit) {
+    if (isCustomItem(item)) {
+      setCustom((customRef.current || []).map((c) => (c.id === item.productId ? { ...c, unit } : c)));
+    } else {
+      applyQty(item.productId, Number(reqQtysRef.current[item.productId]) || 0, unit);
+    }
   }
-  function removeRow(idx) {
-    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    editDraftItems((items) => items.filter((_, j) => j !== idx));
+  function rowRemove(item) {
+    if (isCustomItem(item)) {
+      setCustom((customRef.current || []).filter((c) => c.id !== item.productId));
+    } else {
+      applyQty(item.productId, 0);
+    }
   }
 
   // Receipt tracking on a sent request: tap an item to toggle "missing".
@@ -2459,10 +2486,20 @@ function UnitRequestTab({
     showToast("התמונה ירדה - אפשר להדפיס או לשתף אותה מהגלריה");
   }
 
-  const qtyOf = (id) => (draftItems || []).find((i) => i.productId === id)?.qty || 0;
-  const unitOf = (p) => (draftItems || []).find((i) => i.productId === p.id)?.unit || p.unit;
-  const totalItems = (draftItems || []).length;
-  const customItems = (draftItems || []).filter((i) => i.custom);
+  // The weekly-order rows, derived from state every render (catalog order, then custom).
+  const draftItems = [
+    ...catalog
+      .map((p) => ({ p, qty: Number(reqQtys[p.id]) || 0 }))
+      .filter(({ qty }) => qty > 0)
+      .map(({ p, qty }) => ({ productId: p.id, name: p.name, unit: reqUnits[p.id] || p.unit, qty })),
+    ...(customList || [])
+      .filter((c) => Number(c.qty) > 0)
+      .map((c) => ({ productId: c.id, name: c.name, unit: c.unit || "", qty: Number(c.qty), custom: true })),
+  ];
+  const qtyOf = (id) => Number(reqQtys[id]) || 0;
+  const unitOf = (p) => reqUnits[p.id] || p.unit;
+  const totalItems = draftItems.length;
+  const customItems = draftItems.filter((i) => i.custom);
 
   return (
     <div>
@@ -2498,21 +2535,20 @@ function UnitRequestTab({
                   )}
 
                   <div className="flex flex-col gap-1 mt-2">
-                    {(draftItems || []).map((i, idx) => {
+                    {draftItems.map((i) => {
                       const isBox = i.unit === "ארגז";
-                      const step = 1; // whole-unit steps for every unit (incl. ארגז)
                       const opts = unitOptions(settings, [i.unit]);
                       return (
-                        <div key={i.uid || idx} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
+                        <div key={i.productId} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
                           <span className="font-bold text-sm flex-1" style={{ color: C.ink }}>{i.name}</span>
                           <div className="flex items-center gap-1">
-                            <button onClick={() => setRowQty(idx, Math.max(0, (Number(i.qty) || 0) - step))} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>−</button>
-                            <input type="number" step={step} value={i.qty === 0 ? "" : i.qty} onChange={(e) => setRowQty(idx, e.target.value)} className="w-12 text-center p-1 rounded-lg border text-sm" style={{ borderColor: C.kraftDark }} />
-                            <button onClick={() => setRowQty(idx, (Number(i.qty) || 0) + step)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>+</button>
-                            <select value={i.unit || "יח׳"} onChange={(e) => setRowUnit(idx, e.target.value)} className="px-1 h-7 rounded-lg font-bold text-xs" style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                            <button onClick={() => rowSetQty(i, Math.max(0, (Number(i.qty) || 0) - 1))} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>−</button>
+                            <input type="number" inputMode="numeric" value={i.qty === 0 ? "" : i.qty} onChange={(e) => rowSetQty(i, e.target.value)} className="w-12 text-center p-1 rounded-lg border text-sm" style={{ borderColor: C.kraftDark }} />
+                            <button onClick={() => rowSetQty(i, (Number(i.qty) || 0) + 1)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>+</button>
+                            <select value={i.unit || "יח׳"} onChange={(e) => rowSetUnit(i, e.target.value)} className="px-1 h-7 rounded-lg font-bold text-xs" style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
                               {opts.map((o) => <option key={o} value={o}>{o}</option>)}
                             </select>
-                            <button onClick={() => removeRow(idx)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
+                            <button onClick={() => rowRemove(i)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
                           </div>
                         </div>
                       );
