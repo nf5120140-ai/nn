@@ -2111,7 +2111,7 @@ function UnitRequestTab({
   // synchronously on every tap, so rows never flicker or vanish for a frame while
   // a background save / realtime echo is in flight. Saves are coalesced (~0.7s) so
   // rapid +/- presses collapse into one write ("sync every few seconds").
-  const [draftItems, setDraftItems] = useState(() => (current?.items ? current.items.map((x) => ({ ...x })) : []));
+  const [draftItems, setDraftItems] = useState(() => (current?.items ? current.items.map((x) => ({ ...x, uid: x.uid || genId() })) : []));
   const draftIdRef = useRef(current?.id || null);
   const draftItemsRef = useRef(draftItems);
   const noteRef = useRef(noteDraft);
@@ -2125,7 +2125,7 @@ function UnitRequestTab({
   useEffect(() => {
     if ((current?.id || null) !== draftIdRef.current) {
       draftIdRef.current = current?.id || null;
-      setDraftItems(current?.items ? current.items.map((x) => ({ ...x })) : []);
+      setDraftItems(current?.items ? current.items.map((x) => ({ ...x, uid: x.uid || genId() })) : []);
       setNoteDraft(current?.note || "");
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2205,7 +2205,7 @@ function UnitRequestTab({
       const u = unit || (idx >= 0 ? items[idx].unit : undefined) || product.unit;
       if (q <= 0) return items.filter((i) => i.productId !== product.id);
       if (idx >= 0) return items.map((i) => (i.productId === product.id ? { ...i, qty: q, unit: u } : i));
-      return [...items, { productId: product.id, name: product.name, unit: u, qty: q }];
+      return [...items, { productId: product.id, name: product.name, unit: u, qty: q, uid: genId() }];
     });
   }
 
@@ -2214,7 +2214,7 @@ function UnitRequestTab({
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const name = customName.trim();
     if (!name) return;
-    editDraftItems((items) => [...items, { productId: "custom-" + genId(), name, unit: "", qty: 1, custom: true }]);
+    editDraftItems((items) => [...items, { productId: "custom-" + genId(), name, unit: "", qty: 1, custom: true, uid: genId() }]);
     setCustomName("");
   }
   function updateCustomQty(pid, qty) {
@@ -2233,7 +2233,7 @@ function UnitRequestTab({
     const tItems = template
       .map((t) => {
         const p = catalog.find((x) => x.id === t.productId);
-        return p ? { productId: p.id, name: p.name, unit: p.unit, qty: t.qty } : null;
+        return p ? { productId: p.id, name: p.name, unit: p.unit, qty: t.qty, uid: genId() } : null;
       })
       .filter(Boolean);
     editDraftItems(() => tItems);
@@ -2295,7 +2295,7 @@ function UnitRequestTab({
 
   // Load a previous request's items into this week's draft, so it can be edited and re-sent.
   function reuseRequest(r) {
-    const items = (r.items || []).map((i) => ({ ...i }));
+    const items = (r.items || []).map((i) => ({ ...i, uid: i.uid || genId() }));
     editDraftItems(() => items);
     setView("current");
     showToast("הבקשה הועתקה לעריכה — אפשר לשנות ולשלוח מחדש");
@@ -2503,7 +2503,7 @@ function UnitRequestTab({
                       const step = 1; // whole-unit steps for every unit (incl. ארגז)
                       const opts = unitOptions(settings, [i.unit]);
                       return (
-                        <div key={idx} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
+                        <div key={i.uid || idx} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
                           <span className="font-bold text-sm flex-1" style={{ color: C.ink }}>{i.name}</span>
                           <div className="flex items-center gap-1">
                             <button onClick={() => setRowQty(idx, Math.max(0, (Number(i.qty) || 0) - step))} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>−</button>
