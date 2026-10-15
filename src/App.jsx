@@ -4108,7 +4108,24 @@ function App() {
       [KEYS.dishTypes]: async () => setDishTypes((await loadKey(KEYS.dishTypes, [])) || []),
       [KEYS.taskCategories]: async () => setTaskCategories((await loadKey(KEYS.taskCategories, [])) || []),
       [KEYS.orderRequests]: async () => setOrderRequests((await loadKey(KEYS.orderRequests, [])) || []),
-      [KEYS.unitRequests]: async () => setUnitRequests((await loadKey(KEYS.unitRequests, [])) || []),
+      [KEYS.unitRequests]: async () => {
+        // Merge by request id instead of overwriting, so a realtime reload (even the
+        // echo of your own save, or another device) never clobbers in-progress edits.
+        // Server wins for a request ONLY if its version is strictly newer than the
+        // local one; otherwise the local (just-edited) version is kept.
+        const server = (await loadKey(KEYS.unitRequests, [])) || [];
+        const ts = (r) => Number(r && (r.updatedAt || r.fulfilledAt || r.submittedAt || r.createdAt)) || 0;
+        setUnitRequests((local) => {
+          const byId = new Map();
+          (local || []).forEach((r) => { if (r && r.id) byId.set(r.id, r); });
+          server.forEach((r) => {
+            if (!r || !r.id) return;
+            const cur = byId.get(r.id);
+            if (!cur || ts(r) > ts(cur)) byId.set(r.id, r);
+          });
+          return [...byId.values()];
+        });
+      },
       [KEYS.unitTemplates]: async () => setUnitTemplates((await loadKey(KEYS.unitTemplates, {})) || {}),
       [KEYS.personalPurchases]: async () => setPersonalPurchases((await loadKey(KEYS.personalPurchases, [])) || []),
     };
