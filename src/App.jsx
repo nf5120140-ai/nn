@@ -2224,19 +2224,24 @@ function UnitRequestTab({
     showToast("הבקשה הועתקה לעריכה — אפשר לשנות ולשלוח מחדש");
   }
 
-  // Edit a row in the accumulating weekly order (works for catalog and custom items).
-  async function setRowQty(pid, qty) {
+  // Edit a row in the accumulating weekly order BY POSITION (index), so two items that
+  // happen to share a productId stay independent - fixes "changing one changes several".
+  async function setRowQty(idx, qty) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
     const q = Math.max(0, Number(qty) || 0);
     const items = (current?.items || [])
-      .map((i) => (i.productId === pid ? { ...i, qty: q } : i))
+      .map((i, j) => (j === idx ? { ...i, qty: q } : i))
       .filter((i) => Number(i.qty) > 0);
     await upsertCurrent(items);
   }
-  async function setRowUnit(pid, unit) {
+  async function setRowUnit(idx, unit) {
     if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
-    const items = (current?.items || []).map((i) => (i.productId === pid ? { ...i, unit } : i));
+    const items = (current?.items || []).map((i, j) => (j === idx ? { ...i, unit } : i));
     await upsertCurrent(items);
+  }
+  async function removeRow(idx) {
+    if (locked) return showToast("הבקשה כבר נשלחה - לא ניתן לשנות");
+    await upsertCurrent((current?.items || []).filter((_, j) => j !== idx));
   }
 
   // Receipt tracking on a sent request: tap an item to toggle "missing".
@@ -2420,21 +2425,21 @@ function UnitRequestTab({
                   )}
 
                   <div className="flex flex-col gap-1 mt-2">
-                    {(current.items || []).map((i) => {
+                    {(current.items || []).map((i, idx) => {
                       const isBox = i.unit === "ארגז";
                       const step = isBox ? 0.5 : 1;
                       const opts = unitOptions(settings, [i.unit]);
                       return (
-                        <div key={i.productId} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
+                        <div key={idx} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
                           <span className="font-bold text-sm flex-1" style={{ color: C.ink }}>{i.name}</span>
                           <div className="flex items-center gap-1">
-                            <button onClick={() => setRowQty(i.productId, Math.max(0, (Number(i.qty) || 0) - step))} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>−</button>
-                            <input type="number" step={step} value={i.qty === 0 ? "" : i.qty} onChange={(e) => setRowQty(i.productId, e.target.value)} className="w-12 text-center p-1 rounded-lg border text-sm" style={{ borderColor: C.kraftDark }} />
-                            <button onClick={() => setRowQty(i.productId, (Number(i.qty) || 0) + step)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>+</button>
-                            <select value={i.unit || "יח׳"} onChange={(e) => setRowUnit(i.productId, e.target.value)} className="px-1 h-7 rounded-lg font-bold text-xs" style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                            <button onClick={() => setRowQty(idx, Math.max(0, (Number(i.qty) || 0) - step))} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>−</button>
+                            <input type="number" step={step} value={i.qty === 0 ? "" : i.qty} onChange={(e) => setRowQty(idx, e.target.value)} className="w-12 text-center p-1 rounded-lg border text-sm" style={{ borderColor: C.kraftDark }} />
+                            <button onClick={() => setRowQty(idx, (Number(i.qty) || 0) + step)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>+</button>
+                            <select value={i.unit || "יח׳"} onChange={(e) => setRowUnit(idx, e.target.value)} className="px-1 h-7 rounded-lg font-bold text-xs" style={{ background: isBox ? C.mustard : C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
                               {opts.map((o) => <option key={o} value={o}>{o}</option>)}
                             </select>
-                            <button onClick={() => removeItem(i.productId)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
+                            <button onClick={() => removeRow(idx)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
                           </div>
                         </div>
                       );
