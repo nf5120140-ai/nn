@@ -4310,6 +4310,32 @@ function App() {
     setProducts(next);
     await saveKey(KEYS.products, next);
   }
+
+  // Self-heal duplicate/empty product ids. When two products share an id (a data
+  // error from importing/duplicating), quantity tracking keys collide: editing one
+  // product changes another, and inputs lose focus (needing a double tap). Reassign
+  // fresh ids to the duplicates once, so each product is addressed independently.
+  const idHealRef = useRef(false);
+  useEffect(() => {
+    if (!loaded || idHealRef.current) return;
+    if (!Array.isArray(products) || products.length === 0) return;
+    const seen = new Set();
+    let changed = false;
+    const fixed = products.map((p) => {
+      if (!p || !p.id || seen.has(p.id)) {
+        changed = true;
+        const nid = genId();
+        seen.add(nid);
+        return { ...p, id: nid };
+      }
+      seen.add(p.id);
+      return p;
+    });
+    if (changed) {
+      idHealRef.current = true;
+      persistProducts(fixed);
+    }
+  }, [loaded, products]);
   async function updateUserProfile(id, fields) {
     await window.auth.updateProfile(id, fields);
     setUsers((cur) =>
