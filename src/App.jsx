@@ -6496,13 +6496,17 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
     const chosenDishNames = [];
     WEEK_DAYS.forEach(([dayKey]) => {
       MEAL_SLOTS.forEach(([slotKey]) => {
-        dishTypesForSlot(dishTypes, slotKey).forEach((dt) => {
-          const menuItemId = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
+        // Iterate EVERY filled cell in this slot (by its stored dish-type key),
+        // not only the dish-types that currently pass the slot filter — otherwise a
+        // dish written in a slot whose type was reassigned/filtered is silently
+        // dropped from the order (the "תוספת that doesn't show up" bug).
+        const slotMap = weeklyMenu[dayKey]?.[slotKey] || {};
+        Object.values(slotMap).forEach((menuItemId) => {
           if (!menuItemId) return;
           const m = menuItems.find((mi) => mi.id === menuItemId);
           if (!m) return;
           chosenDishNames.push(m.name);
-          m.ingredients.forEach((ing) => {
+          (m.ingredients || []).forEach((ing) => {
             needed[ing.productId] = (needed[ing.productId] || 0) + ing.qty * Number(weekPortions || 1);
           });
         });
@@ -6519,8 +6523,33 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
     return { rows, chosenDishNames };
   })();
 
+  // How much was ordered LAST time for each product, from order history (newest first).
+  // Matched by productId when available, otherwise by name (older history had no id).
+  const lastOrderedQty = (() => {
+    const map = {};
+    const byName = {};
+    (orderHistory || []).forEach((o) => {
+      (o && o.items || []).forEach((it) => {
+        const q = Number(it.qty) || 0;
+        if (q <= 0) return;
+        if (it.productId != null && map[it.productId] == null) map[it.productId] = q;
+        if (it.name && byName[it.name] == null) byName[it.name] = q;
+      });
+    });
+    return { byId: map, byName };
+  })();
+  function lastQtyFor(product) {
+    if (!product) return undefined;
+    if (lastOrderedQty.byId[product.id] != null) return lastOrderedQty.byId[product.id];
+    if (lastOrderedQty.byName[product.name] != null) return lastOrderedQty.byName[product.name];
+    return undefined;
+  }
+
+  // Default the quantity to what the user typed, else last week's order, else the deficit.
   function getQty(store, product, deficit) {
-    return store[product.id] ?? deficit;
+    if (store[product.id] != null) return store[product.id];
+    const last = lastQtyFor(product);
+    return last != null ? last : deficit;
   }
 
   function togglePicked(id) {
@@ -7466,7 +7495,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
       supplierId: supplierId || null,
       supplierName: supName,
       by: currentUser?.name || "",
-      items: items.map(({ product, qty }) => ({ name: product.name, unit: product.unit, qty, price: Number(product.price || 0) })),
+      items: items.map(({ product, qty }) => ({ productId: product.id, name: product.name, unit: product.unit, qty, price: Number(product.price || 0) })),
       total: items.reduce((sum, { product, qty }) => sum + Number(product.price || 0) * Number(qty), 0),
     });
   }
