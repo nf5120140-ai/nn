@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
+import DormRoomsTab, { DORM_KEYS } from "./DormRooms";
 
 /* ---------- Design tokens ---------- */
 const C = {
@@ -231,6 +232,7 @@ const DEFAULT_PERMISSIONS = {
   order: false,
   tasks: true,
   unitRequest: false,
+  dorms: false,                // ניהול חדרים (פנימייה)
   taskScope: "own",            // "own" | "categories" | "all"
   visibleTaskCategories: [],   // used only when taskScope === "categories"
   hideDashboard: false,        // true -> this worker never sees the home dashboard
@@ -265,6 +267,11 @@ function canRequestFromStock(user) {
   return isManager(user) || user?.permissions?.unitRequest === true;
 }
 
+/** ניהול חדרים בפנימייה - מנהל, או עובד שקיבל הרשאה */
+function canManageDorms(user) {
+  return isManager(user) || user?.permissions?.dorms === true;
+}
+
 const isManager = (u) => u?.role === "manager";
 const isSupervisor = (u) => u?.role === "supervisor";
 
@@ -295,6 +302,7 @@ function workerAreas(user) {
   if (perms.inventory !== false) areas.push("inventory");
   if (perms.order !== false) areas.push("order");
   if (perms.unitRequest === true) areas.push("unitrequest");
+  if (perms.dorms === true) areas.push("dorms");
   if (hasAnyAdminSection(user)) areas.push("admin");
   return areas;
 }
@@ -3771,6 +3779,7 @@ function App() {
   const [taskCategories, setTaskCategories] = useState([]);
   const [orderRequests, setOrderRequests] = useState([]);
   const [unitRequests, setUnitRequests] = useState([]);
+  const [dormSignal, setDormSignal] = useState(0); // bumps when dorm data changes on another device
   const unitRequestsRef = useRef([]); // always holds the latest list, so rapid edits chain correctly
   useEffect(() => { unitRequestsRef.current = unitRequests; }, [unitRequests]);
   const [unitTemplates, setUnitTemplates] = useState({});
@@ -4240,6 +4249,9 @@ function App() {
       },
       [KEYS.unitTemplates]: async () => setUnitTemplates((await loadKey(KEYS.unitTemplates, {})) || {}),
       [KEYS.personalPurchases]: async () => setPersonalPurchases((await loadKey(KEYS.personalPurchases, [])) || []),
+      [DORM_KEYS.rooms]: async () => setDormSignal((n) => n + 1),
+      [DORM_KEYS.students]: async () => setDormSignal((n) => n + 1),
+      [DORM_KEYS.deletes]: async () => setDormSignal((n) => n + 1),
     };
     window.auth.subscribeToOrgChanges((payload) => {
       const rawKey = payload.new?.key || payload.old?.key;
@@ -5154,6 +5166,17 @@ function App() {
             locations={locations}
           />
         )}
+        {tab === "dorms" && canManageDorms(currentUser) && (
+          <DormRoomsTab
+            C={C}
+            currentUser={currentUser}
+            showToast={showToast}
+            loadKey={loadKey}
+            saveKey={saveKey}
+            loadListFresh={loadListFresh}
+            reloadSignal={dormSignal}
+          />
+        )}
         {tab === "unitrequest" && canRequestFromStock(currentUser) && (
           <UnitRequestTab
             products={products}
@@ -5255,6 +5278,13 @@ function App() {
                   label="🗺️ מפת המוסד"
                   active={tab === "map"}
                   onClick={() => { setTab("map"); setShowMenu(false); }}
+                />
+              )}
+              {canManageDorms(currentUser) && (
+                <DrawerItem
+                  label="🛏️ ניהול חדרים"
+                  active={tab === "dorms"}
+                  onClick={() => { setTab("dorms"); setShowMenu(false); }}
                 />
               )}
               {canRequestFromStock(currentUser) && (
@@ -16020,6 +16050,20 @@ function UsersAdmin({ users, updateUserProfile, deleteUserProfile, showToast, cu
                         בקשה מהמחסן
                         <span className="block text-xs" style={{ color: C.steel }}>
                           ליחידות כמו המעון - מזמינים מהמלאי שלך ואתה מנפיק. אם זו ההרשאה היחידה, הם יראו רק את המסך הזה.
+                        </span>
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2 text-sm" style={{ color: C.ink }}>
+                      <input
+                        type="checkbox"
+                        checked={perms.dorms === true}
+                        onChange={(e) => setPerm("dorms", e.target.checked)}
+                        style={{ marginTop: 4 }}
+                      />
+                      <span>
+                        🛏️ ניהול חדרים
+                        <span className="block text-xs" style={{ color: C.steel }}>
+                          סידור הבחורים בחדרי הפנימייה - הוספה, העברה, מפת חדרים והדפסה.
                         </span>
                       </span>
                     </label>
