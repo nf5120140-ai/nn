@@ -1,14 +1,11 @@
-[
-  {
-    "relation": [
-      "delegate_permission/common.handle_all_urls"
-    ],
-    "target": {
-      "namespace": "android_app",
-      "package_name": "com.naftalikempe.app",
-      "sha256_cert_fingerprints": [
-        "44:66:0A:CD:10:57:34:47:DF:98:29:ED:F4:51:97:16:6A:55:C0:DF:9B:12:55:15:D8:FA:D1:CA:0B:AC:DA:45"
-      ]
-    }
+[{
+  "relation": ["delegate_permission/common.handle_all_urls"],
+  "target": {
+    "namespace": "android_app",
+    "package_name": "naftalikempe.Com",
+    "sha256_cert_fingerprints": [
+      "F8:FC:B4:2E:27:89:17:95:58:84:3A:63:48:3F:97:B9:83:B1:26:C8:91:5D:42:C2:04:22:77:5F:E8:DA:0B:5A",
+      "6B:DF:E9:69:D8:E9:37:AA:6C:FB:F4:C3:9E:6E:D2:6C:B0:93:39:28:20:77:CB:14:43:A7:94:BE:E2:5D:26:4D"
+    ]
   }
-]
+}]
