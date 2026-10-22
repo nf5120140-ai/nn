@@ -903,7 +903,7 @@ async function registerBiometric(displayName) {
   const userId = crypto.getRandomValues(new Uint8Array(16));
   const publicKey = {
     challenge,
-    rp: { name: "ניהול משימות ומלאי מוסדי" },
+    rp: { name: "ישיבוס" },
     user: { id: userId, name: displayName || "user", displayName: displayName || "user" },
     pubKeyCredParams: [
       { type: "public-key", alg: -7 },
@@ -988,8 +988,8 @@ async function showOsNotification(title, body, tag, extra) {
   if (!notificationsSupported() || Notification.permission !== "granted") return;
   const options = {
     body,
-    icon: "/icon-192-v2.png",
-    badge: "/icon-192-v2.png",
+    icon: "/yeshivus-icon-192.png",
+    badge: "/badge-96.png",
     tag: tag || undefined,
     dir: "rtl",
     lang: "he",
@@ -1375,7 +1375,7 @@ function AuthGate({ onAuthed }) {
         style={{
           position: "fixed",
           inset: 0,
-          backgroundImage: "url(/icon-512-v2.png)",
+          backgroundImage: "url(/yeshivus-icon-512.png)",
           backgroundRepeat: "no-repeat",
           backgroundPosition: "center",
           backgroundSize: "70vw",
@@ -1385,7 +1385,7 @@ function AuthGate({ onAuthed }) {
       />
       <div className="w-full max-w-xs" style={{ position: "relative" }}>
         <h1 className="wh-display text-2xl font-black mb-1 text-center" style={{ color: C.ink }}>
-          ניהול משימות ומלאי מוסדי
+          ישיבוס
         </h1>
         <p className="text-center text-sm mb-6" style={{ color: C.steel }}>
           כל ארגון מקבל מרחב נתונים נפרד ומאובטח משלו
@@ -1541,7 +1541,7 @@ function Login({ users, onLogin, onFirstRun, onDisconnect }) {
       <style>{FONTS}</style>
       <div className="w-full max-w-xs">
         <h1 className="wh-display text-2xl font-black mb-1 text-center" style={{ color: C.ink }}>
-          ניהול משימות ומלאי מוסדי
+          ישיבוס
         </h1>
         <p className="text-center text-sm mb-6" style={{ color: C.steel }}>
           כניסה למערכת ניהול המלאי
@@ -1705,10 +1705,13 @@ const SPLASH_CSS = `
 `;
 
 function SplashScreen() {
+  // Matches the Android (TWA) launch screen: same cream background + same icon,
+  // so the hand-off from the native splash to the web splash is seamless.
+  const NAVY = "#0B1F3F";
   return (
     <div
       className="wh-splash fixed inset-0 z-[100] flex flex-col items-center justify-center wh-body"
-      style={{ background: `linear-gradient(160deg, ${C.accent} 0%, ${C.accent2} 100%)` }}
+      style={{ background: "#F5F1E6" }}
       dir="rtl"
     >
       <style>{FONTS}</style>
@@ -1716,51 +1719,42 @@ function SplashScreen() {
 
       <div className="relative flex items-center justify-center mb-7">
         <span
-          className="wh-splash-ring absolute rounded-full"
-          style={{ width: 168, height: 168, border: "2px solid rgba(255,255,255,0.7)" }}
+          className="wh-splash-ring absolute"
+          style={{ width: 176, height: 176, borderRadius: 44, border: "2px solid rgba(11,31,63,0.35)" }}
         />
         <span
-          className="wh-splash-ring absolute rounded-full"
-          style={{ width: 168, height: 168, border: "2px solid rgba(255,255,255,0.7)", animationDelay: "600ms" }}
+          className="wh-splash-ring absolute"
+          style={{ width: 176, height: 176, borderRadius: 44, border: "2px solid rgba(11,31,63,0.35)", animationDelay: "600ms" }}
         />
-        <div
-          className="wh-splash-logo rounded-3xl flex items-center justify-center"
-          style={{
-            width: 132,
-            height: 132,
-            background: C.kraft,
-            boxShadow: "0 18px 44px rgba(20,33,61,0.28)",
-          }}
-        >
-          <img
-            src="/icon-512-v2.png"
-            alt=""
-            style={{ width: 104, height: 104, objectFit: "contain" }}
-          />
-        </div>
+        <img
+          className="wh-splash-logo"
+          src="/yeshivus-icon-512.png"
+          alt="ישיבוס"
+          style={{ width: 160, height: 160, objectFit: "contain", filter: "drop-shadow(0 18px 30px rgba(11,31,63,0.28))" }}
+        />
       </div>
 
       <div
         className="wh-splash-title wh-display text-center font-black"
-        style={{ color: "#fff", fontSize: 26, letterSpacing: "-0.5px", textShadow: "0 2px 12px rgba(20,33,61,0.25)" }}
+        style={{ color: NAVY, fontSize: 26, letterSpacing: "-0.5px" }}
       >
         ברוכים הבאים
       </div>
       <div
         className="wh-splash-sub wh-display text-center font-bold mt-1.5"
-        style={{ color: "rgba(255,255,255,0.95)", fontSize: 19 }}
+        style={{ color: "#3D5478", fontSize: 19 }}
       >
         {(() => {
-          try { return localStorage.getItem("kitchen-welcome-subtitle") || "לניהול משק חכם"; }
-          catch (e) { return "לניהול משק חכם"; }
+          try { return localStorage.getItem("kitchen-welcome-subtitle") || "ניהול חכם לישיבה"; }
+          catch (e) { return "ניהול חכם לישיבה"; }
         })()}
       </div>
 
       <div
         className="mt-9 rounded-full overflow-hidden"
-        style={{ width: 132, height: 3, background: "rgba(255,255,255,0.28)" }}
+        style={{ width: 132, height: 3, background: "rgba(11,31,63,0.12)" }}
       >
-        <div className="wh-splash-bar h-full rounded-full" style={{ background: C.kraft }} />
+        <div className="wh-splash-bar h-full rounded-full" style={{ background: "linear-gradient(90deg, #3B8FE0, #62CC5A)" }} />
       </div>
     </div>
   );
@@ -4776,7 +4770,7 @@ function App() {
       ...managers.map((u) => ({ id: genId(), userId: u.id, message, link, read: false, createdAt: Date.now() })),
     ];
     await persistNotifications(next);
-    pushTo(managers.map((u) => u.id), "ניהול משק חכם", message, link);
+    pushTo(managers.map((u) => u.id), "ישיבוס", message, link);
   }
   /* `link` tells the notification bell where to jump when tapped, e.g.
      { tab: "tasks", taskId } or { tab: "admin", section: "unitrequests" }. */
@@ -4789,7 +4783,7 @@ function App() {
       { id: genId(), userId, message, link, read: false, createdAt: Date.now() },
     ];
     await persistNotifications(next);
-    pushTo([userId], "ניהול משק חכם", message, link);
+    pushTo([userId], "ישיבוס", message, link);
   }
   async function notifyUser(userId, message, link) {
     // Never notify the person performing the action — no self-pop on your own task.
@@ -4906,7 +4900,7 @@ function App() {
         style={{
           position: "fixed",
           inset: 0,
-          backgroundImage: "url(/icon-512-v2.png)",
+          backgroundImage: "url(/yeshivus-icon-512.png)",
           backgroundRepeat: "no-repeat",
           backgroundPosition: "center",
           backgroundSize: "60vw",
@@ -4929,7 +4923,7 @@ function App() {
             ☰
           </button>
           <div>
-            <div className="wh-display font-black text-lg" style={{ color: C.paper }}>ניהול משימות ומלאי מוסדי</div>
+            <div className="wh-display font-black text-lg" style={{ color: C.paper }}>ישיבוס</div>
             <div className="text-xs" style={{ color: C.kraft }}>
               {currentUser.name} · {roleLabel(currentUser.role)}
             </div>
@@ -5245,7 +5239,7 @@ function App() {
             style={{ width: "78%", maxWidth: 300, background: C.paper, boxShadow: "-8px 0 24px rgba(35,31,61,0.25)", borderRadius: "24px 0 0 24px" }}
           >
             <div className="p-4" style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "24px 0 0 0" }}>
-              <div className="wh-display font-black text-lg" style={{ color: "#fff" }}>ניהול משימות ומלאי מוסדי</div>
+              <div className="wh-display font-black text-lg" style={{ color: "#fff" }}>ישיבוס</div>
               <div className="text-xs" style={{ color: "#fff" }}>{currentUser.name} · {roleLabel(currentUser.role)}</div>
             </div>
             <div className="flex flex-col p-3 gap-2 flex-1">
@@ -5374,7 +5368,7 @@ function App() {
             <div className="text-sm leading-relaxed" style={{ color: C.ink }}>
               <p className="mb-3" style={{ color: C.steel }}>עודכן לאחרונה: {new Date().toLocaleDateString("he-IL")}</p>
 
-              <p className="mb-3">אפליקציית "ניהול משק חכם" ("האפליקציה") נועדה לניהול פנימי של מלאי, משימות, תפריטים והזמנות במוסד. מסמך זה מסביר איזה מידע נאסף, כיצד נשמר ובמה נעשה בו שימוש.</p>
+              <p className="mb-3">אפליקציית "ישיבוס" ("האפליקציה") נועדה לניהול פנימי של מלאי, משימות, תפריטים והזמנות במוסד. מסמך זה מסביר איזה מידע נאסף, כיצד נשמר ובמה נעשה בו שימוש.</p>
 
               <div className="font-bold mt-3 mb-1">איזה מידע נאסף</div>
               <p className="mb-3">מידע תפעולי שאתה מזין: מוצרים ומלאי, משימות ותמונות שמצורפות אליהן, תפריטים, בקשות והזמנות, מקומות/חדרים, והערות. בנוסף נשמרים פרטי חשבון בסיסיים (שם משתמש ושיוך לארגון) לצורך התחברות והרשאות.</p>
@@ -12513,9 +12507,9 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
 }
 
 function WelcomeTextEditor({ settings, persistSettings, showToast }) {
-  const [text, setText] = useState(settings?.welcomeSubtitle || "לניהול משק חכם");
+  const [text, setText] = useState(settings?.welcomeSubtitle || "ניהול חכם לישיבה");
   async function save() {
-    const v = text.trim() || "לניהול משק חכם";
+    const v = text.trim() || "ניהול חכם לישיבה";
     await persistSettings({ ...settings, welcomeSubtitle: v });
     try { localStorage.setItem("kitchen-welcome-subtitle", v); } catch (e) {}
     showToast("טקסט הפתיחה נשמר ✓");
