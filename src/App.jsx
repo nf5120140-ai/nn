@@ -1059,7 +1059,7 @@ function NotificationsToggle({ showToast }) {
         className="mx-3 mb-2 py-2 px-3 rounded-2xl text-xs text-center"
         style={{ background: C.kraft, color: C.steel, border: `1px solid ${C.kraftDark}` }}
       >
-        🔕 ההתראות חסומות. כדי להפעיל: הגדרות הדפדפן ← הרשאות אתר ← התראות.
+        🔕 ההתראות חסומות. כדי להפעיל: הגדרות הטלפון ← אפליקציות ← ישיבוס ← התראות (או בדפדפן: הגדרות אתר ← התראות).
       </div>
     );
   }
@@ -5236,7 +5236,7 @@ function App() {
           />
           <div
             className="fixed top-0 right-0 bottom-0 z-50 flex flex-col wh-body"
-            style={{ width: "78%", maxWidth: 300, background: C.paper, boxShadow: "-8px 0 24px rgba(35,31,61,0.25)", borderRadius: "24px 0 0 24px" }}
+            style={{ width: "78%", maxWidth: 300, background: C.paper, boxShadow: "-8px 0 24px rgba(35,31,61,0.25)", borderRadius: "24px 0 0 24px", overflowY: "auto", WebkitOverflowScrolling: "touch", overscrollBehavior: "contain", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}
           >
             <div className="p-4" style={{ background: `linear-gradient(135deg, ${C.accent}, ${C.accent2})`, borderRadius: "24px 0 0 0" }}>
               <div className="wh-display font-black text-lg" style={{ color: "#fff" }}>ישיבוס</div>
