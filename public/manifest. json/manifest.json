@@ -1,7 +1,7 @@
 {
   "name": "ישיבוס",
   "short_name": "ישיבוס",
-  "description": "ניהול מלאי, הזמנות ומשימות למטבח מוסדי",
+  "description": "ניהול חכם לישיבה – מלאי, הזמנות ומשימות",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#F5F1E6",
@@ -10,20 +10,10 @@
   "dir": "rtl",
   "lang": "he",
   "icons": [
-    { "src": "/icon-192-v2.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icon-512-v2.png", "sizes": "512x512", "type": "image/png" }
-  ],
-  "shortcuts": [
-    {
-      "name": "משימה חדשה",
-      "short_name": "משימה",
-      "description": "פתיחת טופס יצירת משימה",
-      "url": "/?action=new-task",
-      "icons": [
-  "icons": [
     { "src": "/yeshivus-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "/yeshivus-icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/yeshivus-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
     { "src": "/yeshivus-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
     { "src": "/badge-96.png", "sizes": "96x96", "type": "image/png", "purpose": "monochrome" }
   ]
+}
