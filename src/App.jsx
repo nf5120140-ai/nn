@@ -2978,7 +2978,7 @@ function KioskScanner({ products, persistProducts, logStockChange, currentUser, 
       }}
     >
       <button
-        onClick={() => { if (window.confirm("לצאת ממצב תחנת סריקה?")) onExit(); }}
+        onClick={() => onExit()}
         style={{ position: "absolute", top: 16, left: 16, background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", borderRadius: 16, padding: "8px 16px", fontSize: 14 }}
       >
         יציאה
@@ -3133,7 +3133,7 @@ function KioskCameraScanner({ products, persistProducts, logStockChange, current
       )}
 
       <button
-        onClick={() => { if (window.confirm("לצאת ממצב תחנת סריקה?")) onExit(); }}
+        onClick={() => onExit()}
         style={{ position: "absolute", top: 16, left: 16, background: "rgba(0,0,0,0.5)", color: "#fff", border: "none", borderRadius: 16, padding: "8px 16px", fontSize: 14 }}
       >
         יציאה
@@ -3490,7 +3490,7 @@ function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyMan
     <div dir="rtl" style={{ position: "fixed", inset: 0, zIndex: 60, background: C.paper, overflowY: "auto", fontFamily: "'Heebo', sans-serif" }}>
       <div style={{ background: C.brand, color: "#fff", padding: 16, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ fontWeight: 800, fontSize: 18 }}>🛠️ דיווח תקלה / בקשה</div>
-        <button onClick={() => { if (window.confirm("לצאת ממסך הדיווח?")) onExit(); }} style={{ background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", borderRadius: 14, padding: "6px 14px", fontSize: 13 }}>יציאה</button>
+        <button onClick={() => onExit()} style={{ background: "rgba(255,255,255,0.15)", color: "#fff", border: "none", borderRadius: 14, padding: "6px 14px", fontSize: 13 }}>יציאה</button>
       </div>
 
       {sent ? (
@@ -3862,8 +3862,67 @@ function App() {
     try { window.history.pushState({ appTab: tab }, ""); } catch (e) {}
   }, [tab]);
   const [showMenu, setShowMenu] = useState(false);
+  // Swipe gestures for the side drawer (it sits on the right):
+  // swipe right→left (starting on the right half of the screen) opens it,
+  // swipe left→right closes it. Only active on the main screen, and ignored when the
+  // touch starts inside a text field or a horizontally-scrollable area.
+  const showMenuRef = useRef(false);
+  useEffect(() => { showMenuRef.current = showMenu; }, [showMenu]);
+  useEffect(() => {
+    let sx = 0, sy = 0, st = 0, active = false;
+    const EDGE_GUARD = 24; // leave the very edge to Android's system back gesture
+    function scrollsX(el) {
+      for (let n = el; n && n !== document.body; n = n.parentElement) {
+        if (n.matches && n.matches("input, textarea, select, [contenteditable='true'], canvas")) return true;
+        const cs = window.getComputedStyle(n);
+        if ((cs.overflowX === "auto" || cs.overflowX === "scroll") && n.scrollWidth > n.clientWidth + 2) return true;
+      }
+      return false;
+    }
+    function onStart(e) {
+      active = false;
+      if (!e.touches || e.touches.length !== 1) return;
+      if (!document.querySelector("[data-app-main]")) return;
+      const t = e.touches[0];
+      const w = window.innerWidth;
+      if (!showMenuRef.current && (t.clientX < w * 0.5 || t.clientX > w - EDGE_GUARD)) return;
+      if (scrollsX(e.target)) return;
+      sx = t.clientX; sy = t.clientY; st = Date.now(); active = true;
+    }
+    function onEnd(e) {
+      if (!active) return;
+      active = false;
+      const t = e.changedTouches && e.changedTouches[0];
+      if (!t) return;
+      const dx = t.clientX - sx, dy = t.clientY - sy;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5 || Date.now() - st > 800) return;
+      if (dx < 0 && !showMenuRef.current) setShowMenu(true);
+      else if (dx > 0 && showMenuRef.current) setShowMenu(false);
+    }
+    document.addEventListener("touchstart", onStart, { passive: true });
+    document.addEventListener("touchend", onEnd, { passive: true });
+    return () => {
+      document.removeEventListener("touchstart", onStart);
+      document.removeEventListener("touchend", onEnd);
+    };
+  }, []);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [kioskOn, setKioskOn] = useState(false);
+  const [pinAsk, setPinAsk] = useState(null); // { onOk } while the kiosk-exit PIN dialog is open
+  // Run `action` only after the kiosk exit code (if one is set in settings).
+  function requireKioskPin(action, confirmText) {
+    const pin = settings && settings.kioskPin ? String(settings.kioskPin) : "";
+    if (pin) { setPinAsk({ onOk: action }); return; }
+    if (confirmText && !window.confirm(confirmText)) return;
+    action();
+  }
+  const pinModal = pinAsk ? (
+    <KioskPinModal
+      pin={settings && settings.kioskPin}
+      onSuccess={() => { const a = pinAsk.onOk; setPinAsk(null); a(); }}
+      onCancel={() => setPinAsk(null)}
+    />
+  ) : null;
   const wakeLockRef = useRef(null);
 
   async function acquireWakeLock() {
@@ -4871,7 +4930,8 @@ function App() {
       u.searchParams.set("kiosk", val);
       window.location.href = u.toString();
     };
-    const exitKiosk = () => { window.location.href = window.location.pathname; };
+    const exitKioskNow = () => { window.location.href = window.location.pathname; };
+    const exitKiosk = () => requireKioskPin(exitKioskNow, kioskParam === "report" ? "לצאת ממסך הדיווח?" : "לצאת ממצב תחנת סריקה?");
     const kioskProps = {
       products,
       persistProducts,
@@ -4880,12 +4940,12 @@ function App() {
       onExit: exitKiosk,
     };
     if (kioskParam === "report") {
-      return <KioskReport tasks={tasks} persistTasks={persistTasks} taskCategories={taskCategories} locations={locations} notifyManagers={notifyManagers} onExit={exitKiosk} />;
+      return <><KioskReport tasks={tasks} persistTasks={persistTasks} taskCategories={taskCategories} locations={locations} notifyManagers={notifyManagers} onExit={exitKiosk} />{pinModal}</>;
     }
     if (kioskParam === "camera") {
-      return <KioskCameraScanner {...kioskProps} onSwitchMode={() => goToKiosk("1")} />;
+      return <><KioskCameraScanner {...kioskProps} onSwitchMode={() => goToKiosk("1")} />{pinModal}</>;
     }
-    return <KioskScanner {...kioskProps} onSwitchMode={() => goToKiosk("camera")} />;
+    return <><KioskScanner {...kioskProps} onSwitchMode={() => goToKiosk("camera")} />{pinModal}</>;
   }
 
   async function handleScanDetected(code) {
@@ -4905,8 +4965,9 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col wh-body" style={{ background: C.paper, position: "relative" }} dir="rtl">
+    <div data-app-main="1" className="min-h-screen flex flex-col wh-body" style={{ background: C.paper, position: "relative" }} dir="rtl">
       <style>{FONTS}</style>
+      {pinModal}
       <div
         style={{
           position: "fixed",
@@ -5320,7 +5381,7 @@ function App() {
             <NotificationsToggle showToast={showToast} />
             <BiometricToggle currentUser={currentUser} showToast={showToast} />
             <button
-              onClick={() => { toggleKiosk(); setShowMenu(false); }}
+              onClick={() => { setShowMenu(false); if (kioskOn) requireKioskPin(() => toggleKiosk()); else toggleKiosk(); }}
               className="mx-3 mb-2 py-2 rounded-2xl font-bold text-sm"
               style={{ background: kioskOn ? C.brand : C.kraft, color: kioskOn ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}
             >
@@ -12517,6 +12578,79 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
   );
 }
 
+/* ---------- Kiosk exit PIN ---------- */
+function KioskPinModal({ pin, onSuccess, onCancel }) {
+  const [val, setVal] = useState("");
+  const [err, setErr] = useState(false);
+  function submit() {
+    if (val === String(pin)) { onSuccess(); }
+    else { setErr(true); setVal(""); }
+  }
+  return (
+    <div className="fixed inset-0 flex items-center justify-center wh-body" style={{ zIndex: 200, background: "rgba(10,15,30,0.6)" }} dir="rtl">
+      <div className="w-full mx-6 p-5 rounded-3xl" style={{ maxWidth: 340, background: C.paper, boxShadow: "0 20px 50px rgba(0,0,0,0.35)" }}>
+        <div className="wh-display font-black text-lg text-center mb-1" style={{ color: C.ink }}>🔒 יציאה ממצב קיוסק</div>
+        <p className="text-sm text-center mb-3" style={{ color: C.steel }}>הקש את קוד היציאה</p>
+        <input
+          autoFocus
+          type="password"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          value={val}
+          onChange={(e) => { setVal(e.target.value.replace(/\D/g, "")); setErr(false); }}
+          onKeyDown={(e) => { if (e.key === "Enter") submit(); }}
+          className="w-full p-3 rounded-2xl text-center text-2xl font-bold"
+          style={{ letterSpacing: "0.4em", background: C.kraft, color: C.ink, border: `2px solid ${err ? C.stamp : C.kraftDark}` }}
+        />
+        {err && <div className="text-sm text-center mt-2 font-bold" style={{ color: C.stamp }}>קוד שגוי</div>}
+        <div className="flex gap-2 mt-4">
+          <button onClick={submit} className="flex-1 py-2.5 rounded-2xl font-bold" style={{ background: C.accent, color: "#fff" }}>אישור</button>
+          <button onClick={onCancel} className="flex-1 py-2.5 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>ביטול</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function KioskPinEditor({ settings, persistSettings, showToast }) {
+  const current = settings?.kioskPin ? String(settings.kioskPin) : "";
+  const [val, setVal] = useState("");
+  async function save() {
+    if (!/^\d{4,8}$/.test(val)) return showToast("הקוד צריך להיות 4–8 ספרות");
+    await persistSettings({ ...settings, kioskPin: val });
+    setVal("");
+    showToast("קוד היציאה מקיוסק נשמר ✓");
+  }
+  async function clear() {
+    if (!window.confirm("לבטל את קוד היציאה? אחרי זה כל אחד יוכל לצאת ממצב קיוסק.")) return;
+    await persistSettings({ ...settings, kioskPin: "" });
+    showToast("קוד היציאה בוטל");
+  }
+  return (
+    <div>
+      <div className="text-xs mb-2 font-bold" style={{ color: current ? C.sage : C.steel }}>
+        {current ? "✓ מוגדר קוד יציאה" : "לא מוגדר קוד – אפשר לצאת מקיוסק בלי קוד"}
+      </div>
+      <div className="flex gap-2">
+        <input
+          type="password"
+          inputMode="numeric"
+          pattern="[0-9]*"
+          value={val}
+          onChange={(e) => setVal(e.target.value.replace(/\D/g, "").slice(0, 8))}
+          placeholder={current ? "קוד חדש (4–8 ספרות)" : "קוד (4–8 ספרות)"}
+          className="flex-1 p-2 rounded-2xl border text-sm"
+          style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}
+        />
+        <button onClick={save} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>שמור</button>
+        {current && (
+          <button onClick={clear} className="px-3 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>בטל</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function WelcomeTextEditor({ settings, persistSettings, showToast }) {
   const [text, setText] = useState(settings?.welcomeSubtitle || "ניהול חכם לישיבה");
   async function save() {
@@ -12711,6 +12845,13 @@ function SuppliersAdmin({ settings, persistSettings, showToast }) {
           הטקסט שמופיע מתחת ל"ברוכים הבאים" במסך הפתיחה (למשל: לניהול ישיבת קרית מלאכי).
         </p>
         <WelcomeTextEditor settings={settings} persistSettings={persistSettings} showToast={showToast} />
+      </ShelfTag>
+      <ShelfTag accent={C.stamp} style={{ marginBottom: 16 }}>
+        <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>🔒 קוד יציאה ממצב קיוסק</div>
+        <p className="text-xs mb-2" style={{ color: C.steel }}>
+          אם מוגדר קוד, יציאה ממסך מלא (קיוסק) ומתחנות הסריקה והדיווח תדרוש להקיש אותו.
+        </p>
+        <KioskPinEditor settings={settings} persistSettings={persistSettings} showToast={showToast} />
       </ShelfTag>
       <ShelfTag accent={C.sage} style={{ marginBottom: 16 }}>
         <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>📦 יחידות מידה</div>
