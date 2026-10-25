@@ -2408,7 +2408,7 @@ function UnitRequestTab({
       missing.map((i) => `• ${i.name} — ${i.qty} ${i.unit || ""}`).join("\n") +
       (note ? `\n📝 הערות: ${note}` : "") +
       `\n🔁 נפתחה בקשה חדשה להשלמה – ממתינה לאישורך`;
-    if (notifyManagers) await notifyManagers(text, { tab: "admin", section: "unitrequests" });
+    if (notifyManagers) await notifyManagers(text, { tab: "admin", section: "unitrequests", requestId: followUp.id });
     showToast("נפתחה בקשת השלמה לחוסרים ונשלחה למנהל ✓");
   }
 
@@ -3851,6 +3851,7 @@ function App() {
   const [snoozeTarget, setSnoozeTarget] = useState(null);
   const [snoozeTime, setSnoozeTime] = useState("");
   const [adminSection, setAdminSection] = useState(null); // set when a notification points at an admin screen
+  const [focusUnitReqId, setFocusUnitReqId] = useState(null); // warehouse request to highlight when opened from a notification
   const [focusTaskId, setFocusTaskId] = useState(null);   // task to auto-open after tapping a notification
   const [newTaskSignal, setNewTaskSignal] = useState(0);  // bump to open the "new task" form (header button / home-screen shortcut)
   const [chatOpenSignal, setChatOpenSignal] = useState(0); // bump to open the internal chat from the header
@@ -3864,10 +3865,12 @@ function App() {
       const t = params.get("tab");
       const s = params.get("section");
       const tk = params.get("taskId");
+      const rq = params.get("requestId");
       const action = params.get("action");
-      if (t || s || tk || action) {
+      if (t || s || tk || rq || action) {
         deepLinkRef.current = true;
         if (s) setAdminSection(s);
+        if (rq) setFocusUnitReqId(rq);
         if (tk) setFocusTaskId(tk);
         if (action === "new-task") {
           // Opened from the home-screen "add task" shortcut - jump to tasks and open the form.
@@ -4517,9 +4520,10 @@ function App() {
     setShowNotifications(false);
 
     if (!n.link) return;
-    const { tab: target, section, taskId } = n.link;
+    const { tab: target, section, taskId, requestId } = n.link;
 
     if (section) setAdminSection(section);
+    if (requestId) setFocusUnitReqId(requestId);
     if (taskId) setFocusTaskId(taskId);
     if (target) setTab(target);
   }
@@ -4858,6 +4862,7 @@ function App() {
         const p = new URLSearchParams();
         if (link.tab) p.set("tab", link.tab);
         if (link.section) p.set("section", link.section);
+        if (link.requestId) p.set("requestId", link.requestId);
         if (link.taskId) {
           p.set("taskId", link.taskId);
           const org = getActiveOrg();
@@ -5335,6 +5340,8 @@ function App() {
             persistPersonalPurchases={persistPersonalPurchases}
             initialSection={adminSection}
             onSectionConsumed={() => setAdminSection(null)}
+            focusRequestId={focusUnitReqId}
+            onFocusRequestConsumed={() => setFocusUnitReqId(null)}
           />
         )}
       </div>
@@ -11279,7 +11286,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
 }
 
 /* ---------- Admin Tab ---------- */
-function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, deleteLocationById, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, persistTasks, orderHistory, unitTemplates, persistUnitTemplates, personalPurchases, persistPersonalPurchases }) {
+function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, products, persistProducts, settings, persistSettings, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, reminders, persistReminders, stockLog, locations, persistLocations, deleteLocationById, dishTypes, persistDishTypes, taskCategories, persistTaskCategories, orderRequests, persistOrderRequests, notifyUser, unitRequests, persistUnitRequests, logStockChange, initialSection, onSectionConsumed, tasks, persistTasks, orderHistory, unitTemplates, persistUnitTemplates, personalPurchases, persistPersonalPurchases, focusRequestId, onFocusRequestConsumed }) {
   const [section, setSection] = useState(initialSection || "products");
 
   // A notification can deep-link straight into a specific admin screen. Sync whenever
@@ -11392,6 +11399,8 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
       )}
       {section === "unitrequests" && (
         <UnitRequestsAdmin
+          focusRequestId={focusRequestId}
+          onFocusRequestConsumed={onFocusRequestConsumed}
           unitRequests={unitRequests}
           persistUnitRequests={persistUnitRequests}
           products={products}
@@ -13071,9 +13080,67 @@ function UnitRequestsAdmin({
   persistUnitTemplates,
   users,
   settings,
+  focusRequestId,
+  onFocusRequestConsumed,
 }) {
   const [tab, setTab] = useState("pending");
   const [editing, setEditing] = useState(null); // { requestId, items, note }
+  const [highlightId, setHighlightId] = useState(null);
+
+  // Opened from a notification about a specific request: switch to its tab,
+  // scroll to it and highlight it for a few seconds.
+  function focusRequest(id) {
+    const r = (unitRequests || []).find((x) => x.id === id);
+    if (!r) return false;
+    setTab(r.status === "submitted" ? "pending" : "done");
+    setHighlightId(id);
+    setTimeout(() => {
+      const el = document.getElementById("ureq-" + id);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 250);
+    setTimeout(() => setHighlightId((h) => (h === id ? null : h)), 4000);
+    return true;
+  }
+  useEffect(() => {
+    if (!focusRequestId) return;
+    if (focusRequest(focusRequestId) && onFocusRequestConsumed) onFocusRequestConsumed();
+  }, [focusRequestId, unitRequests]);
+
+  // Manager-side: open a new request with the items a unit reported as missing
+  // (for reports sent before this was automatic, or if it wasn't created).
+  async function createShortageFollowUp(r) {
+    const missing = (r.items || []).filter((i) => i.missing);
+    if (missing.length === 0) return showToast("לא סומנו פריטים חסרים בבקשה הזו");
+    const now = Date.now();
+    const origDate = new Date(r.submittedAt || r.createdAt || now).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
+    const followUp = {
+      id: genId(),
+      unitId: r.unitId,
+      unitName: r.unitName,
+      weekOf: weekStartIso(),
+      createdAt: now,
+      submittedAt: now,
+      updatedAt: now,
+      status: "submitted",
+      fromShortageOf: r.id,
+      items: missing.map((i) => { const { missing: _m, ...rest } = i; return { ...rest }; }),
+      note: `🔁 השלמת חוסרים מבקשה מ-${origDate}` + (r.missingNote ? ` · ${r.missingNote}` : ""),
+    };
+    await persistUnitRequests((list) => {
+      const arr = list || [];
+      const others = arr.filter((x) => x.id !== r.id);
+      const orig = arr.find((x) => x.id === r.id) || r;
+      return [...others, { ...orig, shortageRequestId: followUp.id }, followUp];
+    });
+    if (notifyUser) await notifyUser(r.unitId, `🔁 נפתחה בקשת השלמה לחוסרים (${missing.length} פריטים)`, { tab: "unitrequest" });
+    showToast("נפתחה בקשת השלמה ✓ – מופיעה בממתינות");
+    setTab("pending");
+    setHighlightId(followUp.id);
+    setTimeout(() => {
+      const el = document.getElementById("ureq-" + followUp.id);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 300);
+  }
   const [managingTemplate, setManagingTemplate] = useState(null); // unitId whose fixed list we're editing
   const [addSearch, setAddSearch] = useState("");
   const [addSelectedId, setAddSelectedId] = useState("");
@@ -13603,7 +13670,8 @@ function UnitRequestsAdmin({
           const st = UNIT_STATUS[r.status] || UNIT_STATUS.open;
           const shortCount = (r.items || []).filter((i) => stockOf(i.productId) < i.qty).length;
           return (
-            <ShelfTag key={r.id} accent={st.color}>
+            <div key={r.id} id={"ureq-" + r.id} style={{ borderRadius: 18, transition: "box-shadow 0.3s", boxShadow: highlightId === r.id ? `0 0 0 3px ${C.accent}` : "none" }}>
+            <ShelfTag accent={st.color}>
               <div className="flex justify-between items-center">
                 <div>
                   <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
@@ -13674,7 +13742,26 @@ function UnitRequestsAdmin({
                   </div>
                 )}
               </div>
+              {r.missingReportedAt && (() => {
+                const miss = (r.items || []).filter((i) => i.missing);
+                return (
+                  <div className="mt-2 p-2 rounded-xl text-xs" style={{ background: "rgba(255,90,95,0.08)", border: `1px solid ${C.stamp}` }}>
+                    <div className="font-bold" style={{ color: C.stamp }}>❗ דווחו חוסרים ({miss.length}): {miss.map((i) => i.name).join(", ")}</div>
+                    {r.missingNote && <div className="mt-1" style={{ color: C.ink }}>📝 {r.missingNote}</div>}
+                    {r.shortageRequestId ? (
+                      <button onClick={() => focusRequest(r.shortageRequestId)} className="mt-1.5 underline font-bold" style={{ color: C.accent, background: "none", border: "none" }}>
+                        🔁 נפתחה בקשת השלמה – הצג
+                      </button>
+                    ) : (
+                      <button onClick={() => createShortageFollowUp(r)} className="mt-1.5 px-3 py-1 rounded-xl font-bold" style={{ background: C.stamp, color: "#fff" }}>
+                        🔁 פתח בקשת השלמה לחוסרים
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
             </ShelfTag>
+            </div>
           );
         })}
       </div>
