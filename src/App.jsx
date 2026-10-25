@@ -2373,15 +2373,43 @@ function UnitRequestTab({
     if (!req) return;
     const missing = (req.items || []).filter((i) => i.missing);
     if (missing.length === 0) return showToast("לא סימנת פריטים כחסרים");
+    if (req.shortageRequestId && !window.confirm("כבר נפתחה בקשת השלמה לחוסרים של הבקשה הזו. לפתוח בקשה נוספת?")) return;
     const note = String(missingNotes[reqId] ?? req.missingNote ?? "").trim();
+    const origDate = new Date(req.submittedAt || req.createdAt || Date.now()).toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" });
+
+    // Automatically open a NEW request (already sent to the warehouse) with only the
+    // items that didn't arrive, so the manager sees it in "בקשות מהמחסן" like any request.
+    const now = Date.now();
+    const followUp = {
+      id: genId(),
+      unitId: currentUser.id,
+      unitName: currentUser.name,
+      weekOf: thisWeek,
+      createdAt: now,
+      submittedAt: now,
+      updatedAt: now,
+      status: "submitted",
+      fromShortageOf: req.id,
+      items: missing.map((i) => {
+        const { missing: _m, ...rest } = i;
+        return { ...rest };
+      }),
+      note: `🔁 השלמת חוסרים מבקשה מ-${origDate}` + (note ? ` · ${note}` : ""),
+    };
+    await persistUnitRequests((list) => {
+      const arr = list || [];
+      const others = arr.filter((r) => r.id !== reqId);
+      const orig = arr.find((r) => r.id === reqId) || req;
+      return [...others, { ...orig, missingReportedAt: now, missingNote: note, shortageRequestId: followUp.id }, followUp];
+    });
+
     const text =
       `❗ חוסרים בבקשה של ${currentUser.name} (${missing.length} פריטים):\n` +
       missing.map((i) => `• ${i.name} — ${i.qty} ${i.unit || ""}`).join("\n") +
-      (note ? `\n📝 הערות: ${note}` : "");
+      (note ? `\n📝 הערות: ${note}` : "") +
+      `\n🔁 נפתחה בקשה חדשה להשלמה – ממתינה לאישורך`;
     if (notifyManagers) await notifyManagers(text, { tab: "admin", section: "unitrequests" });
-    const others = (unitRequests || []).filter((r) => r.id !== reqId);
-    await persistUnitRequests([...others, { ...req, missingReportedAt: Date.now(), missingNote: note }]);
-    showToast("רשימת החוסרים נשלחה למנהל ✓");
+    showToast("נפתחה בקשת השלמה לחוסרים ונשלחה למנהל ✓");
   }
 
   // Delete a request the unit sent (e.g. sent twice by mistake).
@@ -2427,11 +2455,11 @@ function UnitRequestTab({
           className="mt-1 py-2 rounded-xl text-xs font-bold"
           style={{ background: missingCount > 0 ? C.stamp : C.kraft, color: missingCount > 0 ? "#fff" : C.steel, border: `1px solid ${C.kraftDark}` }}
         >
-          📨 דווח חוסרים למנהל {missingCount > 0 ? `(${missingCount})` : ""}
+          📨 דווח חוסרים ופתח בקשת השלמה {missingCount > 0 ? `(${missingCount})` : ""}
         </button>
         {r.missingReportedAt && (
           <div className="text-xs text-center" style={{ color: C.steel }}>
-            דווח למנהל · {new Date(r.missingReportedAt).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
+            {r.shortageRequestId ? "🔁 נפתחה בקשת השלמה · " : ""}דווח למנהל · {new Date(r.missingReportedAt).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
           </div>
         )}
       </div>
@@ -13578,7 +13606,12 @@ function UnitRequestsAdmin({
             <ShelfTag key={r.id} accent={st.color}>
               <div className="flex justify-between items-center">
                 <div>
-                  <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>{r.unitName}</div>
+                  <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
+                    {r.unitName}
+                    {r.fromShortageOf && (
+                      <span className="text-xs font-bold px-2 py-0.5 rounded-full mr-2" style={{ background: "rgba(255,90,95,0.15)", color: C.stamp }}>🔁 השלמת חוסרים</span>
+                    )}
+                  </div>
                   <div className="text-xs" style={{ color: C.steel }}>
                     שבוע {weekLabel(r.weekOf)} · {(r.items || []).length} מוצרים
                     {r.status === "submitted" && shortCount > 0 && (
