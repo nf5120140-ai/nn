@@ -6377,6 +6377,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
   const [toBuyUnit, setToBuyUnit] = useState("");
   const [toBuySupplier, setToBuySupplier] = useState("__unassigned__");
   const [toDraftSid, setToDraftSid] = useState(null); // supplier group whose "add to draft" picker is open
+  const [toBuyProductId, setToBuyProductId] = useState(null); // inventory product picked from the suggestions
   const [orderNote, setOrderNote] = useState("שלום, הזמנה לשבוע:");
   // Suppliers already sent this round — their send button is hidden until the selection changes.
   const [sentSuppliers, setSentSuppliers] = useState([]);
@@ -6483,6 +6484,30 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
     loadKey(KEYS.orderDrafts, []).then((d) => setDrafts(Array.isArray(d) ? d : [])).catch(() => {});
   }, []);
   async function persistDrafts(next) { setDrafts(next); await saveKey(KEYS.orderDrafts, next); }
+  // Whenever an order for a specific supplier is opened (any mode, or a draft), automatically
+  // add that supplier's items from the "to buy" list that aren't in it yet.
+  useEffect(() => {
+    if (!pendingOrder) return;
+    const sid = pendingOrder.supplierId;
+    if (!sid || sid === "__unassigned__" || pendingOrder.toBuyCheckedFor === sid) return;
+    const list = settings && Array.isArray(settings.toBuy) ? settings.toBuy : [];
+    const already = new Set(pendingOrder.toBuyIds || []);
+    const names = new Set((pendingOrder.items || []).map(({ product }) => String(product?.name || "").trim()));
+    const ids = new Set((pendingOrder.items || []).map(({ product }) => product?.id));
+    const extra = list.filter((n) => (n.supplierId || "__unassigned__") === sid && !already.has(n.id)
+      && !(n.productId && ids.has(n.productId)) && !names.has(String(n.name).trim()));
+    setPendingOrder((po) => {
+      if (!po || po.supplierId !== sid) return po;
+      if (extra.length === 0) return { ...po, toBuyCheckedFor: sid };
+      return {
+        ...po,
+        items: [...po.items, ...extra.map(toBuyLine)],
+        toBuyIds: [...(po.toBuyIds || []), ...extra.map((n) => n.id)],
+        toBuyAuto: (po.toBuyAuto || 0) + extra.length,
+        toBuyCheckedFor: sid,
+      };
+    });
+  }, [pendingOrder?.supplierId, pendingOrder?.toBuyCheckedFor, !!pendingOrder]);
   function saveDraftFromPending() {
     if (!pendingOrder) return;
     const items = pendingOrder.items
@@ -6511,6 +6536,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
       persistDrafts([draft, ...drafts]);
       showToast("ההזמנה נשמרה כטיוטה");
     }
+    consumeToBuy(pendingOrder);
     setPendingOrder(null);
     setEditingDraftId(null);
   }
@@ -6881,9 +6907,10 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
   async function addToBuy() {
     const name = toBuyName.trim();
     if (!name) return showToast("כתוב שם מוצר");
-    const item = { id: genId(), name, qty: Number(toBuyQty) || 1, unit: toBuyUnit || "", supplierId: toBuySupplier || "__unassigned__" };
+    const picked = toBuyProductId ? products.find((p) => p.id === toBuyProductId && p.name === name) : null;
+    const item = { id: genId(), name, qty: Number(toBuyQty) || 1, unit: toBuyUnit || "", supplierId: toBuySupplier || "__unassigned__", ...(picked ? { productId: picked.id } : {}) };
     await persistSettings({ ...settings, toBuy: [...toBuyList, item] });
-    setToBuyName(""); setToBuyQty("");
+    setToBuyName(""); setToBuyQty(""); setToBuyProductId(null);
     showToast("נוסף לרשימת הקנייה ✓");
   }
   async function removeToBuy(id) {
@@ -6892,16 +6919,33 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
   async function clearToBuySupplier(supplierId) {
     await persistSettings({ ...settings, toBuy: toBuyList.filter((x) => (x.supplierId || "__unassigned__") !== supplierId) });
   }
+  // A "to buy" note as an order line: linked to the real inventory product when it was
+  // picked from the suggestions, otherwise a free-text line.
+  function toBuyLine(n) {
+    const real = n.productId ? products.find((p) => p.id === n.productId) : null;
+    const sid = n.supplierId || "__unassigned__";
+    return {
+      product: real
+        ? { ...real, unit: n.unit || real.unit }
+        : { id: n.id, name: n.name, unit: n.unit || "", price: 0, quantity: 0, supplierId: sid === "__unassigned__" ? null : sid },
+      qty: Number(n.qty) || 1,
+    };
+  }
+  // After an order/request/draft that included "to buy" notes goes out, drop them from the list.
+  async function consumeToBuy(po) {
+    const ids = po && Array.isArray(po.toBuyIds) ? po.toBuyIds : [];
+    if (ids.length === 0) return;
+    const set = new Set(ids);
+    const list = settings && Array.isArray(settings.toBuy) ? settings.toBuy : [];
+    await persistSettings({ ...settings, toBuy: list.filter((x) => !set.has(x.id)) });
+  }
   function openOrderFromToBuy(supplierId) {
     const notes = toBuyList.filter((x) => (x.supplierId || "__unassigned__") === supplierId);
     if (notes.length === 0) return;
-    const items = notes.map((n) => ({
-      product: { id: n.id, name: n.name, unit: n.unit || "", price: 0, quantity: 0, supplierId: supplierId === "__unassigned__" ? null : supplierId },
-      qty: Number(n.qty) || 1,
-    }));
+    const items = notes.map(toBuyLine);
     const supName = supplierId === "__unassigned__" ? "ספק כללי" : (suppliers.find((s) => s.id === supplierId)?.name || "ספק");
     setSelectedSupplierId(supplierId !== "__unassigned__" && suppliers.some((s) => s.id === supplierId) ? supplierId : "__manual__");
-    setPendingOrder({ items, title: `הזמנה — ${supName}`, supplierId, isRequest: !mayApprove, sourceLabel: "רשימת לקנות" });
+    setPendingOrder({ items, title: `הזמנה — ${supName}`, supplierId, isRequest: !mayApprove, sourceLabel: "רשימת לקנות", toBuyIds: notes.map((n) => n.id), toBuyCheckedFor: supplierId });
   }
 
   // Move a supplier's "to buy" items into an existing saved draft order.
@@ -6938,7 +6982,36 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
         {showToBuy && (
           <div className="mt-2">
             <div className="flex flex-col gap-2 mb-3">
-              <input value={toBuyName} onChange={(e) => setToBuyName(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") addToBuy(); }} placeholder="מה צריך לקנות..." className="p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+              <input value={toBuyName} onChange={(e) => { setToBuyName(e.target.value); setToBuyProductId(null); }} onKeyDown={(e) => { if (e.key === "Enter") addToBuy(); }} placeholder="מה צריך לקנות... (מחפש במלאי)" className="p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
+              {(() => {
+                const q = toBuyName.trim();
+                if (q.length < 2 || toBuyProductId) return null;
+                const matches = products.filter((p) => p.name && p.name.includes(q)).slice(0, 6);
+                if (matches.length === 0) return null;
+                return (
+                  <div className="flex flex-col rounded-2xl overflow-hidden" style={{ border: `1px solid ${C.kraftDark}`, background: C.kraft }}>
+                    {matches.map((p) => {
+                      const sup = p.supplierId ? suppliers.find((x) => x.id === p.supplierId) : null;
+                      return (
+                        <button
+                          key={p.id}
+                          onClick={() => {
+                            setToBuyName(p.name);
+                            setToBuyProductId(p.id);
+                            if (p.unit) setToBuyUnit(p.unit);
+                            setToBuySupplier(p.supplierId && suppliers.some((x) => x.id === p.supplierId) ? p.supplierId : "__unassigned__");
+                          }}
+                          className="text-right px-3 py-2 text-sm flex justify-between"
+                          style={{ borderBottom: `1px solid ${C.kraftDark}`, color: C.ink, background: "transparent" }}
+                        >
+                          <span>📦 {p.name}</span>
+                          <span className="text-xs" style={{ color: C.steel }}>{sup ? sup.name : "ספק כללי"} · במלאי {Number(p.quantity) || 0}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
               <div className="flex gap-2">
                 <input type="number" value={toBuyQty} onChange={(e) => setToBuyQty(e.target.value)} placeholder="כמות" className="w-20 p-2 rounded-2xl border text-sm text-center" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }} />
                 <select value={toBuyUnit} onChange={(e) => setToBuyUnit(e.target.value)} className="p-2 rounded-2xl border text-sm" style={{ borderColor: C.kraftDark, background: C.kraft, color: C.ink }}>
@@ -6995,7 +7068,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                     )}
                     {items.map((it) => (
                       <div key={it.id} className="flex justify-between items-center text-sm py-0.5">
-                        <span style={{ color: C.ink }}>• {it.name}{it.qty ? ` · ${it.qty} ${it.unit || ""}` : ""}</span>
+                        <span style={{ color: C.ink }}>• {it.productId ? "📦 " : ""}{it.name}{it.qty ? ` · ${it.qty} ${it.unit || ""}` : ""}</span>
                         <button onClick={() => removeToBuy(it.id)} style={{ color: C.stamp, fontWeight: 900 }}>✕</button>
                       </div>
                     ))}
@@ -7364,6 +7437,26 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
             </button>
           </div>
 
+          {pendingOrder.toBuyAuto > 0 && (
+            <div className="mb-3 p-2 rounded-2xl text-xs flex justify-between items-center gap-2" style={{ background: "rgba(255,179,71,0.15)", border: `1px solid ${C.mustard}`, color: C.ink }}>
+              <span>🛒 צורפו אוטומטית {pendingOrder.toBuyAuto} פריטים מרשימת "לקנות" לספק הזה</span>
+              <button
+                onClick={() => setPendingOrder((po) => {
+                  if (!po) return po;
+                  const auto = new Set((po.toBuyIds || []).slice(-po.toBuyAuto));
+                  const list = settings && Array.isArray(settings.toBuy) ? settings.toBuy : [];
+                  const autoNotes = list.filter((n) => auto.has(n.id));
+                  const drop = new Set(autoNotes.map((n) => (n.productId && products.some((p) => p.id === n.productId)) ? n.productId : n.id));
+                  return { ...po, items: po.items.filter(({ product }) => !drop.has(product.id)), toBuyIds: (po.toBuyIds || []).filter((id) => !auto.has(id)), toBuyAuto: 0 };
+                })}
+                className="px-2 py-1 rounded-lg font-bold whitespace-nowrap"
+                style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}
+              >
+                הסר
+              </button>
+            </div>
+          )}
+
           {/* Where it's going */}
           <ShelfTag accent={missingDest ? C.stamp : C.accent} style={{ marginBottom: 12 }}>
             <div className="flex justify-between text-sm">
@@ -7542,6 +7635,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                 setPendingOrder(null);
                 setEditingDraftId(null);
                 submitOrderRequest(sendItems, p.supplierId, p.sourceLabel);
+                consumeToBuy(p);
               }}
               disabled={isEmpty}
               className="w-full py-3 rounded-2xl wh-display font-bold"
@@ -7617,12 +7711,14 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                     setPendingOrder(null);
                     setEditingDraftId(null);
                     doSendGroupOrder(sendItems, p.title, p.supplierId, ch);
+                    consumeToBuy(p);
                   };
                   const waGroup = async () => {
                     try { await navigator.clipboard.writeText(messageText); showToast("ההזמנה הועתקה - הדבק בקבוצה"); } catch (e) {}
                     logOrderToHistory(liveItems, title, supplierId, "whatsapp");
                     if (supplierId) setSentSuppliers((cur) => (cur.includes(supplierId) ? cur : [...cur, supplierId]));
                     window.open(settings.whatsappGroupLink.trim(), "_blank");
+                    consumeToBuy(pendingOrder);
                     closePendingSheet();
                   };
                   return (
