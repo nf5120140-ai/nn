@@ -2077,6 +2077,7 @@ function UnitRequestTab({
   const [catFilter, setCatFilter] = useState("all");
   const [noteDraft, setNoteDraft] = useState("");
   const [customName, setCustomName] = useState("");
+  const [missingNotes, setMissingNotes] = useState({}); // reqId -> free-text note for the shortage report
 
   const thisWeek = weekStartIso();
   const mine = (unitRequests || []).filter((r) => r.unitId === currentUser.id);
@@ -2360,12 +2361,14 @@ function UnitRequestTab({
     if (!req) return;
     const missing = (req.items || []).filter((i) => i.missing);
     if (missing.length === 0) return showToast("לא סימנת פריטים כחסרים");
+    const note = String(missingNotes[reqId] ?? req.missingNote ?? "").trim();
     const text =
       `❗ חוסרים בבקשה של ${currentUser.name} (${missing.length} פריטים):\n` +
-      missing.map((i) => `• ${i.name} — ${i.qty} ${i.unit || ""}`).join("\n");
+      missing.map((i) => `• ${i.name} — ${i.qty} ${i.unit || ""}`).join("\n") +
+      (note ? `\n📝 הערות: ${note}` : "");
     if (notifyManagers) await notifyManagers(text, { tab: "admin", section: "unitrequests" });
     const others = (unitRequests || []).filter((r) => r.id !== reqId);
-    await persistUnitRequests([...others, { ...req, missingReportedAt: Date.now() }]);
+    await persistUnitRequests([...others, { ...req, missingReportedAt: Date.now(), missingNote: note }]);
     showToast("רשימת החוסרים נשלחה למנהל ✓");
   }
 
@@ -2399,6 +2402,14 @@ function UnitRequestTab({
             </span>
           </button>
         ))}
+        <textarea
+          value={missingNotes[r.id] ?? r.missingNote ?? ""}
+          onChange={(e) => { const v = e.target.value; setMissingNotes((m) => ({ ...m, [r.id]: v })); }}
+          placeholder="הערות למנהל (לא חובה)..."
+          rows={2}
+          className="mt-1 w-full p-2 rounded-xl text-sm wh-body"
+          style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}`, resize: "vertical" }}
+        />
         <button
           onClick={() => reportMissing(r.id)}
           className="mt-1 py-2 rounded-xl text-xs font-bold"
