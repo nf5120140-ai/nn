@@ -6376,6 +6376,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
   const [toBuyQty, setToBuyQty] = useState("");
   const [toBuyUnit, setToBuyUnit] = useState("");
   const [toBuySupplier, setToBuySupplier] = useState("__unassigned__");
+  const [toDraftSid, setToDraftSid] = useState(null); // supplier group whose "add to draft" picker is open
   const [orderNote, setOrderNote] = useState("שלום, הזמנה לשבוע:");
   // Suppliers already sent this round — their send button is hidden until the selection changes.
   const [sentSuppliers, setSentSuppliers] = useState([]);
@@ -6903,6 +6904,27 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
     setPendingOrder({ items, title: `הזמנה — ${supName}`, supplierId, isRequest: !mayApprove, sourceLabel: "רשימת לקנות" });
   }
 
+  // Move a supplier's "to buy" items into an existing saved draft order.
+  // Items already in the draft (same name) get their quantity added; the moved
+  // items are removed from the "to buy" list so they aren't ordered twice.
+  async function addToBuyToDraft(supplierId, draftId) {
+    const notes = toBuyList.filter((x) => (x.supplierId || "__unassigned__") === supplierId);
+    const draft = drafts.find((d) => d.id === draftId);
+    if (!draft || notes.length === 0) return;
+    const items = [...(draft.items || [])];
+    notes.forEach((n) => {
+      const qty = Number(n.qty) || 1;
+      const idx = items.findIndex((it) => String(it.name || "").trim() === n.name.trim());
+      if (idx >= 0) items[idx] = { ...items[idx], qty: (Number(items[idx].qty) || 0) + qty };
+      else items.push({ productId: n.id, name: n.name, unit: n.unit || "", price: 0, qty });
+    });
+    await persistDrafts(drafts.map((d) => (d.id === draftId ? { ...d, items, updatedAt: Date.now() } : d)));
+    const movedIds = new Set(notes.map((n) => n.id));
+    await persistSettings({ ...settings, toBuy: toBuyList.filter((x) => !movedIds.has(x.id)) });
+    setToDraftSid(null);
+    showToast(`${notes.length} מוצרים נוספו לטיוטה ✓`);
+  }
+
   function toBuyPanel() {
     const groups = {};
     toBuyList.forEach((it) => { const k = it.supplierId || "__unassigned__"; (groups[k] = groups[k] || []).push(it); });
@@ -6941,9 +6963,36 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                       <span className="font-bold text-sm" style={{ color: C.ink }}>🏷️ {supName} ({items.length})</span>
                       <div className="flex gap-1">
                         <button onClick={() => openOrderFromToBuy(sid)} className="px-3 py-1 rounded-lg text-xs font-bold" style={{ background: C.brand, color: "#fff" }}>📤 פתח הזמנה</button>
+                        <button
+                          onClick={() => { if (drafts.length === 0) return showToast("אין טיוטות שמורות"); setToDraftSid(toDraftSid === sid ? null : sid); }}
+                          className="px-3 py-1 rounded-lg text-xs font-bold"
+                          style={{ background: toDraftSid === sid ? C.accent : C.kraft, color: toDraftSid === sid ? "#fff" : C.accent, border: `1px solid ${C.accent}` }}
+                        >
+                          ➕ לטיוטה
+                        </button>
                         <button onClick={() => clearToBuySupplier(sid)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }} title="נקה את כל הרשימה לספק">🗑️</button>
                       </div>
                     </div>
+                    {toDraftSid === sid && (
+                      <div className="mb-2 p-2 rounded-xl" style={{ background: C.paper, border: `1px dashed ${C.accent}` }}>
+                        <div className="text-xs font-bold mb-1" style={{ color: C.steel }}>לאיזו טיוטה להוסיף?</div>
+                        <div className="flex flex-col gap-1">
+                          {drafts.map((d) => {
+                            const dSup = d.supplierId && d.supplierId !== "__unassigned__" ? (suppliers.find((x) => x.id === d.supplierId)?.name || "") : "";
+                            return (
+                              <button
+                                key={d.id}
+                                onClick={() => addToBuyToDraft(sid, d.id)}
+                                className="text-right p-2 rounded-lg text-sm"
+                                style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, color: C.ink }}
+                              >
+                                <b>{d.title || "הזמנה"}</b>{dSup ? ` · ${dSup}` : ""} · {(d.items || []).length} מוצרים · {new Date(d.updatedAt || d.createdAt).toLocaleDateString("he-IL")}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
                     {items.map((it) => (
                       <div key={it.id} className="flex justify-between items-center text-sm py-0.5">
                         <span style={{ color: C.ink }}>• {it.name}{it.qty ? ` · ${it.qty} ${it.unit || ""}` : ""}</span>
@@ -7917,7 +7966,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
             {drafts.map((d) => (
               <div key={d.id} className="flex items-center gap-2 p-2 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
                 <div className="flex-1">
-                  <div className="text-sm font-bold" style={{ color: C.ink }}>{d.items.length} מוצרים · {new Date(d.updatedAt || d.createdAt).toLocaleDateString("he-IL")}</div>
+                  <div className="text-sm font-bold" style={{ color: C.ink }}>{d.title && d.title !== "הזמנה" ? `${d.title} · ` : ""}{d.items.length} מוצרים · {new Date(d.updatedAt || d.createdAt).toLocaleDateString("he-IL")}</div>
                   <div className="text-xs" style={{ color: C.steel }}>{d.by}{d.updatedAt ? " · עודכן" : ""}</div>
                 </div>
                 <button onClick={() => loadDraft(d)} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>ערוך</button>
