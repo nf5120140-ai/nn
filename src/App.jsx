@@ -4940,7 +4940,7 @@ function App() {
       onExit: exitKiosk,
     };
     if (kioskParam === "report") {
-      return <><KioskReport tasks={tasks} persistTasks={persistTasks} taskCategories={taskCategories} locations={locations} notifyManagers={notifyManagers} onExit={exitKiosk} />{pinModal}</>;
+      return <><KioskReport tasks={tasks} persistTasks={persistTasks} taskCategories={taskCategories} locations={locations} notifyManagers={notifyManagers} onExit={exitKiosk} />{pinModal}<ImageLightbox /></>;
     }
     if (kioskParam === "camera") {
       return <><KioskCameraScanner {...kioskProps} onSwitchMode={() => goToKiosk("1")} />{pinModal}</>;
@@ -4968,6 +4968,7 @@ function App() {
     <div data-app-main="1" className="min-h-screen flex flex-col wh-body" style={{ background: C.paper, position: "relative" }} dir="rtl">
       <style>{FONTS}</style>
       {pinModal}
+      <ImageLightbox />
       <div
         style={{
           position: "fixed",
@@ -10148,12 +10149,12 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
                     <div className="text-xs mt-1 font-bold" style={{ color: C.ink }}>📍 {t.location}</div>
                   )}
                   {t.imageData ? (
-                    <img src={t.imageData} alt="" className="mt-2 rounded-2xl" style={{ maxHeight: 120, maxWidth: 180 }} />
+                    <img src={t.imageData} alt="" onClick={() => openImage(t.imageData)} className="mt-2 rounded-2xl" style={{ maxHeight: 120, maxWidth: 180, cursor: "zoom-in" }} />
                   ) : (
                     (() => {
                       const loc = (locations || []).find((l) => l.id === t.locationId);
                       return loc?.imageData ? (
-                        <img src={loc.imageData} alt="" className="mt-2 rounded-2xl" style={{ maxHeight: 120, maxWidth: 180 }} />
+                        <img src={loc.imageData} alt="" onClick={() => openImage(loc.imageData)} className="mt-2 rounded-2xl" style={{ maxHeight: 120, maxWidth: 180, cursor: "zoom-in" }} />
                       ) : null;
                     })()
                   )}
@@ -11038,7 +11039,7 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
         <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>תמונה</label>
         {imageData ? (
           <div className="flex flex-col gap-2">
-            <img src={imageData} alt="" className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%", objectFit: "cover" }} />
+            <img src={imageData} alt="" onClick={() => openImage(imageData)} className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%", objectFit: "cover", cursor: "zoom-in" }} />
             <div className="flex gap-2 flex-wrap">
               <button onClick={() => setAnnotating(true)} className="flex-1 text-center py-2 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
                 ✏️ סמן / צייר
@@ -11121,7 +11122,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
           {locationId && (() => {
             const loc = (locations || []).find((l) => l.id === locationId);
             return loc?.imageData ? (
-              <img src={loc.imageData} alt="" className="rounded-2xl" style={{ maxHeight: 100 }} />
+              <img src={loc.imageData} alt="" onClick={() => openImage(loc.imageData)} className="rounded-2xl" style={{ maxHeight: 100, cursor: "zoom-in" }} />
             ) : null;
           })()}
         </>
@@ -11160,7 +11161,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
         {imageBusy && <p className="text-xs mt-1" style={{ color: C.steel }}>טוען תמונה...</p>}
         {imageData && (
           <div className="mt-2 relative inline-block">
-            <img src={imageData} alt="" className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%" }} />
+            <img src={imageData} alt="" onClick={() => openImage(imageData)} className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%", cursor: "zoom-in" }} />
             <button
               onClick={() => setImageData(null)}
               className="absolute -top-2 -left-2 w-6 h-6 rounded-full font-bold text-xs"
@@ -12574,6 +12575,82 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
           );
         })}
       </div>
+    </div>
+  );
+}
+
+/* ---------- Full-screen image viewer ----------
+   openImage(src) from anywhere opens the photo full-screen. Tap the image to zoom,
+   ✕ / tap outside / the phone's Back button closes it. */
+function openImage(src) {
+  if (!src) return;
+  try { window.dispatchEvent(new CustomEvent("yb-open-image", { detail: src })); } catch (e) {}
+}
+function ImageLightbox() {
+  const [src, setSrc] = useState(null);
+  const [zoom, setZoom] = useState(false);
+  const openRef = useRef(false);
+  useEffect(() => {
+    const onOpen = (e) => {
+      setZoom(false);
+      setSrc(e.detail);
+      if (!openRef.current) {
+        openRef.current = true;
+        try { window.history.pushState({ ...(window.history.state || {}), ybImage: true }, ""); } catch (err) {}
+      }
+    };
+    // Capture phase + stopImmediatePropagation: the Back press only closes the
+    // viewer and doesn't reach the app's tab-navigation popstate handler.
+    const onPop = (e) => {
+      if (!openRef.current) return;
+      e.stopImmediatePropagation();
+      openRef.current = false;
+      setSrc(null);
+    };
+    window.addEventListener("yb-open-image", onOpen);
+    window.addEventListener("popstate", onPop, true);
+    return () => {
+      window.removeEventListener("yb-open-image", onOpen);
+      window.removeEventListener("popstate", onPop, true);
+    };
+  }, []);
+  function close() {
+    if (openRef.current) { try { window.history.back(); } catch (e) { openRef.current = false; setSrc(null); } }
+    else setSrc(null);
+  }
+  if (!src) return null;
+  return (
+    <div
+      onClick={close}
+      className="fixed inset-0 flex items-center justify-center"
+      style={{ zIndex: 300, background: "rgba(5,8,16,0.94)", overflow: zoom ? "auto" : "hidden" }}
+    >
+      <img
+        src={src}
+        alt=""
+        onClick={(e) => { e.stopPropagation(); setZoom((z) => !z); }}
+        style={zoom
+          ? { width: "200%", maxWidth: "none", height: "auto", cursor: "zoom-out" }
+          : { maxWidth: "100%", maxHeight: "100%", objectFit: "contain", cursor: "zoom-in" }}
+      />
+      <button
+        onClick={(e) => { e.stopPropagation(); close(); }}
+        aria-label="סגור"
+        className="fixed top-4 left-4 w-11 h-11 rounded-full text-xl font-bold"
+        style={{ background: "rgba(255,255,255,0.18)", color: "#fff", zIndex: 301 }}
+      >
+        ✕
+      </button>
+      {!String(src).startsWith("data:") && <a
+        href={src}
+        target="_blank"
+        rel="noreferrer"
+        onClick={(e) => e.stopPropagation()}
+        className="fixed bottom-6 left-1/2 px-4 py-2 rounded-2xl text-sm font-bold wh-body"
+        style={{ transform: "translateX(-50%)", background: "rgba(255,255,255,0.18)", color: "#fff", zIndex: 301, textDecoration: "none" }}
+      >
+        פתח בגודל מקורי
+      </a>}
     </div>
   );
 }
