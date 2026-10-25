@@ -43,6 +43,18 @@ html.dark-mode {
   --c-accent:#4A9FE0; --c-accent2:#57B45E; --c-brand:#2F5A8C;
 }
 html.dark-mode, html.dark-mode body { background: #0E1424; }
+/* App name in the header: logo colours in light mode ("ישי" white, "בוס" green,
+   the ב split half white / half green). Dark mode keeps the plain colour. */
+html:not(.dark-mode) .yb-title {
+  display: inline-block; background: #0B1F3F; padding: 1px 10px 3px;
+  border-radius: 10px; box-shadow: 0 2px 6px rgba(10,25,50,0.3);
+}
+html:not(.dark-mode) .yb-title .yb-w { color: #FFFFFF; }
+html:not(.dark-mode) .yb-title .yb-g { color: #62CC5A; }
+html:not(.dark-mode) .yb-title .yb-b {
+  background: linear-gradient(to left, #FFFFFF 50%, #62CC5A 50%);
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+}
 `;
 
 /* ---------- Storage helpers ---------- */
@@ -4996,7 +5008,7 @@ function App() {
             ☰
           </button>
           <div>
-            <div className="wh-display font-black text-lg" style={{ color: C.paper }}>ישיבוס</div>
+            <div className="wh-display font-black text-lg yb-title" style={{ color: C.paper }}><span className="yb-w">ישי</span><span className="yb-b">ב</span><span className="yb-g">וס</span></div>
             <div className="text-xs" style={{ color: C.kraft }}>
               {currentUser.name} · {roleLabel(currentUser.role)}
             </div>
