@@ -6667,12 +6667,12 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
     const chosenDishNames = [];
     WEEK_DAYS.forEach(([dayKey]) => {
       MEAL_SLOTS.forEach(([slotKey]) => {
-        // Iterate EVERY filled cell in this slot (by its stored dish-type key),
-        // not only the dish-types that currently pass the slot filter — otherwise a
-        // dish written in a slot whose type was reassigned/filtered is silently
-        // dropped from the order (the "תוספת that doesn't show up" bug).
+        // Count ONLY the cells that are actually shown in the menu grid (the rows of
+        // this meal). Old values stored under rows that were removed or moved to the
+        // other meal stay hidden in the data — counting them brought back dishes from
+        // previous weeks that no longer appear in the menu.
         const slotMap = weeklyMenu[dayKey]?.[slotKey] || {};
-        Object.values(slotMap).forEach((menuItemId) => {
+        dishTypesForSlot(dishTypes, slotKey).map((dt) => slotMap[dt.id]).forEach((menuItemId) => {
           if (!menuItemId) return;
           const m = menuItems.find((mi) => mi.id === menuItemId);
           if (!m) return;
