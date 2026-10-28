@@ -15237,8 +15237,27 @@ function InvoiceScanner({ products, persistProducts, showToast, onClose }) {
         r.readAsDataURL(file);
       });
       setPreview(dataUrl);
-      const base64 = String(dataUrl).split(",")[1];
-      const mediaType = file.type || "image/jpeg";
+      // Phone photos are several MB. Shrink to max 1600px JPEG before sending —
+      // much faster on mobile data and avoids uploads that time out or get cut off.
+      const small = await new Promise((res) => {
+        try {
+          const img = new Image();
+          img.onload = () => {
+            try {
+              const max = 1600;
+              const k = Math.min(1, max / Math.max(img.width, img.height));
+              const c = document.createElement("canvas");
+              c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+              c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+              res(c.toDataURL("image/jpeg", 0.8));
+            } catch (e) { res(null); }
+          };
+          img.onerror = () => res(null);
+          img.src = dataUrl;
+        } catch (e) { res(null); }
+      });
+      const base64 = String(small || dataUrl).split(",")[1];
+      const mediaType = small ? "image/jpeg" : (file.type || "image/jpeg");
 
       let token = SUPABASE_ANON_KEY;
       try { const sess = await window.auth?.getSession?.(); if (sess?.access_token) token = sess.access_token; } catch (e) {}
@@ -15255,7 +15274,10 @@ function InvoiceScanner({ products, persistProducts, showToast, onClose }) {
       if (items.length === 0) { setError("לא זוהו מוצרים בתמונה. נסה תמונה ברורה יותר."); setBusy(false); return; }
       setRows(items.map((it) => ({ name: it.name, price: it.price || 0, unit: it.unit || "", productId: bestProductMatch(it.name, products) })));
     } catch (err) {
-      setError(String(err.message || err));
+      const msg = String(err.message || err);
+      setError(/failed to fetch|networkerror|load failed/i.test(msg)
+        ? "לא ניתן להתחבר לשרת הסריקה. בדוק חיבור לאינטרנט. אם יש סינון (נטפרי) – ייתכן שהוא חוסם שליחת תמונות לכתובת axkgksyoaysvhthbxoee.supabase.co וצריך לבקש לפתוח אותה."
+        : msg);
     }
     setBusy(false);
   }
