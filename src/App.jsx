@@ -1785,8 +1785,41 @@ function dishTypesForSlot(dishTypes, slotKey) {
    was replaced (e.g. by starter defaults saved while offline), those ids no longer
    exist, so the dishes are still there but hidden. This finds those ids and lets
    you bring the rows back with their original id — everything reappears. */
-function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMenu, showToast }) {
+// Recover a dish type's ORIGINAL name from the saved-menus archive: each saved menu
+// keeps the raw weekly menu (dish-type id -> dish id) next to a readable table that
+// has the row names. Matching the two gives id -> name.
+function guessDishTypeNames(savedMenus, menuItems) {
+  const votes = {}; // dtId -> { name: count }
+  (savedMenus || []).forEach((snap) => {
+    if (!snap || !snap.menu || !Array.isArray(snap.slots)) return;
+    snap.slots.forEach((sl) => {
+      (sl.rows || []).forEach((row) => {
+        (row.cells || []).forEach((cell, dayIdx) => {
+          if (!cell || !cell.name) return;
+          const dayKey = WEEK_DAYS[dayIdx] && WEEK_DAYS[dayIdx][0];
+          const map = (snap.menu[dayKey] || {})[sl.slotKey] || {};
+          Object.entries(map).forEach(([dtId, itemId]) => {
+            const m = (menuItems || []).find((mi) => mi.id === itemId);
+            if (m && m.name === cell.name) {
+              const v = (votes[dtId] = votes[dtId] || {});
+              v[row.dishType] = (v[row.dishType] || 0) + 1;
+            }
+          });
+        });
+      });
+    });
+  });
+  const out = {};
+  Object.entries(votes).forEach(([dtId, v]) => {
+    const best = Object.entries(v).sort((a, b) => b[1] - a[1])[0];
+    if (best) out[dtId] = best[0];
+  });
+  return out;
+}
+
+function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMenu, showToast, savedMenus }) {
   const known = new Set((dishTypes || []).map((d) => d.id));
+  const guessed = guessDishTypeNames(savedMenus, menuItems);
   const lost = {};
   (menuItems || []).forEach((m) => {
     if (m && m.dishType && !known.has(m.dishType)) {
@@ -1808,10 +1841,28 @@ function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMen
   const list = Object.values(lost);
   const [names, setNames] = useState({});
   const [slots, setSlots] = useState({});
-  if (list.length === 0) return null;
+  // Rows already restored with a temporary name ("סוג מנה 1") whose real name we can find.
+  const renamable = (dishTypes || []).filter((d) => /^סוג מנה \d+$/.test(d.name || "") && guessed[d.id]);
+  async function renameFromHistory() {
+    await persistDishTypes((dishTypes || []).map((d) => (renamable.some((r) => r.id === d.id) ? { ...d, name: guessed[d.id] } : d)));
+    showToast(`הוחזרו ${renamable.length} שמות מקוריים ✓`);
+  }
+  if (list.length === 0 && renamable.length === 0) return null;
+  if (list.length === 0) {
+    return (
+      <div className="mb-4 p-3 rounded-2xl" style={{ background: "rgba(92,184,92,0.10)", border: `1.5px solid ${C.sage}` }}>
+        <div className="text-sm font-bold mb-2" style={{ color: C.ink }}>
+          🏷 נמצאו בתפריטים השמורים השמות המקוריים של {renamable.length} שורות: {renamable.map((d) => `${d.name} ← ${guessed[d.id]}`).join(" · ")}
+        </div>
+        <button onClick={renameFromHistory} className="w-full py-2.5 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+          החזר שמות מקוריים
+        </button>
+      </div>
+    );
+  }
 
   async function restoreOne(e) {
-    const name = (names[e.id] || "").trim();
+    const name = (names[e.id] || "").trim() || guessed[e.id] || "";
     if (!name) return showToast("כתוב שם לשורה (למשל: מנה עיקרית / סלט)");
     const auto = e.slots.size === 1 ? [...e.slots][0] : "";
     const slot = slots[e.id] !== undefined ? slots[e.id] : auto;
@@ -1825,7 +1876,7 @@ function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMen
     let i = 0;
     const add = list.map((e) => {
       i++;
-      const name = (names[e.id] || "").trim() || `סוג מנה ${i}`;
+      const name = (names[e.id] || "").trim() || guessed[e.id] || `סוג מנה ${i}`;
       const auto = e.slots.size === 1 ? [...e.slots][0] : "";
       const slot = slots[e.id] !== undefined ? slots[e.id] : auto;
       return { id: e.id, name, ...(slot ? { slot } : {}) };
@@ -1855,7 +1906,7 @@ function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMen
               </div>
               <div className="flex gap-2 flex-wrap">
                 <input
-                  value={names[e.id] || ""}
+                  value={names[e.id] !== undefined ? names[e.id] : (guessed[e.id] || "")}
                   onChange={(ev) => { const v = ev.target.value; setNames((n) => ({ ...n, [e.id]: v })); }}
                   placeholder="שם השורה"
                   className="flex-1 p-2 rounded-xl border text-sm"
@@ -8881,7 +8932,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                 <p className="text-xs mb-3" style={{ color: C.steel }}>
                   לחץ על תא כדי לבחור מנה. אפשר להחליק לצדדים כדי לראות את כל הימים.
                 </p>
-                <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} weeklyMenu={weeklyMenu} showToast={showToast} />
+                <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} weeklyMenu={weeklyMenu} showToast={showToast} savedMenus={savedMenus} />
                 {MEAL_SLOTS.map(([slotKey, slotLabel]) => (
                   <WeeklyMenuGrid
                     key={slotKey}
