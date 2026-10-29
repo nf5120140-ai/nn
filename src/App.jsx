@@ -1819,12 +1819,30 @@ function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMen
     showToast(`השורה "${name}" שוחזרה ✓`);
   }
 
+  // Bring back every lost row in one go. Rows without a typed name get a temporary
+  // name ("סוג מנה 1"…) that can be renamed later in ניהול ← סוגי מנות.
+  async function restoreAll() {
+    let i = 0;
+    const add = list.map((e) => {
+      i++;
+      const name = (names[e.id] || "").trim() || `סוג מנה ${i}`;
+      const auto = e.slots.size === 1 ? [...e.slots][0] : "";
+      const slot = slots[e.id] !== undefined ? slots[e.id] : auto;
+      return { id: e.id, name, ...(slot ? { slot } : {}) };
+    });
+    await persistDishTypes([...(dishTypes || []), ...add]);
+    showToast(`שוחזרו ${add.length} שורות ✓`);
+  }
+
   return (
     <div className="mb-4 p-3 rounded-2xl" style={{ background: "rgba(255,90,95,0.08)", border: `1.5px solid ${C.stamp}` }}>
       <div className="font-bold text-sm mb-1" style={{ color: C.stamp }}>🛠 נמצאו {list.length} סוגי מנות שנעלמו מהתפריט</div>
+      <button onClick={restoreAll} className="w-full mb-3 py-2.5 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+        ♻️ שחזר הכל ({list.length})
+      </button>
       <p className="text-xs mb-3" style={{ color: C.steel }}>
-        המנות לא נמחקו – רק השורות שלהן (סוג המנה) חסרות. תן לכל שורה את השם שלה ולחץ "שחזר", והמנות והתפריט יחזרו להופיע.
-        אחר כך אפשר למחוק שורות ריקות כפולות (✕).
+        המנות לא נמחקו – רק השורות שלהן (סוג המנה) חסרות. "שחזר הכל" מחזיר את כולן בבת אחת (שורה בלי שם תקבל שם זמני "סוג מנה 1"… שאפשר לשנות בניהול ← סוגי מנות).
+        אפשר גם לכתוב שם לכל שורה לפני השחזור. אחר כך מוחקים שורות ריקות כפולות (✕).
       </p>
       <div className="flex flex-col gap-2">
         {list.map((e) => {
