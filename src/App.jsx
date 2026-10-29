@@ -1780,6 +1780,88 @@ function dishTypesForSlot(dishTypes, slotKey) {
   return (dishTypes || []).filter((dt) => !dt.slot || dt.slot === slotKey);
 }
 
+/* ---------- Repair: dish types that went missing ----------
+   Dishes (menu items) and menu cells point at a dish-type id. If the dish-type list
+   was replaced (e.g. by starter defaults saved while offline), those ids no longer
+   exist, so the dishes are still there but hidden. This finds those ids and lets
+   you bring the rows back with their original id — everything reappears. */
+function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMenu, showToast }) {
+  const known = new Set((dishTypes || []).map((d) => d.id));
+  const lost = {};
+  (menuItems || []).forEach((m) => {
+    if (m && m.dishType && !known.has(m.dishType)) {
+      const e = (lost[m.dishType] = lost[m.dishType] || { id: m.dishType, dishes: [], slots: new Set() });
+      if (e.dishes.length < 5) e.dishes.push(m.name);
+    }
+  });
+  Object.values(weeklyMenu || {}).forEach((day) => {
+    Object.entries(day || {}).forEach(([slot, map]) => {
+      Object.entries(map || {}).forEach(([dtId, val]) => {
+        if (!val || known.has(dtId)) return;
+        const e = (lost[dtId] = lost[dtId] || { id: dtId, dishes: [], slots: new Set() });
+        e.slots.add(slot);
+        const nm = (menuItems || []).find((m) => m.id === val)?.name;
+        if (nm && e.dishes.length < 5 && !e.dishes.includes(nm)) e.dishes.push(nm);
+      });
+    });
+  });
+  const list = Object.values(lost);
+  const [names, setNames] = useState({});
+  const [slots, setSlots] = useState({});
+  if (list.length === 0) return null;
+
+  async function restoreOne(e) {
+    const name = (names[e.id] || "").trim();
+    if (!name) return showToast("כתוב שם לשורה (למשל: מנה עיקרית / סלט)");
+    const auto = e.slots.size === 1 ? [...e.slots][0] : "";
+    const slot = slots[e.id] !== undefined ? slots[e.id] : auto;
+    await persistDishTypes([...(dishTypes || []), { id: e.id, name, ...(slot ? { slot } : {}) }]);
+    showToast(`השורה "${name}" שוחזרה ✓`);
+  }
+
+  return (
+    <div className="mb-4 p-3 rounded-2xl" style={{ background: "rgba(255,90,95,0.08)", border: `1.5px solid ${C.stamp}` }}>
+      <div className="font-bold text-sm mb-1" style={{ color: C.stamp }}>🛠 נמצאו {list.length} סוגי מנות שנעלמו מהתפריט</div>
+      <p className="text-xs mb-3" style={{ color: C.steel }}>
+        המנות לא נמחקו – רק השורות שלהן (סוג המנה) חסרות. תן לכל שורה את השם שלה ולחץ "שחזר", והמנות והתפריט יחזרו להופיע.
+        אחר כך אפשר למחוק שורות ריקות כפולות (✕).
+      </p>
+      <div className="flex flex-col gap-2">
+        {list.map((e) => {
+          const auto = e.slots.size === 1 ? [...e.slots][0] : "";
+          const slotVal = slots[e.id] !== undefined ? slots[e.id] : auto;
+          return (
+            <div key={e.id} className="p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+              <div className="text-xs mb-1" style={{ color: C.ink }}>
+                מנות בשורה הזו: <b>{e.dishes.length ? e.dishes.join(" · ") : "—"}</b>
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                <input
+                  value={names[e.id] || ""}
+                  onChange={(ev) => { const v = ev.target.value; setNames((n) => ({ ...n, [e.id]: v })); }}
+                  placeholder="שם השורה"
+                  className="flex-1 p-2 rounded-xl border text-sm"
+                  style={{ borderColor: C.kraftDark, background: C.paper, color: C.ink, minWidth: 120 }}
+                />
+                <select
+                  value={slotVal}
+                  onChange={(ev) => { const v = ev.target.value; setSlots((m) => ({ ...m, [e.id]: v })); }}
+                  className="p-2 rounded-xl border text-sm"
+                  style={{ borderColor: C.kraftDark, background: C.paper, color: C.ink }}
+                >
+                  <option value="">צהריים וערב</option>
+                  {MEAL_SLOTS.map(([sk, sl]) => <option key={sk} value={sk}>{sl}</option>)}
+                </select>
+                <button onClick={() => restoreOne(e)} className="px-3 py-2 rounded-xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>שחזר</button>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persistDishTypes, slotKey, slotLabel, weekStart }) {
   const [cell, setCell] = useState(null); // { dayKey, dayLabel, dishTypeId, dishTypeName }
   const [newRowName, setNewRowName] = useState("");
@@ -4132,6 +4214,14 @@ function App() {
         loadKey("task-deletes", []),
       ]);
       const finalLocations = loc || [];
+      // Create starter defaults ONLY when the server confirms there's really nothing
+      // stored. If the app is offline / the load failed (e.g. a fresh install with an
+      // empty cache), saving defaults would later overwrite the real list on the server
+      // — that's how the real dish types were replaced and all dishes "disappeared".
+      async function serverConfirmsEmpty(baseKey) {
+        if (!isOnline()) return false;
+        try { const res = await window.storage.get(nsKey(baseKey), true); return !res; } catch (e) { return false; }
+      }
       let finalDishTypes = dt;
       if (finalDishTypes === null) {
         finalDishTypes = [
@@ -4139,7 +4229,7 @@ function App() {
           { id: genId(), name: "תוספת" },
           { id: genId(), name: "ירקנית" },
         ];
-        await saveKey(KEYS.dishTypes, finalDishTypes);
+        if (await serverConfirmsEmpty(KEYS.dishTypes)) await saveKey(KEYS.dishTypes, finalDishTypes);
       }
       let finalTaskCategories = tc;
       if (finalTaskCategories === null) {
@@ -4152,7 +4242,7 @@ function App() {
           { id: genId(), name: "מטבח", icon: "🍳" },
           { id: genId(), name: "כללי", icon: "📋" },
         ];
-        await saveKey(KEYS.taskCategories, finalTaskCategories);
+        if (await serverConfirmsEmpty(KEYS.taskCategories)) await saveKey(KEYS.taskCategories, finalTaskCategories);
       }
 
       const finalUsers = (orgProfiles || []).map((prof) => ({
@@ -8773,6 +8863,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                 <p className="text-xs mb-3" style={{ color: C.steel }}>
                   לחץ על תא כדי לבחור מנה. אפשר להחליק לצדדים כדי לראות את כל הימים.
                 </p>
+                <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} weeklyMenu={weeklyMenu} showToast={showToast} />
                 {MEAL_SLOTS.map(([slotKey, slotLabel]) => (
                   <WeeklyMenuGrid
                     key={slotKey}
@@ -11540,11 +11631,15 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
       {section === "users" && (
         <UsersAdmin users={users} updateUserProfile={updateUserProfile} deleteUserProfile={deleteUserProfile} showToast={showToast} currentUser={currentUser} settings={settings} persistSettings={persistSettings} taskCategories={taskCategories} />
       )}
+      {section === "menu" && <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} weeklyMenu={weeklyMenu} showToast={showToast} />}
       {section === "menu" && (
         <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} persistProducts={persistProducts} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} dishTypes={dishTypes} />
       )}
       {section === "dishtypes" && (
-        <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} />
+        <>
+          <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} weeklyMenu={weeklyMenu} showToast={showToast} />
+          <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} />
+        </>
       )}
       {section === "orderrequests" && (
         <OrderRequestsAdmin
