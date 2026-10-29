@@ -1780,6 +1780,111 @@ function dishTypesForSlot(dishTypes, slotKey) {
   return (dishTypes || []).filter((dt) => !dt.slot || dt.slot === slotKey);
 }
 
+/* ---------- Merge dish-type rows ----------
+   After a recovery the same row can come back as several rows (each old id became
+   its own row). Merging moves every dish and every menu cell of the merged rows onto
+   ONE row, then removes the extra rows. Nothing is deleted from the dishes. */
+function DishTypesMerge({ dishTypes, persistDishTypes, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, showToast }) {
+  const [open, setOpen] = useState(false);
+  const [picked, setPicked] = useState([]);
+  const [targetName, setTargetName] = useState("");
+  const list = dishTypes || [];
+  const slotLabel = (d) => (d.slot ? (MEAL_SLOTS.find(([k]) => k === d.slot) || [])[1] || d.slot : "צהריים וערב");
+  const countOf = (id) => (menuItems || []).filter((m) => m.dishType === id).length;
+  // Rows with the exact same name and same meal = obvious duplicates.
+  const groups = {};
+  list.forEach((d) => { const k = (d.name || "").trim() + "|" + (d.slot || ""); (groups[k] = groups[k] || []).push(d); });
+  const dupGroups = Object.values(groups).filter((g) => g.length > 1);
+
+  // plans: [{ target, sources, name }] — all applied in ONE pass, so merging several
+  // groups at once never overwrites the previous group's changes.
+  async function applyMerges(plans) {
+    const remap = {}; // sourceId -> targetId
+    const targetPatch = {}; // targetId -> { name, slot }
+    plans.forEach(({ target, sources, name }) => {
+      sources.forEach((d) => { if (d.id !== target.id) remap[d.id] = target.id; });
+      const allSlots = new Set([target, ...sources].map((d) => d.slot || ""));
+      targetPatch[target.id] = { name: (name || target.name).trim() || target.name, slot: allSlots.size === 1 ? [...allSlots][0] : "" };
+    });
+    if (Object.keys(remap).length === 0) return;
+    const nextItems = (menuItems || []).map((m) => (remap[m.dishType] ? { ...m, dishType: remap[m.dishType] } : m));
+    const nextMenu = {};
+    Object.entries(weeklyMenu || {}).forEach(([day, slotsObj]) => {
+      nextMenu[day] = {};
+      Object.entries(slotsObj || {}).forEach(([slot, map]) => {
+        const nm = { ...(map || {}) };
+        Object.entries(remap).forEach(([sid, tid]) => {
+          if (nm[sid] && !nm[tid]) nm[tid] = nm[sid];
+          delete nm[sid];
+        });
+        nextMenu[day][slot] = nm;
+      });
+    });
+    const nextTypes = list
+      .filter((d) => !remap[d.id])
+      .map((d) => {
+        const p = targetPatch[d.id];
+        if (!p) return d;
+        const { slot: _s, ...rest } = d;
+        return { ...rest, name: p.name, ...(p.slot ? { slot: p.slot } : {}) };
+      });
+    await persistMenuItems(nextItems);
+    await persistWeeklyMenu(nextMenu);
+    await persistDishTypes(nextTypes);
+  }
+
+  async function mergeDuplicates() {
+    const plans = dupGroups.map((g) => {
+      const target = [...g].sort((a, b) => countOf(b.id) - countOf(a.id))[0];
+      return { target, sources: g, name: target.name };
+    });
+    await applyMerges(plans);
+    showToast(`אוחדו ${dupGroups.length} קבוצות של שורות כפולות ✓`);
+  }
+  async function mergePicked() {
+    const rows = list.filter((d) => picked.includes(d.id));
+    if (rows.length < 2) return showToast("סמן לפחות 2 שורות למיזוג");
+    const target = [...rows].sort((a, b) => countOf(b.id) - countOf(a.id))[0];
+    const name = targetName.trim() || target.name;
+    if (!window.confirm(`למזג ${rows.length} שורות לשורה אחת בשם "${name}"?\nכל המנות והתאים בתפריט יעברו אליה.`)) return;
+    await applyMerges([{ target, sources: rows, name }]);
+    setPicked([]); setTargetName(""); setOpen(false);
+    showToast("השורות מוזגו ✓");
+  }
+
+  if (!persistMenuItems || !persistWeeklyMenu) return null;
+  return (
+    <div className="mb-4 p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+      {dupGroups.length > 0 && (
+        <div className="mb-2">
+          <div className="text-sm font-bold mb-1" style={{ color: C.ink }}>
+            🔗 יש שורות כפולות: {dupGroups.map((g) => `${g[0].name} ×${g.length}`).join(" · ")}
+          </div>
+          <button onClick={mergeDuplicates} className="w-full py-2.5 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
+            אחד שורות כפולות
+          </button>
+        </div>
+      )}
+      <button onClick={() => setOpen((o) => !o)} className="text-sm font-bold underline" style={{ color: C.accent, background: "none", border: "none" }}>
+        {open ? "סגור מיזוג ידני" : "🔗 מיזוג ידני של שורות בתפריט"}
+      </button>
+      {open && (
+        <div className="mt-2 flex flex-col gap-1.5">
+          <p className="text-xs" style={{ color: C.steel }}>סמן את השורות שהן בעצם אותו סוג מנה. כל המנות יעברו לשורה אחת.</p>
+          {list.map((d) => (
+            <label key={d.id} className="flex items-center gap-2 p-2 rounded-xl text-sm" style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, color: C.ink }}>
+              <input type="checkbox" checked={picked.includes(d.id)} onChange={() => setPicked((p) => (p.includes(d.id) ? p.filter((x) => x !== d.id) : [...p, d.id]))} />
+              <span className="flex-1"><b>{d.name}</b> <span className="text-xs" style={{ color: C.steel }}>· {slotLabel(d)} · {countOf(d.id)} מנות</span></span>
+            </label>
+          ))}
+          <input value={targetName} onChange={(e) => setTargetName(e.target.value)} placeholder="שם לשורה המאוחדת (לא חובה)" className="p-2 rounded-xl border text-sm" style={{ borderColor: C.kraftDark, background: C.paper, color: C.ink }} />
+          <button onClick={mergePicked} className="py-2.5 rounded-xl font-bold text-sm" style={{ background: C.brand, color: "#fff" }}>מזג {picked.length > 1 ? `(${picked.length})` : ""}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Repair: dish types that went missing ----------
    Dishes (menu items) and menu cells point at a dish-type id. If the dish-type list
    was replaced (e.g. by starter defaults saved while offline), those ids no longer
@@ -5396,6 +5501,7 @@ function App() {
             persistSettings={persistSettings}
             isManager={isManager(currentUser)}
             menuItems={menuItems}
+            persistMenuItems={persistMenuItems}
             weeklyMenu={weeklyMenu}
             persistWeeklyMenu={persistWeeklyMenu}
             showToast={showToast}
@@ -6515,7 +6621,7 @@ function usageStatus(p, now) {
   };
 }
 
-function OrderTab({ lowStock, products, persistProducts, settings, persistSettings, isManager, tasks, persistTasks, deleteTasksById, menuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry, savedMenus, persistSavedMenus }) {
+function OrderTab({ lowStock, products, persistProducts, settings, persistSettings, isManager, tasks, persistTasks, deleteTasksById, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu, showToast, dishTypes, persistDishTypes, currentUser, orderRequests, persistOrderRequests, notifyManagers, recordOrder, orderHistory, deleteOrderHistoryEntry, savedMenus, persistSavedMenus }) {
   const mayApprove = canSendOrders(currentUser);
   const myPending = (orderRequests || []).filter((r) => r.createdById === currentUser?.id && r.status === "pending");
   const suppliers = settings.suppliers || [];
@@ -8933,6 +9039,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                   לחץ על תא כדי לבחור מנה. אפשר להחליק לצדדים כדי לראות את כל הימים.
                 </p>
                 <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} weeklyMenu={weeklyMenu} showToast={showToast} savedMenus={savedMenus} />
+                <DishTypesMerge dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} persistMenuItems={persistMenuItems} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} showToast={showToast} />
                 {MEAL_SLOTS.map(([slotKey, slotLabel]) => (
                   <WeeklyMenuGrid
                     key={slotKey}
@@ -11707,6 +11814,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
       {section === "dishtypes" && (
         <>
           <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} weeklyMenu={weeklyMenu} showToast={showToast} />
+          <DishTypesMerge dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} persistMenuItems={persistMenuItems} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} showToast={showToast} />
           <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} />
         </>
       )}
