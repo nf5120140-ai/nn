@@ -14997,6 +14997,16 @@ function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
     await persistDishTypes(dishTypes.filter((d) => d.id !== id));
   }
 
+  async function setSlot(id, slot) {
+    await persistDishTypes(dishTypes.map((d) => {
+      if (d.id !== id) return d;
+      const { slot: _old, ...rest } = d;
+      return slot ? { ...rest, slot } : rest;
+    }));
+    const lbl = MEAL_SLOTS.find(([k]) => k === slot)?.[1];
+    showToast(slot ? `השורה תופיע רק ב${lbl} ✓` : "השורה תופיע בכל הארוחות ✓");
+  }
+
   function move(id, dir) {
     const idx = dishTypes.findIndex((d) => d.id === id);
     const newIdx = idx + dir;
@@ -15011,7 +15021,7 @@ function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
       <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
         <div className="wh-display font-bold mb-1" style={{ color: C.ink }}>סוגי מנות/קטגוריות בארוחה</div>
         <p className="text-xs" style={{ color: C.steel }}>
-          כאן בונים מה מרכיב ארוחה אצלכם - כמה קטגוריות שרוצים (למשל: מנה עיקרית, תוספת, ירקנית, סלט, ללא גלוטן...). כל מוסד יכול לבנות סגנון שונה.
+          כאן בונים מה מרכיב ארוחה אצלכם - כמה קטגוריות שרוצים (למשל: מנה עיקרית, תוספת, ירקנית, סלט, ללא גלוטן...). כל מוסד יכול לבנות סגנון שונה. ליד כל שורה בוחרים אם היא מופיעה בכל הארוחות או רק בצהריים / רק בערב.
         </p>
         <div className="flex gap-2">
           <input
@@ -15042,9 +15052,16 @@ function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
             ) : (
               <div className="flex items-center gap-2">
                 <div className="font-bold text-sm" style={{ color: C.ink }}>{d.name}</div>
-                <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: d.slot ? "#D6E7F5" : C.kraft, color: C.ink }}>
-                  {d.slot ? (MEAL_SLOTS.find(([k]) => k === d.slot)?.[1] || d.slot) : "כל הארוחות"}
-                </span>
+                <select
+                  value={d.slot || ""}
+                  onChange={(e) => setSlot(d.id, e.target.value)}
+                  title="באיזו ארוחה השורה מופיעה"
+                  className="text-xs px-2 py-1 rounded-full border"
+                  style={{ background: d.slot ? "#D6E7F5" : C.paper, color: C.ink, borderColor: C.kraftDark }}
+                >
+                  <option value="">כל הארוחות</option>
+                  {MEAL_SLOTS.map(([sk, sl]) => <option key={sk} value={sk}>רק {sl}</option>)}
+                </select>
               </div>
             )}
             <div className="flex gap-1 items-center">
