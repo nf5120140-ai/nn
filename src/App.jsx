@@ -4736,7 +4736,7 @@ function App() {
     }
     setBackupBusy(false);
   }
-  async function importBackup(file) {
+  async function importBackup(file, mode) {
     if (!file) return;
     setBackupBusy(true);
     try {
@@ -4745,6 +4745,14 @@ function App() {
       const data = parsed && parsed.data ? parsed.data : parsed;
       const keys = Object.keys(data || {});
       if (keys.length === 0) { showToast("קובץ הגיבוי ריק או לא תקין"); setBackupBusy(false); return; }
+      if (mode === "merge") {
+        if (!window.confirm("להשלים מהגיבוי רק את מה שחסר?\n\nשום דבר קיים לא יימחק ולא ישתנה – יתווספו רק פריטים שלא קיימים עכשיו.")) { setBackupBusy(false); return; }
+        const { total } = await mergeRestoreData(data);
+        if (total === 0) { showToast("לא נמצא מה להשלים – הכול כבר קיים"); setBackupBusy(false); return; }
+        showToast(`הושלמו ${total} פריטים מהגיבוי - טוען מחדש...`);
+        setTimeout(() => window.location.reload(), 1200);
+        return;
+      }
       if (!window.confirm(`לשחזר ${keys.length} סוגי נתונים מהגיבוי?\n\nזה ידרוס את הנתונים הנוכחיים במערכת בנתונים מהקובץ. מומלץ להוריד גיבוי עדכני קודם.`)) { setBackupBusy(false); return; }
       for (const k of keys) {
         try { await saveKey(k, data[k]); } catch (e) {}
@@ -5578,15 +5586,22 @@ function App() {
             </button>
 
             <label
+              className="block w-full text-center py-3 rounded-2xl font-bold cursor-pointer mb-2"
+              style={{ background: C.sage, color: "#fff" }}
+            >
+              🧩 השלם מגיבוי (לא מוחק כלום)
+              <input type="file" accept=".json,application/json" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; importBackup(f, "merge"); }} style={{ display: "none" }} disabled={backupBusy} />
+            </label>
+            <label
               className="block w-full text-center py-3 rounded-2xl font-bold cursor-pointer"
               style={{ background: C.kraft, color: C.stamp, border: `1.5px dashed ${C.stamp}` }}
             >
-              ⬆️ שחזר מקובץ גיבוי
+              ⬆️ שחזור מלא (דורס הכול)
               <input type="file" accept=".json,application/json" onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ""; importBackup(f); }} style={{ display: "none" }} disabled={backupBusy} />
             </label>
 
             <p className="text-xs mt-3 p-2 rounded-xl" style={{ background: "rgba(232,168,77,0.15)", color: C.ink }}>
-              ⚠️ שחזור דורס את הנתונים הנוכחיים בנתונים מהקובץ. תמיד הורד גיבוי עדכני לפני שחזור. מומלץ להוריד גיבוי אחת לשבוע.
+              🧩 "השלם" מוסיף רק פריטים שחסרים עכשיו ולא נוגע בקיים (פריט שמחקת בכוונה אחרי הגיבוי – יחזור). ⚠️ "שחזור מלא" דורס את כל הנתונים הנוכחיים. תמיד הורד גיבוי עדכני לפני שחזור.
             </p>
           </div>
         </div>
@@ -11637,6 +11652,7 @@ function BackupAdmin({ currentUser, showToast }) {
   const [summary, setSummary] = useState(null);
   const [legacyInfo, setLegacyInfo] = useState(null);
   const fileRef = useRef(null);
+  const importModeRef = useRef("replace"); // "merge" | "replace"
 
   async function handleExport() {
     setBusy(true);
@@ -11695,6 +11711,21 @@ function BackupAdmin({ currentUser, showToast }) {
 
     const keys = Object.keys(payload.data);
     const when = payload.exportedAt ? new Date(payload.exportedAt).toLocaleString("he-IL") : "לא ידוע";
+    if (importModeRef.current === "merge") {
+      if (!window.confirm(`השלמה מגיבוי מתאריך ${when}.\n\nיתווספו רק פריטים שחסרים עכשיו. שום דבר קיים לא יימחק ולא ישתנה. להמשיך?`)) return;
+      setBusy(true);
+      try {
+        const { total } = await mergeRestoreData(payload.data);
+        if (total === 0) { showToast && showToast("לא נמצא מה להשלים – הכול כבר קיים"); setBusy(false); return; }
+        showToast && showToast(`הושלמו ${total} פריטים מהגיבוי. טוען מחדש...`);
+        setTimeout(() => window.location.reload(), 900);
+      } catch (err) {
+        console.error("merge restore failed", err);
+        showToast && showToast("שגיאה בהשלמה מהגיבוי");
+        setBusy(false);
+      }
+      return;
+    }
     const ok1 = window.confirm(
       `שחזור גיבוי מתאריך ${when}.\n\nהפעולה תדרוס את כל הנתונים הנוכחיים ותחזיר את הנתונים מהקובץ (${keys.length} קטגוריות).\n\nלא ניתן לבטל. להמשיך?`
     );
@@ -11852,7 +11883,7 @@ function BackupAdmin({ currentUser, showToast }) {
       <div className="rounded-2xl p-4" style={{ background: C.kraft, border: `1px solid ${C.stamp}` }}>
         <div className="font-bold text-sm mb-1" style={{ color: C.stamp }}>שחזור מגיבוי</div>
         <p className="text-xs mb-3" style={{ color: C.steel }}>
-          שחזור <b>ידרוס את כל הנתונים הנוכחיים</b> ויחליף אותם בתוכן הקובץ. השתמש בזה רק אם אתה בטוח.
+          <b>השלמה</b> מוסיפה רק פריטים שחסרים עכשיו ולא נוגעת בקיים (פריט שמחקת בכוונה אחרי הגיבוי – יחזור). <b>שחזור מלא</b> ידרוס את כל הנתונים הנוכחיים.
         </p>
         <input
           ref={fileRef}
@@ -11862,12 +11893,20 @@ function BackupAdmin({ currentUser, showToast }) {
           style={{ display: "none" }}
         />
         <button
-          onClick={() => fileRef.current && fileRef.current.click()}
+          onClick={() => { importModeRef.current = "merge"; fileRef.current && fileRef.current.click(); }}
+          disabled={busy}
+          className="w-full py-3 mb-2 rounded-2xl font-bold text-sm"
+          style={{ background: C.sage, color: "#fff", opacity: busy ? 0.6 : 1 }}
+        >
+          🧩 השלם מגיבוי – רק מה שחסר (לא מוחק כלום)
+        </button>
+        <button
+          onClick={() => { importModeRef.current = "replace"; fileRef.current && fileRef.current.click(); }}
           disabled={busy}
           className="w-full py-3 rounded-2xl font-bold text-sm"
           style={{ background: "transparent", color: C.stamp, border: `1.5px solid ${C.stamp}`, opacity: busy ? 0.6 : 1 }}
         >
-          בחר קובץ גיבוי לשחזור
+          שחזור מלא – דורס את הנתונים הנוכחיים
         </button>
       </div>
 
@@ -12771,6 +12810,49 @@ function RemindersAdmin({ reminders, persistReminders, products, users, showToas
       </div>
     </div>
   );
+}
+
+/* ---------- Backup "complete" (merge) restore ----------
+   Fills in only what's missing: nothing that exists now is deleted or changed.
+   - lists: items from the backup whose id isn't in the current list are added
+   - objects (settings, weekly menu…): keys missing now are added, recursively
+   - anything that already has a value keeps the current value */
+function mergeBackupValue(current, incoming) {
+  if (incoming === undefined || incoming === null) return { value: current, added: 0 };
+  if (current === undefined || current === null) {
+    const n = Array.isArray(incoming) ? incoming.length : 1;
+    return { value: incoming, added: n };
+  }
+  if (Array.isArray(current) && Array.isArray(incoming)) {
+    const idOf = (x) => (x && typeof x === "object" && x.id != null ? "id:" + x.id : "js:" + JSON.stringify(x));
+    const have = new Set(current.map(idOf));
+    const extra = incoming.filter((x) => !have.has(idOf(x)));
+    return { value: extra.length ? [...current, ...extra] : current, added: extra.length };
+  }
+  if (typeof current === "object" && typeof incoming === "object" && !Array.isArray(current) && !Array.isArray(incoming)) {
+    let added = 0;
+    const out = { ...current };
+    Object.keys(incoming).forEach((k) => {
+      // A key that exists now with an empty value (e.g. a menu cell you cleared)
+      // was emptied on purpose — leave it empty.
+      if (Object.prototype.hasOwnProperty.call(current, k) && (current[k] === null || current[k] === "")) return;
+      const r = mergeBackupValue(current[k], incoming[k]);
+      if (r.added) { out[k] = r.value; added += r.added; }
+    });
+    return { value: added ? out : current, added };
+  }
+  return { value: current, added: 0 }; // different types / plain values: keep what's there now
+}
+async function mergeRestoreData(data) {
+  let total = 0, cats = 0;
+  for (const key of Object.keys(data || {})) {
+    if (data[key] === undefined) continue;
+    let cur = null;
+    try { cur = await loadKey(key, null); } catch (e) {}
+    const r = mergeBackupValue(cur, data[key]);
+    if (r.added > 0) { await saveKey(key, r.value); total += r.added; cats++; }
+  }
+  return { total, cats };
 }
 
 /* ---------- Full-screen image viewer ----------
