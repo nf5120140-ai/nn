@@ -11844,7 +11844,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
         <>
           <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} persistMenuItems={persistMenuItems} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} showToast={showToast} />
           <DishTypesMerge dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} persistMenuItems={persistMenuItems} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} showToast={showToast} />
-          <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} />
+          <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} menuItems={menuItems} persistMenuItems={persistMenuItems} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} />
         </>
       )}
       {section === "orderrequests" && (
@@ -14973,8 +14973,69 @@ function TaskCategoriesAdmin({ taskCategories, persistTaskCategories, showToast 
   );
 }
 
-function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
+function DishTypesAdmin({ dishTypes, persistDishTypes, showToast, menuItems, persistMenuItems, weeklyMenu, persistWeeklyMenu }) {
   const [name, setName] = useState("");
+  const [splitId, setSplitId] = useState(null);
+  const [splitPick, setSplitPick] = useState({}); // itemId -> "lunch" | "dinner" | "both"
+  const canSplit = !!(persistMenuItems && persistWeeklyMenu);
+
+  // Which meals each dish of a row is actually used in on the weekly menu.
+  function usageOf(rowId) {
+    const use = {};
+    Object.values(weeklyMenu || {}).forEach((day) => {
+      Object.entries(day || {}).forEach(([sk, map]) => {
+        const v = map && map[rowId];
+        if (v) (use[v] = use[v] || new Set()).add(sk);
+      });
+    });
+    return use;
+  }
+  function openSplit(d) {
+    const use = usageOf(d.id);
+    const pick = {};
+    (menuItems || []).filter((m) => m.dishType === d.id).forEach((m) => {
+      const u = use[m.id];
+      pick[m.id] = !u ? "both" : u.has("lunch") && u.has("dinner") ? "both" : u.has("dinner") ? "dinner" : "lunch";
+    });
+    setSplitPick(pick);
+    setSplitId(d.id);
+  }
+  // Split one shared row into a lunch row (keeps the id) and a new dinner row.
+  // Dishes go to lunch, dinner or both (a copy is made for dinner); dinner menu cells move to the new row.
+  async function doSplit() {
+    const d = dishTypes.find((x) => x.id === splitId);
+    if (!d) return;
+    const newId = genId();
+    const copyOf = {};
+    const nextItems = [];
+    (menuItems || []).forEach((m) => {
+      if (m.dishType !== d.id) return nextItems.push(m);
+      const p = splitPick[m.id] || "both";
+      if (p === "dinner") { nextItems.push({ ...m, dishType: newId }); copyOf[m.id] = m.id; }
+      else if (p === "both") { const c = { ...m, id: genId(), dishType: newId }; nextItems.push(m, c); copyOf[m.id] = c.id; }
+      else nextItems.push(m);
+    });
+    const nextMenu = {};
+    Object.entries(weeklyMenu || {}).forEach(([dk, day]) => {
+      nextMenu[dk] = { ...(day || {}) };
+      const din = day && day.dinner;
+      if (din && din[d.id] !== undefined) {
+        const nd = { ...din };
+        const v = nd[d.id];
+        delete nd[d.id];
+        if (v) nd[newId] = copyOf[v] || v;
+        nextMenu[dk].dinner = nd;
+      }
+    });
+    const idx = dishTypes.findIndex((x) => x.id === d.id);
+    const nextTypes = [...dishTypes];
+    nextTypes.splice(idx, 1, { ...d, slot: "lunch" }, { id: newId, name: d.name, slot: "dinner" });
+    await persistMenuItems(nextItems);
+    await persistWeeklyMenu(nextMenu);
+    await persistDishTypes(nextTypes);
+    setSplitId(null);
+    showToast(`"${d.name}" פוצל לצהריים ולערב ✓`);
+  }
   const [editingId, setEditingId] = useState(null);
   const [editName, setEditName] = useState("");
 
@@ -15040,7 +15101,7 @@ function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
           <p className="text-sm text-center py-4" style={{ color: C.steel }}>אין עדיין קטגוריות - הוסף למעלה</p>
         )}
         {dishTypes.map((d, idx) => (
-          <div key={d.id} className="flex justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+          <div key={d.id} className="flex flex-wrap justify-between items-center p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
             {editingId === d.id ? (
               <input
                 value={editName}
@@ -15072,8 +15133,37 @@ function DishTypesAdmin({ dishTypes, persistDishTypes, showToast }) {
               ) : (
                 <button onClick={() => { setEditingId(d.id); setEditName(d.name); }} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.kraft }}>ערוך</button>
               )}
+              {canSplit && !d.slot && editingId !== d.id && (
+                <button onClick={() => (splitId === d.id ? setSplitId(null) : openSplit(d))} className="text-xs px-2 py-1 rounded-xl" style={{ background: "#D6E7F5", color: C.ink }}>✂️ פצל</button>
+              )}
               <button onClick={() => remove(d.id)} className="text-xs px-2 py-1 rounded-xl" style={{ background: C.stamp, color: "#fff" }}>מחק</button>
             </div>
+            {splitId === d.id && (
+              <div className="w-full mt-3 p-3 rounded-xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+                <div className="text-sm font-bold mb-1" style={{ color: C.ink }}>פיצול "{d.name}" לשתי שורות: צהריים וערב</div>
+                <p className="text-xs mb-2" style={{ color: C.steel }}>
+                  בחר לכל מנה לאיזו שורה היא שייכת. "שניהם" = המנה תופיע בשתי השורות. מה שכבר משובץ בתפריט הערב יעבור לשורת הערב.
+                </p>
+                {Object.keys(splitPick).length === 0 && <p className="text-xs mb-2" style={{ color: C.steel }}>אין מנות בשורה הזו.</p>}
+                <div className="flex flex-col gap-1 mb-3" style={{ maxHeight: 260, overflowY: "auto" }}>
+                  {(menuItems || []).filter((m) => m.dishType === d.id).map((m) => (
+                    <div key={m.id} className="flex items-center justify-between gap-2">
+                      <span className="text-sm" style={{ color: C.ink }}>{m.name}</span>
+                      <div className="flex gap-1">
+                        {[["lunch", "צהריים"], ["dinner", "ערב"], ["both", "שניהם"]].map(([k, l]) => (
+                          <button key={k} onClick={() => setSplitPick((p) => ({ ...p, [m.id]: k }))} className="text-xs px-2 py-1 rounded-lg font-bold"
+                            style={{ background: splitPick[m.id] === k ? C.sage : C.kraft, color: splitPick[m.id] === k ? "#fff" : C.ink }}>{l}</button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={doSplit} className="flex-1 py-2 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>✂️ פצל</button>
+                  <button onClick={() => setSplitId(null)} className="px-4 py-2 rounded-xl text-sm" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
+                </div>
+              </div>
+            )}
           </div>
         ))}
       </div>
