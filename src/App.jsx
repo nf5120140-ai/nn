@@ -1922,7 +1922,7 @@ function guessDishTypeNames(savedMenus, menuItems) {
   return out;
 }
 
-function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMenu, showToast, savedMenus }) {
+function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMenu, showToast, savedMenus, persistMenuItems, persistWeeklyMenu }) {
   const known = new Set((dishTypes || []).map((d) => d.id));
   const guessed = guessDishTypeNames(savedMenus, menuItems);
   const lost = {};
@@ -1966,6 +1966,27 @@ function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMen
     );
   }
 
+  // Permanently drop lost rows that aren't needed: their cells are removed from the
+  // weekly menu and their dishes stay in the dish library without a row.
+  async function discard(ids) {
+    const drop = new Set(ids);
+    if (!persistMenuItems || !persistWeeklyMenu) return showToast("אפשר למחוק רק ממסך התפריט");
+    if (!window.confirm(ids.length > 1 ? `למחוק את כל ${ids.length} השורות החסרות? המנות עצמן יישארו במאגר המנות.` : "למחוק את השורה הזו? המנות עצמן יישארו במאגר המנות.")) return;
+    const nextItems = (menuItems || []).map((m) => (m && drop.has(m.dishType) ? { ...m, dishType: "" } : m));
+    const nextMenu = {};
+    Object.entries(weeklyMenu || {}).forEach(([dk, day]) => {
+      nextMenu[dk] = {};
+      Object.entries(day || {}).forEach(([sk, map]) => {
+        const nm = {};
+        Object.entries(map || {}).forEach(([dt, v]) => { if (!drop.has(dt)) nm[dt] = v; });
+        nextMenu[dk][sk] = nm;
+      });
+    });
+    await persistMenuItems(nextItems);
+    await persistWeeklyMenu(nextMenu);
+    showToast(ids.length > 1 ? `נמחקו ${ids.length} שורות ✓` : "השורה נמחקה ✓");
+  }
+
   async function restoreOne(e) {
     const name = (names[e.id] || "").trim() || guessed[e.id] || "";
     if (!name) return showToast("כתוב שם לשורה (למשל: מנה עיקרית / סלט)");
@@ -1996,6 +2017,11 @@ function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMen
       <button onClick={restoreAll} className="w-full mb-3 py-2.5 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
         ♻️ שחזר הכל ({list.length})
       </button>
+      {persistMenuItems && (
+        <button onClick={() => discard(list.map((e) => e.id))} className="w-full mb-3 py-2 rounded-xl font-bold text-sm" style={{ background: "transparent", color: C.stamp, border: `1.5px solid ${C.stamp}` }}>
+          🗑 לא צריך – מחק הכל ({list.length})
+        </button>
+      )}
       <p className="text-xs mb-3" style={{ color: C.steel }}>
         המנות לא נמחקו – רק השורות שלהן (סוג המנה) חסרות. "שחזר הכל" מחזיר את כולן בבת אחת (שורה בלי שם תקבל שם זמני "סוג מנה 1"… שאפשר לשנות בניהול ← סוגי מנות).
         אפשר גם לכתוב שם לכל שורה לפני השחזור. אחר כך מוחקים שורות ריקות כפולות (✕).
@@ -2027,6 +2053,9 @@ function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMen
                   {MEAL_SLOTS.map(([sk, sl]) => <option key={sk} value={sk}>{sl}</option>)}
                 </select>
                 <button onClick={() => restoreOne(e)} className="px-3 py-2 rounded-xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>שחזר</button>
+                {persistMenuItems && (
+                  <button onClick={() => discard([e.id])} title="מחק – לא צריך" className="px-3 py-2 rounded-xl text-sm font-bold" style={{ background: "transparent", color: C.stamp, border: `1px solid ${C.stamp}` }}>🗑</button>
+                )}
               </div>
             </div>
           );
@@ -9038,7 +9067,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                 <p className="text-xs mb-3" style={{ color: C.steel }}>
                   לחץ על תא כדי לבחור מנה. אפשר להחליק לצדדים כדי לראות את כל הימים.
                 </p>
-                <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} weeklyMenu={weeklyMenu} showToast={showToast} savedMenus={savedMenus} />
+                <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} persistMenuItems={persistMenuItems} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} showToast={showToast} savedMenus={savedMenus} />
                 <DishTypesMerge dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} persistMenuItems={persistMenuItems} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} showToast={showToast} />
                 {MEAL_SLOTS.map(([slotKey, slotLabel]) => (
                   <WeeklyMenuGrid
@@ -11807,13 +11836,13 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
       {section === "users" && (
         <UsersAdmin users={users} updateUserProfile={updateUserProfile} deleteUserProfile={deleteUserProfile} showToast={showToast} currentUser={currentUser} settings={settings} persistSettings={persistSettings} taskCategories={taskCategories} />
       )}
-      {section === "menu" && <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} weeklyMenu={weeklyMenu} showToast={showToast} />}
+      {section === "menu" && <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} persistMenuItems={persistMenuItems} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} showToast={showToast} />}
       {section === "menu" && (
         <MenuAdmin menuItems={menuItems} persistMenuItems={persistMenuItems} products={products} persistProducts={persistProducts} showToast={showToast} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} dishTypes={dishTypes} />
       )}
       {section === "dishtypes" && (
         <>
-          <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} weeklyMenu={weeklyMenu} showToast={showToast} />
+          <LostDishTypesRepair dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} persistMenuItems={persistMenuItems} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} showToast={showToast} />
           <DishTypesMerge dishTypes={dishTypes} persistDishTypes={persistDishTypes} menuItems={menuItems} persistMenuItems={persistMenuItems} weeklyMenu={weeklyMenu} persistWeeklyMenu={persistWeeklyMenu} showToast={showToast} />
           <DishTypesAdmin dishTypes={dishTypes} persistDishTypes={persistDishTypes} showToast={showToast} />
         </>
