@@ -2385,6 +2385,136 @@ function UnitRequestTab({
   const history = mine.filter((r) => r !== current && r.status !== "submitted" && r.status !== "fulfilled").sort((a, b) => b.createdAt - a.createdAt);
   const template = (unitTemplates || {})[currentUser.id] || [];
 
+  // ===== Fixed list ("רשימה קבועה") editor =====
+  // Items: { productId, qty, unit?, name?, custom? }. Edits are local and saved ~0.7s later.
+  const [tplEdit, setTplEdit] = useState(template);
+  const [tplSearch, setTplSearch] = useState("");
+  const [tplCustomName, setTplCustomName] = useState("");
+  const tplRef = useRef(template);
+  const tplTimer = useRef(null);
+  const unitTemplatesRef = useRef(unitTemplates);
+  unitTemplatesRef.current = unitTemplates;
+  const templateSig = JSON.stringify(template);
+  useEffect(() => {
+    // Follow outside changes (other device / "שמור כקבועה") only when no local edit is pending.
+    if (!tplTimer.current) { tplRef.current = template; setTplEdit(template); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [templateSig]);
+  function flushTpl() {
+    if (tplTimer.current) { clearTimeout(tplTimer.current); tplTimer.current = null; }
+    return persistUnitTemplates({ ...(unitTemplatesRef.current || {}), [currentUser.id]: tplRef.current || [] });
+  }
+  function setTpl(next) {
+    tplRef.current = next; setTplEdit(next);
+    if (tplTimer.current) clearTimeout(tplTimer.current);
+    tplTimer.current = setTimeout(() => { tplTimer.current = null; flushTpl(); }, 700);
+  }
+  useEffect(() => () => { if (tplTimer.current) flushTpl(); }, // save a pending edit when leaving the screen
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []);
+  const tplIsCustom = (t) => !!(t && (t.custom || String(t.productId || "").startsWith("custom-")));
+  const tplProduct = (t) => (tplIsCustom(t) ? null : products.find((x) => x.id === t.productId));
+  const tplName = (t) => (tplProduct(t)?.name || t.name || "(מוצר שהוסר)");
+  const tplUnit = (t) => t.unit || tplProduct(t)?.unit || "";
+  function tplAddProduct(p) {
+    const cur = tplRef.current || [];
+    if (cur.some((t) => t.productId === p.id)) return showToast("המוצר כבר ברשימה");
+    setTpl([...cur, { productId: p.id, qty: 1, unit: p.unit || "", name: p.name }]);
+    setTplSearch("");
+  }
+  function tplAddCustom() {
+    const name = tplCustomName.trim();
+    if (!name) return;
+    setTpl([...(tplRef.current || []), { productId: "custom-" + genId(), name, qty: 1, unit: "", custom: true }]);
+    setTplCustomName("");
+  }
+  function tplUpdate(pid, patch) {
+    setTpl((tplRef.current || []).map((t) => (t.productId === pid ? { ...t, ...patch } : t)));
+  }
+  function tplRemove(pid) {
+    setTpl((tplRef.current || []).filter((t) => t.productId !== pid));
+  }
+  function tplMove(pid, dir) {
+    const arr = [...(tplRef.current || [])];
+    const i = arr.findIndex((t) => t.productId === pid);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= arr.length) return;
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+    setTpl(arr);
+  }
+  function tplClear() {
+    if (!window.confirm("לרוקן את כל הרשימה הקבועה?")) return;
+    setTpl([]);
+  }
+  const escHtml = (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  // Print the fixed list with EMPTY quantity boxes, to hand to the cook to fill in by hand.
+  function printBlankTemplate() {
+    const list = tplRef.current || [];
+    if (list.length === 0) return showToast("הרשימה הקבועה ריקה");
+    const extra = 6; // empty rows for things not on the list
+    const rows =
+      list.map((t, idx) => `<tr><td>${idx + 1}</td><td class="name">${escHtml(tplName(t))}</td><td>${escHtml(tplUnit(t))}</td><td></td><td></td></tr>`).join("") +
+      Array.from({ length: extra }).map(() => `<tr><td></td><td></td><td></td><td></td><td></td></tr>`).join("");
+    const html = `
+      <!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="utf-8"><title>רשימה קבועה – בקשה מהמחסן</title>
+      <style>
+        @page { size: A4 portrait; margin: 12mm; }
+        * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        body { font-family: Arial, sans-serif; color: #111; }
+        h1 { text-align: center; font-size: 22px; margin: 0 0 4px; }
+        .sub { text-align: center; color: #555; font-size: 13px; margin-bottom: 10px; }
+        .meta { display: flex; justify-content: space-between; font-size: 15px; margin: 6px 0 12px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #444; padding: 9px 8px; font-size: 15px; height: 20px; }
+        thead th { background: #3E8FCB; color: #fff; }
+        tbody tr:nth-child(even) td { background: #F2F7FC; }
+        td { text-align: center; }
+        td.name { text-align: right; font-weight: bold; }
+        .notes { margin-top: 14px; font-size: 14px; }
+        .line { border-bottom: 1px solid #888; height: 26px; }
+      </style></head><body>
+        <h1>בקשה מהמחסן – רשימה קבועה</h1>
+        <div class="sub">${escHtml(currentUser.name || "")}</div>
+        <div class="meta"><span>תאריך: ____________</span><span>מילא/ה: ____________</span></div>
+        <table>
+          <thead><tr><th style="width:34px">#</th><th>מוצר</th><th style="width:70px">יחידה</th><th style="width:90px">כמות</th><th style="width:150px">הערות</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="notes"><b>הערות:</b><div class="line"></div><div class="line"></div></div>
+      </body></html>`;
+    printHtmlDoc(html, () => showToast("הדפדפן חסם את ההדפסה - נסה שוב, או אשר חלונות קופצים ונסה שוב"));
+  }
+  async function shareBlankTemplate() {
+    const list = tplRef.current || [];
+    if (list.length === 0) return showToast("הרשימה הקבועה ריקה");
+    const rows = [
+      ...list.map((t, idx) => ({ idx: idx + 1, name: tplName(t), qty: tplUnit(t) ? `_______ ${tplUnit(t)}` : "_______" })),
+      ...Array.from({ length: 5 }).map(() => ({ idx: "", name: "", qty: "" })),
+    ];
+    let dataUrl;
+    try {
+      dataUrl = drawRequestImageDataUrl("בקשה מהמחסן – רשימה קבועה", `${currentUser.name || ""} · תאריך: __________`, rows, "");
+    } catch (e) {
+      console.error("could not draw blank list", e);
+      return showToast("שגיאה ביצירת התמונה");
+    }
+    let file = null;
+    try { file = dataUrlToFile(dataUrl, "fixed-list.png"); } catch (e) {}
+    if (file && navigator.share) {
+      try {
+        if (!navigator.canShare || navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: "רשימה קבועה" });
+          return;
+        }
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+        console.error("share failed", e);
+      }
+    }
+    downloadDataUrl(dataUrl, "רשימה-קבועה.png");
+    showToast("התמונה ירדה - אפשר להדפיס או לשתף אותה מהגלריה");
+  }
+
   // Only products the manager exposed to units.
   const catalog = products.filter((p) => p.unitVisible !== false);
   const categories = Array.from(new Set(catalog.map((p) => p.category || "ללא קטגוריה")));
@@ -2548,20 +2678,43 @@ function UnitRequestTab({
 
   function loadFromTemplate() {
     if (locked) return showToast("הבקשה כבר נשלחה");
-    if (template.length === 0) return showToast("לא הוגדרה רשימה שבועית קבועה");
+    const list = tplRef.current || [];
+    if (list.length === 0) return showToast("לא הוגדרה רשימה שבועית קבועה");
     const nq = { ...reqQtysRef.current };
+    const nu = { ...reqUnitsRef.current };
+    const cust = [...(customRef.current || [])];
     let n = 0;
-    template.forEach((t) => {
-      if (catalog.find((x) => x.id === t.productId)) { nq[t.productId] = Number(t.qty) || 0; n++; }
+    list.forEach((t) => {
+      const qty = Number(t.qty) > 0 ? Number(t.qty) : 1;
+      if (tplIsCustom(t)) {
+        const name = String(t.name || "").trim();
+        if (!name) return;
+        const ex = cust.findIndex((c) => c.name === name);
+        if (ex >= 0) cust[ex] = { ...cust[ex], qty, unit: t.unit || cust[ex].unit || "" };
+        else cust.push({ id: "custom-" + genId(), name, qty, unit: t.unit || "" });
+        n++;
+      } else if (catalog.find((x) => x.id === t.productId)) {
+        nq[t.productId] = qty;
+        if (t.unit) nu[t.productId] = t.unit;
+        n++;
+      }
     });
-    reqQtysRef.current = nq; setReqQtys(nq); scheduleSave();
-    showToast(`נטענו ${n} מוצרים מהרשימה הקבועה`);
+    reqQtysRef.current = nq; reqUnitsRef.current = nu; customRef.current = cust;
+    setReqQtys(nq); setReqUnits(nu); setCustomList(cust);
+    scheduleSave();
+    setWeeklyOpen(true);
+    showToast(`נטענו ${n} מוצרים מהרשימה הקבועה – אפשר לערוך ולשלוח`);
   }
 
   async function saveAsTemplate() {
-    const items = buildCurrentItems().filter((i) => !isCustomItem(i)).map((i) => ({ productId: i.productId, qty: i.qty }));
+    const items = buildCurrentItems().map((i) => ({
+      productId: i.productId, qty: i.qty, unit: i.unit || "", name: i.name, ...(isCustomItem(i) ? { custom: true } : {}),
+    }));
     if (items.length === 0) return showToast("אין מוצרים לשמור");
-    await persistUnitTemplates({ ...(unitTemplates || {}), [currentUser.id]: items });
+    if ((tplRef.current || []).length > 0 && !window.confirm("להחליף את הרשימה הקבועה הקיימת בבקשה הזו?")) return;
+    if (tplTimer.current) { clearTimeout(tplTimer.current); tplTimer.current = null; }
+    tplRef.current = items; setTplEdit(items);
+    await persistUnitTemplates({ ...(unitTemplatesRef.current || {}), [currentUser.id]: items });
     showToast("נשמר כרשימה שבועית קבועה ✓");
   }
 
@@ -2866,7 +3019,7 @@ function UnitRequestTab({
 
               {weeklyOpen && (
                 <>
-                  {template.length > 0 && (
+                  {tplEdit.length > 0 && (
                     <button onClick={loadFromTemplate} className="w-full mt-2 py-2 rounded-2xl text-xs font-bold" style={{ background: C.accent, color: "#fff" }}>
                       טען רשימה שבועית קבועה
                     </button>
@@ -2922,6 +3075,12 @@ function UnitRequestTab({
                 </>
               )}
             </ShelfTag>
+          )}
+
+          {totalItems === 0 && tplEdit.length > 0 && (
+            <button onClick={loadFromTemplate} className="w-full mb-4 py-3 rounded-2xl font-bold text-sm" style={{ background: C.accent, color: "#fff" }}>
+              📥 טען את הרשימה הקבועה ({tplEdit.length}) לעריכה
+            </button>
           )}
 
           {/* ===== 3) Sent requests: receipt tracking + delete ===== */}
@@ -3080,25 +3239,91 @@ function UnitRequestTab({
 
       {view === "template" && (
         <ShelfTag accent={C.accent}>
-          <div className="wh-display font-bold text-sm mb-1" style={{ color: C.ink }}>הרשימה השבועית הקבועה</div>
+          <div className="wh-display font-bold text-sm mb-1" style={{ color: C.ink }}>📌 הרשימה הקבועה</div>
           <p className="text-xs mb-3" style={{ color: C.steel }}>
-            הדברים שאתם מזמינים כל שבוע. בנו בקשה בלשונית "הבקשה השבועית", לחצו "שמור כקבועה", ומאז אפשר לטעון אותה בלחיצה אחת בכל שבוע.
+            הדברים שמזמינים כל שבוע. עורכים כאן (נשמר אוטומטית), ובכל שבוע לוחצים "טען לבקשה השבועית" – משנים מה שצריך ושולחים.
+            אפשר גם להדפיס את הרשימה עם משבצות ריקות כדי שהמבשלת תמלא כמויות ביד.
           </p>
-          {template.length === 0 ? (
-            <p className="text-sm text-center py-4" style={{ color: C.steel }}>עדיין לא הוגדרה רשימה קבועה</p>
+
+          <div className="flex flex-col gap-2 mb-3">
+            <button onClick={() => { loadFromTemplate(); setView("current"); }} disabled={tplEdit.length === 0} className="w-full py-2.5 rounded-2xl font-bold text-sm" style={{ background: C.brand, color: "#fff", opacity: tplEdit.length === 0 ? 0.5 : 1 }}>
+              📥 טען לבקשה השבועית לעריכה
+            </button>
+            <div className="flex gap-2">
+              <button onClick={printBlankTemplate} disabled={tplEdit.length === 0} className="flex-1 py-2 rounded-2xl font-bold text-xs" style={{ background: C.accent, color: "#fff", opacity: tplEdit.length === 0 ? 0.5 : 1 }}>
+                🖨️ הדפס רשימה ריקה (מחשב)
+              </button>
+              <button onClick={shareBlankTemplate} disabled={tplEdit.length === 0} className="flex-1 py-2 rounded-2xl font-bold text-xs" style={{ background: C.sage, color: "#fff", opacity: tplEdit.length === 0 ? 0.5 : 1 }}>
+                📱 רשימה ריקה (טלפון)
+              </button>
+            </div>
+          </div>
+
+          {tplEdit.length === 0 ? (
+            <p className="text-sm text-center py-4" style={{ color: C.steel }}>הרשימה ריקה – הוסיפו מוצרים למטה, או בנו בקשה ולחצו "שמור כקבועה"</p>
           ) : (
-            <div className="flex flex-col gap-1.5">
-              {template.map((t) => {
-                const p = products.find((x) => x.id === t.productId);
-                if (!p) return null;
+            <div className="flex flex-col gap-1 mb-3">
+              {tplEdit.map((t, idx) => {
+                const u = tplUnit(t);
+                const missing = !tplIsCustom(t) && !tplProduct(t);
                 return (
-                  <div key={t.productId} className="flex justify-between text-sm">
-                    <span style={{ color: C.ink }}>{p.name}</span>
-                    <span className="font-bold" style={{ color: C.ink }}>{t.qty} {p.unit}</span>
+                  <div key={t.productId} className="flex items-center gap-1 py-1 border-b" style={{ borderColor: C.kraft }}>
+                    <div className="flex flex-col">
+                      <button onClick={() => tplMove(t.productId, -1)} disabled={idx === 0} className="text-xs leading-none px-1" style={{ color: C.steel, opacity: idx === 0 ? 0.3 : 1 }}>▲</button>
+                      <button onClick={() => tplMove(t.productId, 1)} disabled={idx === tplEdit.length - 1} className="text-xs leading-none px-1" style={{ color: C.steel, opacity: idx === tplEdit.length - 1 ? 0.3 : 1 }}>▼</button>
+                    </div>
+                    <span className="font-bold text-sm flex-1" style={{ color: missing ? C.steel : C.ink }}>{tplName(t)}</span>
+                    <button onClick={() => tplUpdate(t.productId, { qty: Math.max(0, (Number(t.qty) || 0) - 1) })} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>−</button>
+                    <input type="number" inputMode="numeric" value={Number(t.qty) ? t.qty : ""} onChange={(e) => tplUpdate(t.productId, { qty: Math.max(0, Number(e.target.value) || 0) })} placeholder="0" className="w-12 text-center p-1 rounded-lg border text-sm" style={{ borderColor: C.kraftDark }} />
+                    <button onClick={() => tplUpdate(t.productId, { qty: (Number(t.qty) || 0) + 1 })} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>+</button>
+                    <select value={u || "יח׳"} onChange={(e) => tplUpdate(t.productId, { unit: e.target.value })} className="px-1 h-7 rounded-lg font-bold text-xs" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                      {unitOptions(settings, [u]).map((o) => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                    <button onClick={() => tplRemove(t.productId)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
                   </div>
                 );
               })}
             </div>
+          )}
+
+          <div className="text-xs font-bold mb-1" style={{ color: C.ink }}>➕ הוספה לרשימה</div>
+          <input
+            value={tplSearch}
+            onChange={(e) => setTplSearch(e.target.value)}
+            placeholder="חיפוש מוצר מהמחסן..."
+            className="w-full p-2.5 rounded-2xl border mb-1 text-sm"
+            style={{ borderColor: C.kraftDark, background: C.kraft }}
+          />
+          {tplSearch.trim() && (
+            <div className="flex flex-col gap-1 mb-2">
+              {catalog
+                .filter((p) => p.name.includes(tplSearch.trim()) && !tplEdit.some((t) => t.productId === p.id))
+                .slice(0, 8)
+                .map((p) => (
+                  <button key={p.id} onClick={() => tplAddProduct(p)} className="text-right p-2 rounded-xl text-sm" style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, color: C.ink }}>
+                    + {p.name} <span className="text-xs" style={{ color: C.steel }}>· {p.category || "ללא קטגוריה"}</span>
+                  </button>
+                ))}
+              {catalog.filter((p) => p.name.includes(tplSearch.trim()) && !tplEdit.some((t) => t.productId === p.id)).length === 0 && (
+                <div className="text-xs text-center py-1" style={{ color: C.steel }}>לא נמצא מוצר – אפשר להוסיף אותו כמוצר חופשי למטה</div>
+              )}
+            </div>
+          )}
+          <div className="flex gap-2 mt-1">
+            <input
+              value={tplCustomName}
+              onChange={(e) => setTplCustomName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") tplAddCustom(); }}
+              placeholder="מוצר שלא ברשימת המחסן..."
+              className="flex-1 p-2.5 rounded-2xl border text-sm"
+              style={{ borderColor: C.kraftDark, background: C.kraft }}
+            />
+            <button onClick={tplAddCustom} className="px-4 rounded-2xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>הוסף</button>
+          </div>
+          {tplEdit.length > 0 && (
+            <button onClick={tplClear} className="w-full mt-3 py-2 rounded-2xl text-xs font-bold" style={{ background: "transparent", color: C.stamp, border: `1px solid ${C.stamp}` }}>
+              🗑 רוקן רשימה
+            </button>
           )}
         </ShelfTag>
       )}
