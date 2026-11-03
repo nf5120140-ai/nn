@@ -7259,8 +7259,9 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
     const needed = {};
     const chosenDishNames = [];
     const problems = {}; // dishes on the menu that bring no products to the order
-    WEEK_DAYS.forEach(([dayKey]) => {
-      MEAL_SLOTS.forEach(([slotKey]) => {
+    const sources = {}; // productId -> [{ day, slot, dish }] — where in the menu it comes from
+    WEEK_DAYS.forEach(([dayKey, dayLabel]) => {
+      MEAL_SLOTS.forEach(([slotKey, slotLabel]) => {
         // Count ONLY the cells that are actually shown in the menu grid (the rows of
         // this meal). Old values stored under rows that were removed or moved to the
         // other meal stay hidden in the data — counting them brought back dishes from
@@ -7277,6 +7278,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
           else if (missing.length === ings.length) problems[m.id] = { dish: m, reason: "deleted" };
           ings.forEach((ing) => {
             needed[ing.productId] = (needed[ing.productId] || 0) + (Number(ing.qty) || 0) * Number(weekPortions || 1);
+            (sources[ing.productId] = sources[ing.productId] || []).push({ day: dayLabel.replace(/^יום /, ""), slot: slotLabel, dish: m.name });
           });
         });
       });
@@ -7286,7 +7288,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
         const product = products.find((p) => p.id === productId);
         if (!product) return null;
         const deficit = Math.max(0, totalNeeded - Number(product.quantity));
-        return { product, totalNeeded, deficit };
+        return { product, totalNeeded, deficit, sources: sources[productId] || [] };
       })
       .filter(Boolean);
     return { rows, chosenDishNames, problems: Object.values(problems) };
@@ -9590,6 +9592,11 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                               <div style={{ color: C.steel }} className="text-xs">
                                 צריך {n.totalNeeded} · יש {n.product.quantity}
                               </div>
+                              {n.sources && n.sources.length > 0 && (
+                                <div style={{ color: C.steel, fontSize: 11, lineHeight: 1.35 }}>
+                                  📅 {n.sources.map((src) => `${src.day} ${src.slot}${src.dish ? ` (${src.dish})` : ""}`).join(" · ")}
+                                </div>
+                              )}
                               <select
                                 value={supplierOverrides[n.product.id] || n.product.supplierId || "__unassigned__"}
                                 onChange={(e) => setSupplierOverrides((o) => ({ ...o, [n.product.id]: e.target.value }))}
