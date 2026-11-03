@@ -537,11 +537,11 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
   function exportExcel() {
     const sRows = [...students]
       .sort((a, b) => (Number(a.room) || 99999) - (Number(b.room) || 99999) || a.name.localeCompare(b.name, "he"))
-      .map((s) => ({ "שם הבחור": s.name, "חדר": s.room || "", "אגף / קומה": s.room ? wingOf(s.room) : "", "שיעור / שנתון": s.shiur || "", "טלפון": s.phone || "", "הערות": s.notes || "" }));
+      .map((s) => ({ "שם הבחור": s.name, "חדר": s.room || "", "אגף / קומה": s.room ? wingOf(s.room) : "", "שיעור / שנתון": s.shiur || "", "טלפון": s.phone || "", "הערות": s.notes || "", "חתן": s.chatan ? "חתן" : "" }));
     const rRows = sortedRooms.map((r) => { const i = roomInfo(r); return { "חדר": r.num, "אגף / קומה": r.wing || defaultWing(r.num), "מיטות": i.beds, "תפוסים": i.taken, "פנויים": i.free, "הערות": r.notes || "" }; });
     const wb = XLSX.utils.book_new();
     const s1 = XLSX.utils.json_to_sheet(sRows.length ? sRows : [{ "שם הבחור": "", "חדר": "" }]);
-    s1["!cols"] = [{ wch: 24 }, { wch: 8 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 30 }];
+    s1["!cols"] = [{ wch: 24 }, { wch: 8 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 30 }, { wch: 8 }];
     const s2 = XLSX.utils.json_to_sheet(rRows.length ? rRows : [{ "חדר": "", "מיטות": "" }]);
     s2["!cols"] = [{ wch: 8 }, { wch: 18 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 20 }];
     if (!wb.Workbook) wb.Workbook = {};
@@ -564,7 +564,8 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
         let rows = "";
         for (let i = 0; i < n; i++) {
           const over = i >= beds;
-          rows += `<tr><td class="no${over ? " over" : ""}">${i < Math.max(beds, list.length) ? i + 1 : ""}</td><td>${list[i] ? esc(list[i].name) : ""}</td></tr>`;
+          const st = list[i];
+          rows += `<tr><td class="no${over ? " over" : ""}">${i < Math.max(beds, list.length) ? i + 1 : ""}</td><td${st && st.chatan ? ' class="chatan"' : ""}>${st ? esc(st.name) + (st.chatan ? " 💍 חתן" : "") : ""}</td></tr>`;
         }
         return `<div class="room"><div class="rh">חדר ${esc(r.num)}</div><table>${rows}</table></div>`;
       }).join("");
@@ -578,6 +579,7 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
       td { border-top: 1px solid #999; font-size: 12px; padding: 2px 4px; height: 19px; text-align: center; }
       td.no { width: 20px; background: #eee; border-left: 1px solid #999; font-weight: bold; }
       td.over { background: #f8c8c8; }
+      td.chatan { background: #FFE58F; font-weight: bold; }
       h2 { page-break-after: avoid; break-after: avoid; }`);
     if (!ok) toast("הדפדפן חסם את חלון ההדפסה - יש לאפשר חלונות קופצים");
   }
@@ -591,7 +593,7 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
           const st = byRoom.get(Number(r.num)) || [];
           const beds = Number(r.beds) || 0;
           const stars = Math.max(0, beds - st.length);
-          return `<td><b>חדר ${esc(r.num)} - [${beds}]</b>${st.map((s) => `<div>${esc(s.name)}</div>`).join("")}${"<div>*</div>".repeat(stars)}</td>`;
+          return `<td><b>חדר ${esc(r.num)} - [${beds}]</b>${st.map((s) => (s.chatan ? `<div style="background:#FFE58F;font-weight:bold">${esc(s.name)} 💍 חתן</div>` : `<div>${esc(s.name)}</div>`)).join("")}${"<div>*</div>".repeat(stars)}</td>`;
         });
         while (cells.length < 6) cells.push("<td></td>");
         rowsHtml += `<tr>${cells.join("")}</tr>`;
@@ -778,7 +780,7 @@ function HomeView({ C, card, input, btn, stats, wings, sortedRooms, roomInfo, fr
               {results.map((s) => (
                 <button key={s.id} onClick={() => setEditStudent(s)} className="flex items-center justify-between px-3 py-2 text-sm text-right"
                   style={{ background: C.paper, borderRadius: 12 }}>
-                  <span className="font-bold">{s.name}</span>
+                  <span className="font-bold">{s.name}{s.chatan && <ChatanBadge />}</span>
                   <span style={{ color: C.steel }}>{s.room ? `חדר ${s.room} · ${wingOf(s.room)}` : "ללא חדר"}</span>
                 </button>
               ))}
@@ -814,13 +816,25 @@ function HomeView({ C, card, input, btn, stats, wings, sortedRooms, roomInfo, fr
         </div>
       </div>
 
+      {students.some((s) => s.chatan) && (
+        <div className="p-4" style={{ ...card, border: "1.5px solid #E8C547", background: "#FFFBEA" }}>
+          <div className="wh-display font-black mb-2">💍 חתנים ({students.filter((s) => s.chatan).length})</div>
+          <div className="flex flex-wrap gap-1.5">
+            {students.filter((s) => s.chatan).sort((a, b) => (Number(a.room) || 99999) - (Number(b.room) || 99999)).map((s) => (
+              <button key={s.id} onClick={() => setEditStudent(s)} className="px-3 py-1 text-xs font-bold"
+                style={{ borderRadius: 999, background: "#FFE58F", color: "#6B4E00" }}>{s.name}{s.room ? ` · חדר ${s.room}` : ""}</button>
+            ))}
+          </div>
+        </div>
+      )}
+
       {unassigned.length > 0 && (
         <div className="p-4" style={{ ...card, border: "1px solid #F5C9A0" }}>
           <div className="wh-display font-black mb-2">בחורים ללא חדר ({unassigned.length})</div>
           <div className="flex flex-wrap gap-1.5">
             {unassigned.map((s) => (
               <button key={s.id} onClick={() => setEditStudent(s)} className="px-3 py-1 text-xs font-bold"
-                style={{ borderRadius: 999, background: "#FCE4D6", color: "#8A4B12" }}>{s.name}</button>
+                style={{ borderRadius: 999, background: s.chatan ? "#FFE58F" : "#FCE4D6", color: "#8A4B12" }}>{s.name}{s.chatan ? " 💍" : ""}</button>
             ))}
           </div>
         </div>
@@ -862,7 +876,7 @@ function MapView({ C, card, btn, wings, sortedRooms, byRoom, roomInfo, addStuden
               return (
                 <div key={r.id} style={{ ...card, borderRadius: 14, overflow: "hidden" }}>
                   <div className="flex items-center justify-between px-2 py-1.5" style={{ background: headBg, color: "#fff" }}>
-                    <span className="wh-display font-black text-base">חדר {r.num}</span>
+                    <span className="wh-display font-black text-base">חדר {r.num}{list.some((x) => x.chatan) && <span title="יש חתן בחדר"> 💍</span>}</span>
                     <span className="text-[11px] font-bold">{i.taken}/{i.beds}</span>
                   </div>
                   <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
@@ -876,9 +890,11 @@ function MapView({ C, card, btn, wings, sortedRooms, byRoom, roomInfo, addStuden
                             <td className="text-center font-bold" style={{ width: 22, background: over ? "#F8C8C8" : C.paper, color: C.steel, borderLeft: `1px solid ${C.kraftDark}` }}>
                               {idx < Math.max(i.beds, list.length) ? idx + 1 : ""}
                             </td>
-                            <td className="px-1.5 py-1">
+                            <td className="px-1.5 py-1" style={s && s.chatan ? { background: "#FFE58F" } : undefined}>
                               {s ? (
-                                <button onClick={() => setEditStudent(s)} className="w-full text-right" style={{ color: C.ink }}>{s.name}</button>
+                                <button onClick={() => setEditStudent(s)} className="w-full text-right" style={{ color: C.ink, fontWeight: s.chatan ? 800 : undefined }}>
+                                  {s.name}{s.chatan && <span title="חתן"> 💍</span>}
+                                </button>
                               ) : isEmptyBed && canEdit ? (
                                 adding === r.num && newName !== null ? (
                                   idx === list.length ? (
@@ -915,6 +931,7 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
   const [q, setQ] = useState("");
   const [wing, setWing] = useState("");
   const [onlyNoRoom, setOnlyNoRoom] = useState(false);
+  const [onlyChatan, setOnlyChatan] = useState(false);
 
   const rows = useMemo(() => {
     const t = q.trim();
@@ -922,8 +939,9 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
       .filter((s) => !t || s.name.includes(t) || (s.shiur || "").includes(t) || String(s.room || "") === t)
       .filter((s) => !wing || (s.room && wingOf(s.room) === wing))
       .filter((s) => !onlyNoRoom || !s.room || !roomByNum.has(Number(s.room)))
+      .filter((s) => !onlyChatan || s.chatan)
       .sort((a, b) => (Number(a.room) || 99999) - (Number(b.room) || 99999) || a.name.localeCompare(b.name, "he"));
-  }, [q, wing, onlyNoRoom, students, roomByNum]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [q, wing, onlyNoRoom, onlyChatan, students, roomByNum]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col gap-3">
@@ -935,6 +953,9 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
         </select>
         <label className="flex items-center gap-2 text-sm px-2">
           <input type="checkbox" checked={onlyNoRoom} onChange={(e) => setOnlyNoRoom(e.target.checked)} /> רק ללא חדר
+        </label>
+        <label className="flex items-center gap-2 text-sm px-2">
+          <input type="checkbox" checked={onlyChatan} onChange={(e) => setOnlyChatan(e.target.checked)} /> רק חתנים 💍
         </label>
       </div>
       <div className="text-xs" style={{ color: C.steel }}>{rows.length} בחורים</div>
@@ -951,9 +972,14 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
           </thead>
           <tbody>
             {rows.map((s) => (
-              <tr key={s.id} style={{ borderTop: `1px solid ${C.kraftDark}` }}>
+              <tr key={s.id} style={{ borderTop: `1px solid ${C.kraftDark}`, background: s.chatan ? "#FFF6D1" : undefined }}>
                 <td className="px-3 py-1.5">
                   <button onClick={() => setEditStudent(s)} className="font-bold text-right" style={{ color: C.ink }}>{s.name}</button>
+                  {s.chatan && <ChatanBadge />}
+                  {canEdit && (
+                    <button onClick={() => updateStudent(s.id, { chatan: !s.chatan })} title={s.chatan ? "בטל סימון חתן" : "סמן כחתן"}
+                      className="mr-1 px-1.5 text-xs" style={{ opacity: s.chatan ? 1 : 0.35 }}>💍</button>
+                  )}
                 </td>
                 <td className="px-2 text-center">
                   {canEdit ? (
@@ -1074,10 +1100,11 @@ function StudentDialog({ C, card, input, btn, student, sortedRooms, roomInfo, ca
     shiur: student.shiur || "",
     phone: student.phone || "",
     notes: student.notes || "",
+    chatan: !!student.chatan,
   });
   return (
     <Modal C={C} card={card} onClose={onClose}>
-      <div className="wh-display font-black text-lg mb-3">{student.name}</div>
+      <div className="wh-display font-black text-lg mb-3">{student.name}{student.chatan && <ChatanBadge />}</div>
       <div className="flex flex-col gap-2">
         <label className="text-xs" style={{ color: C.steel }}>שם
           <input disabled={!canEdit} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} className="w-full px-3 py-2 text-sm mt-1" style={input} />
@@ -1106,18 +1133,30 @@ function StudentDialog({ C, card, input, btn, student, sortedRooms, roomInfo, ca
         <label className="text-xs" style={{ color: C.steel }}>הערות
           <input disabled={!canEdit} value={f.notes} onChange={(e) => setF({ ...f, notes: e.target.value })} className="w-full px-3 py-2 text-sm mt-1" style={input} />
         </label>
+        <label className="flex items-center gap-2 text-sm font-bold px-3 py-2" style={{ borderRadius: 12, background: f.chatan ? "#FFE58F" : C.paper, color: C.ink, cursor: canEdit ? "pointer" : "default" }}>
+          <input type="checkbox" disabled={!canEdit} checked={f.chatan} onChange={(e) => setF({ ...f, chatan: e.target.checked })} />
+          💍 חתן (יודגש במפת החדרים ובהדפסות)
+        </label>
       </div>
       <div className="flex gap-2 mt-4">
         {canEdit && <button className="flex-1 py-2.5 text-sm font-bold" style={btn(true)}
           onClick={() => {
             const name = cleanName(f.name);
             if (!name) return;
-            onSave({ name, room: f.room === "" ? null : Number(f.room), shiur: cleanName(f.shiur), phone: cleanName(f.phone), notes: cleanName(f.notes) });
+            onSave({ name, room: f.room === "" ? null : Number(f.room), shiur: cleanName(f.shiur), phone: cleanName(f.phone), notes: cleanName(f.notes), chatan: !!f.chatan });
           }}>שמירה</button>}
         <button className="px-4 py-2.5 text-sm" style={btn(false)} onClick={onClose}>סגירה</button>
         {canEdit && <button className="px-4 py-2.5 text-sm font-bold" style={{ ...btn(false), color: "#9C0006" }} onClick={onDelete}>מחיקה</button>}
       </div>
     </Modal>
+  );
+}
+
+function ChatanBadge() {
+  return (
+    <span className="mr-1.5 px-2 py-0.5 text-[11px] font-black align-middle" style={{ borderRadius: 999, background: "#FFE58F", color: "#6B4E00", border: "1px solid #E8C547" }}>
+      💍 חתן
+    </span>
   );
 }
 

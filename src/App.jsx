@@ -264,14 +264,18 @@ function visibleTasksFor(user, tasks) {
 
   if (scope === "all") return tasks;
 
+  // Anyone always sees the tasks they opened themselves (e.g. a kitchen manager who
+  // assigns a task to a worker keeps seeing it and its status).
+  const mineOrCreated = (t) => t.assignedToId === user.id || (!!user?.id && t.createdById === user.id);
+
   if (scope === "categories") {
     const allowed = perms.visibleTaskCategories || [];
     return tasks.filter(
-      (t) => t.assignedToId === user.id || (t.categoryId && allowed.includes(t.categoryId))
+      (t) => mineOrCreated(t) || (t.categoryId && allowed.includes(t.categoryId))
     );
   }
 
-  return tasks.filter((t) => t.assignedToId === user.id);
+  return tasks.filter(mineOrCreated);
 }
 
 /** A "unit" (e.g. the daycare) requests goods out of OUR stock, not from a supplier. */
