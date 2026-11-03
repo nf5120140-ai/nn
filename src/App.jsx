@@ -333,7 +333,48 @@ function canSendOrders(user) {
   return isManager(user);
 }
 
-const isOnline = () => (typeof navigator === "undefined" ? true : navigator.onLine !== false);
+// navigator.onLine can get stuck on "offline" (network switch while the app was in the
+// background, VPN / filter apps). So when it says offline we also trust a recent real
+// check that actually reached the server.
+let netProbeOkAt = 0;
+const isOnline = () => {
+  if (typeof navigator === "undefined" || navigator.onLine !== false) return true;
+  return Date.now() - netProbeOkAt < 120000;
+};
+/** Really try to reach the server. Any answer (even an error status) means we are online. */
+async function probeConnection() {
+  try {
+    const ctrl = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const t = ctrl ? setTimeout(() => ctrl.abort(), 6000) : null;
+    await fetch("https://axkgksyoaysvhthbxoee.supabase.co/auth/v1/health?t=" + Date.now(), {
+      method: "GET", mode: "no-cors", cache: "no-store", ...(ctrl ? { signal: ctrl.signal } : {}),
+    });
+    if (t) clearTimeout(t);
+    netProbeOkAt = Date.now();
+    return true;
+  } catch (e) {
+    netProbeOkAt = 0;
+    return false;
+  }
+}
+/** Before reading/writing the server: if the phone claims "offline", verify once (shared,
+    throttled) so a stuck flag doesn't keep the app in device-only mode. */
+let netProbeFailAt = 0;
+let netProbeInFlight = null;
+async function netReady() {
+  if (typeof navigator === "undefined" || navigator.onLine !== false) return;
+  if (Date.now() - netProbeOkAt < 120000) return;
+  if (Date.now() - netProbeFailAt < 15000) return;
+  if (!netProbeInFlight) {
+    netProbeInFlight = probeConnection().then((ok) => { if (!ok) netProbeFailAt = Date.now(); netProbeInFlight = null; return ok; });
+  }
+  await netProbeInFlight;
+}
+/** Online status, double-checked against the server when the phone claims to be offline. */
+async function checkOnline() {
+  if (typeof navigator !== "undefined" && navigator.onLine !== false) return true;
+  return probeConnection();
+}
 
 const PROFILE_CACHE_KEY = "kitchen-cached-profile";
 function cachedProfile() {
@@ -384,6 +425,7 @@ async function loadTasksFresh() {
   const key = nsKey(KEYS.tasks);
   const cached = await cacheGet(key);
   let serverList = null;
+  await netReady();
   if (isOnline()) {
     try {
       const res = await window.storage.get(key, true);
@@ -415,6 +457,7 @@ async function loadListFresh(baseKey) {
   const key = nsKey(baseKey);
   const cached = await cacheGet(key);
   let server = null;
+  await netReady();
   if (isOnline()) {
     try { const res = await window.storage.get(key, true); if (res) server = JSON.parse(res.value); } catch (e) {}
   }
@@ -437,6 +480,7 @@ async function loadKey(baseKey, fallback) {
     return cached !== undefined ? cached : fallback;
   }
 
+  await netReady();
   if (isOnline()) {
     try {
       const res = await window.storage.get(key, true);
@@ -459,6 +503,7 @@ async function saveKey(baseKey, value) {
   const key = nsKey(baseKey);
   await cacheSet(key, value); // always land locally first, so nothing is ever lost
 
+  await netReady();
   if (!isOnline()) {
     markDirty(key);
     return { synced: false };
@@ -504,6 +549,7 @@ async function loadLegacyRaw(baseKey) {
 
 /** Push every queued key to the server. Re-reads the cache so the latest value wins. */
 async function flushPendingWrites() {
+  await netReady();
   if (!isOnline()) return { flushed: 0, remaining: getDirtyKeys().length };
 
   const dirty = getDirtyKeys();
@@ -1629,7 +1675,16 @@ function SyncBar({ showToast }) {
       doFlush();
     }
     function onOffline() {
-      setOnline(false);
+      // Don't believe a bare "offline" event – verify against the server first.
+      checkOnline().then((ok) => { setOnline(ok); if (ok) doFlush(); });
+    }
+    async function recheck() {
+      const ok = await checkOnline();
+      setOnline(ok);
+      if (ok) doFlush();
+    }
+    function onVisible() {
+      if (document.visibilityState === "visible") recheck();
     }
     function onSyncChanged(e) {
       setPending(e.detail);
@@ -1638,16 +1693,20 @@ function SyncBar({ showToast }) {
     window.addEventListener("online", onOnline);
     window.addEventListener("offline", onOffline);
     window.addEventListener("kitchen-sync-changed", onSyncChanged);
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", recheck);
 
-    // Catch anything left over from a previous session, and retry periodically in
-    // case navigator.onLine lies (captive portals, flaky mobile data).
-    doFlush();
-    const interval = setInterval(doFlush, 20000);
+    // Catch anything left over from a previous session, and re-check periodically in
+    // case navigator.onLine lies (stuck after a network switch, VPN, flaky mobile data).
+    recheck();
+    const interval = setInterval(recheck, 20000);
 
     return () => {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
       window.removeEventListener("kitchen-sync-changed", onSyncChanged);
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", recheck);
       clearInterval(interval);
     };
   }, [doFlush]);
