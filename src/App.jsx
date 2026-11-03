@@ -7258,6 +7258,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
   const weekNeeds = (() => {
     const needed = {};
     const chosenDishNames = [];
+    const problems = {}; // dishes on the menu that bring no products to the order
     WEEK_DAYS.forEach(([dayKey]) => {
       MEAL_SLOTS.forEach(([slotKey]) => {
         // Count ONLY the cells that are actually shown in the menu grid (the rows of
@@ -7270,8 +7271,12 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
           const m = menuItems.find((mi) => mi.id === menuItemId);
           if (!m) return;
           chosenDishNames.push(m.name);
-          (m.ingredients || []).forEach((ing) => {
-            needed[ing.productId] = (needed[ing.productId] || 0) + ing.qty * Number(weekPortions || 1);
+          const ings = (m.ingredients || []).filter((ing) => ing && ing.productId);
+          const missing = ings.filter((ing) => !products.some((p) => p.id === ing.productId));
+          if (ings.length === 0) problems[m.id] = { dish: m, reason: "none" };
+          else if (missing.length === ings.length) problems[m.id] = { dish: m, reason: "deleted" };
+          ings.forEach((ing) => {
+            needed[ing.productId] = (needed[ing.productId] || 0) + (Number(ing.qty) || 0) * Number(weekPortions || 1);
           });
         });
       });
@@ -7284,8 +7289,25 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
         return { product, totalNeeded, deficit };
       })
       .filter(Boolean);
-    return { rows, chosenDishNames };
+    return { rows, chosenDishNames, problems: Object.values(problems) };
   })();
+
+  // Quick-fix from the order screen: link a product to a dish that has none.
+  const [fixPick, setFixPick] = useState({}); // dishId -> { productId, qty }
+  async function addIngredientToDish(dish) {
+    const f = fixPick[dish.id] || {};
+    if (!f.productId) return showToast("בחר מוצר");
+    if (!persistMenuItems) return showToast("אפשר להוסיף רכיבים בניהול ← תפריט");
+    const qty = Number(f.qty) > 0 ? Number(f.qty) : 1;
+    const next = (menuItems || []).map((m) =>
+      m.id === dish.id
+        ? { ...m, ingredients: [...(m.ingredients || []).filter((i) => i && i.productId && products.some((p) => p.id === i.productId)), { ingId: genId(), label: "", productId: f.productId, qty }] }
+        : m
+    );
+    await persistMenuItems(next);
+    setFixPick((x) => ({ ...x, [dish.id]: {} }));
+    showToast(`המוצר נוסף ל"${dish.name}" ✓`);
+  }
 
   // How much was ordered LAST time for each product, from order history (newest first).
   // Matched by productId when available, otherwise by name (older history had no id).
@@ -9470,6 +9492,50 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                             ))}
                           </div>
                         )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {weekNeeds.problems.length > 0 && (
+              <div className="mb-4 p-3 rounded-2xl" style={{ background: "rgba(245,166,35,0.12)", border: `1.5px solid ${C.mustard}` }}>
+                <div className="font-bold text-sm mb-1" style={{ color: C.ink }}>⚠️ {weekNeeds.problems.length} מנות בתפריט לא מביאות מוצרים להזמנה</div>
+                <p className="text-xs mb-2" style={{ color: C.steel }}>
+                  למנות האלה לא מקושר אף מוצר מהמלאי (או שהמוצר שהיה מקושר נמחק), ולכן הן לא מופיעות ברשימה למטה. בחר מוצר והוסף – הוא יישמר במנה לפעם הבאה.
+                </p>
+                <div className="flex flex-col gap-2">
+                  {weekNeeds.problems.map(({ dish, reason }) => {
+                    const f = fixPick[dish.id] || {};
+                    return (
+                      <div key={dish.id} className="p-2 rounded-xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}` }}>
+                        <div className="text-sm font-bold mb-1" style={{ color: C.ink }}>
+                          {dish.name} <span className="text-xs font-normal" style={{ color: C.steel }}>· {reason === "deleted" ? "המוצר המקושר נמחק" : "אין מוצרים מקושרים"}</span>
+                        </div>
+                        <div className="flex gap-1 flex-wrap">
+                          <select
+                            value={f.productId || ""}
+                            onChange={(e) => { const v = e.target.value; setFixPick((x) => ({ ...x, [dish.id]: { ...(x[dish.id] || {}), productId: v } })); }}
+                            className="flex-1 p-2 rounded-xl border text-sm"
+                            style={{ borderColor: C.kraftDark, background: C.paper, color: C.ink, minWidth: 140 }}
+                          >
+                            <option value="">בחר מוצר…</option>
+                            {[...products].sort((a, b) => String(a.name).localeCompare(String(b.name), "he")).map((p) => (
+                              <option key={p.id} value={p.id}>{p.name}</option>
+                            ))}
+                          </select>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            value={f.qty ?? ""}
+                            onChange={(e) => { const v = e.target.value; setFixPick((x) => ({ ...x, [dish.id]: { ...(x[dish.id] || {}), qty: v } })); }}
+                            placeholder="כמות"
+                            className="w-16 text-center p-2 rounded-xl border text-sm"
+                            style={{ borderColor: C.kraftDark, background: C.paper }}
+                          />
+                          <button onClick={() => addIngredientToDish(dish)} className="px-3 py-2 rounded-xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>הוסף</button>
+                        </div>
                       </div>
                     );
                   })}
