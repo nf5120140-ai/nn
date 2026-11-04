@@ -1158,6 +1158,105 @@ function hasExistingAccount() {
     return false;
   }
 }
+/* ---------- Terms of use ----------
+   Bump TERMS_VERSION when the text changes materially — every user is then asked
+   to approve again on their next entry. Acceptances live in the org's kv key
+   "terms-acceptances" ({ [userId]: { version, at, name } }). */
+const TERMS_VERSION = "2026-11-04";
+const TERMS_PENDING_KEY = "yeshivus-terms-pending";
+function termsLocalKey(userId) { return `yeshivus-terms::${userId}`; }
+
+function TermsContent() {
+  const H = ({ children }) => <div className="font-bold mt-3 mb-1" style={{ color: C.ink }}>{children}</div>;
+  return (
+    <div className="text-xs leading-relaxed text-right" style={{ color: C.steel }}>
+      <p className="mb-2">ברוכים הבאים לישיבוס ("האפליקציה"), מערכת לניהול משק, רכש ותחזוקה במוסדות. השירות מופעל על ידי נפתלי קמפה ("המפעיל"). פתיחת חשבון או שימוש באפליקציה מהווים הסכמה לתנאים אלה.</p>
+      <H>1. מהות השירות</H>
+      <p>האפליקציה מאפשרת לנהל מלאי, הזמנות מספקים, תפריטים, משימות ותזכורות, דיווחי תקלות והתראות לצוות המוסד. האפליקציה נמצאת בשלבי פיתוח, וייתכנו בה שינויים, תוספות והסרה של תכונות.</p>
+      <H>2. החשבון והארגון</H>
+      <p>כל ארגון מקבל מרחב נתונים נפרד. מי שפותח ארגון הוא מנהל הארגון, והוא אחראי על צירוף עובדים, על ההרשאות שלהם ועל הנתונים שמוזנים בארגון. המשתמש אחראי לשמור על סודיות הסיסמה ולא למסור אותה לאחרים.</p>
+      <H>3. עלות</H>
+      <p>בשלב זה השימוש ניתן ללא עלות. המפעיל רשאי לקבוע בעתיד תשלום עבור השירות או חלקים ממנו, בהודעה מראש. לא ייגבה תשלום ללא הסכמה מפורשת.</p>
+      <H>4. פרטיות ושמירת מידע</H>
+      <p>המידע שמוזן באפליקציה (פרטי משתמשים, מלאי, הזמנות, משימות, תמונות וכדומה) נשמר אצל ספקי ענן חיצוניים (כגון Supabase ו-Vercel), שהשרתים שלהם עשויים להיות מחוץ לישראל. המידע משמש לתפעול האפליקציה בלבד, אינו נמכר ואינו מועבר לצד שלישי לצורכי פרסום.</p>
+      <p className="mt-1">בסריקת חשבוניות, תמונת החשבונית נשלחת לעיבוד אוטומטי בשירות בינה מלאכותית חיצוני, לצורך זיהוי הפריטים בלבד. אין לסרוק מסמכים שאינם חשבוניות ספקים.</p>
+      <p className="mt-1">מנהל הארגון יכול לראות את הנתונים של הארגון שלו. המפעיל עשוי לגשת לנתונים רק לצורך תמיכה, תיקון תקלות או גיבוי. ניתן לבקש מחיקה של חשבון או של נתוני הארגון בפנייה למפעיל.</p>
+      <H>5. התראות</H>
+      <p>האפליקציה שולחת התראות (משימות, תזכורות, בקשות) למכשירים שאישרו זאת. ניתן לבטל התראות בהגדרות המכשיר.</p>
+      <H>6. שימוש הוגן</H>
+      <p>אין להשתמש באפליקציה לכל מטרה שאינה חוקית, להזין תוכן פוגעני, לנסות לגשת לנתונים של ארגון אחר או לפגוע בפעולת המערכת. המפעיל רשאי להשעות חשבון שמפר תנאים אלה.</p>
+      <H>7. זמינות ואחריות</H>
+      <p>השירות ניתן כמות שהוא (AS IS). המפעיל משתדל לשמור על זמינות ועל גיבוי הנתונים, אך אינו מתחייב לזמינות רציפה, להיעדר תקלות או לשמירת נתונים באופן מוחלט. מומלץ להשתמש באפשרויות הגיבוי שבאפליקציה. האחריות על החלטות שמתקבלות על סמך המידע באפליקציה (הזמנות, כמויות, מחירים) היא של המשתמש והארגון. המפעיל לא יישא באחריות לנזק עקיף או תוצאתי הנובע מהשימוש באפליקציה או מאי-זמינותה.</p>
+      <H>8. שינויים בתנאים</H>
+      <p>התנאים עשויים להתעדכן. במקרה של שינוי מהותי תוצג הודעה באפליקציה ויתבקש אישור מחדש.</p>
+      <H>9. יצירת קשר</H>
+      <p>לשאלות, בקשות מחיקה או הצעות: נפתלי קמפה, טלפון 0585120140.</p>
+      <p className="mt-3" style={{ opacity: 0.8 }}>גרסת תנאים: {TERMS_VERSION}</p>
+    </div>
+  );
+}
+
+function TermsModal({ onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{ background: "rgba(35,31,61,0.5)" }} onClick={onClose} dir="rtl">
+      <div
+        className="w-full max-w-md wh-body"
+        style={{ background: C.paper, borderRadius: "24px 24px 0 0", maxHeight: "85vh", overflowY: "auto", padding: 16 }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-center mb-2">
+          <div className="wh-display font-bold" style={{ color: C.ink }}>תנאי שימוש ומדיניות פרטיות</div>
+          <button onClick={onClose} className="px-3 py-1 rounded-full text-sm font-bold" style={{ background: C.brand, color: "#fff" }}>סגור</button>
+        </div>
+        <TermsContent />
+      </div>
+    </div>
+  );
+}
+
+function TermsCheckbox({ checked, onChange, onOpen }) {
+  return (
+    <label className="flex items-start gap-2 text-xs text-right p-2 rounded-xl" style={{ color: C.ink, background: checked ? "rgba(87,180,94,0.12)" : C.kraft, border: `1px solid ${checked ? C.sage : C.kraftDark}` }}>
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} style={{ marginTop: 2, width: 18, height: 18, flexShrink: 0 }} />
+      <span>
+        קראתי ואני מסכים ל
+        <button type="button" onClick={(e) => { e.preventDefault(); onOpen(); }} className="underline font-bold" style={{ color: C.accent }}>תנאי השימוש ומדיניות הפרטיות</button>
+      </span>
+    </label>
+  );
+}
+
+/** Shown once after login to anyone who hasn't approved the current terms version. */
+function TermsAcceptScreen({ onAccept, onLogout }) {
+  const [agree, setAgree] = useState(false);
+  const [busy, setBusy] = useState(false);
+  async function accept() {
+    if (!agree) return;
+    setBusy(true);
+    try { await onAccept(); } finally { setBusy(false); }
+  }
+  return (
+    <div className="min-h-screen flex justify-center wh-body py-6 px-4" style={{ background: C.paper }} dir="rtl">
+      <style>{FONTS}</style>
+      <div className="w-full max-w-md flex flex-col gap-3">
+        <h1 className="wh-display text-xl font-black text-center" style={{ color: C.ink }}>תנאי שימוש</h1>
+        <p className="text-sm text-center" style={{ color: C.steel }}>לפני שממשיכים, יש לקרוא ולאשר את תנאי השימוש.</p>
+        <div className="p-3 rounded-2xl" style={{ background: C.kraft, border: `1px solid ${C.kraftDark}`, maxHeight: "55vh", overflowY: "auto" }}>
+          <TermsContent />
+        </div>
+        <label className="flex items-start gap-2 text-sm text-right p-2 rounded-xl" style={{ color: C.ink, background: agree ? "rgba(87,180,94,0.12)" : C.kraft, border: `1px solid ${agree ? C.sage : C.kraftDark}` }}>
+          <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} style={{ marginTop: 2, width: 20, height: 20, flexShrink: 0 }} />
+          <span>קראתי ואני מסכים לתנאי השימוש ומדיניות הפרטיות</span>
+        </label>
+        <button onClick={accept} disabled={!agree || busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: agree ? C.brand : C.kraftDark, color: "#fff", opacity: busy ? 0.7 : 1 }}>
+          {busy ? "שומר..." : "אישור והמשך"}
+        </button>
+        <button onClick={onLogout} className="text-xs underline" style={{ color: C.steel }}>לא מסכים – התנתק</button>
+      </div>
+    </div>
+  );
+}
+
 function markHasAccount() {
   try {
     localStorage.setItem(HAS_ACCOUNT_KEY, "true");
@@ -1326,6 +1425,7 @@ function AuthGate({ onAuthed }) {
     return hasExistingAccount() ? "login" : "choose";
   });
   const [showTerms, setShowTerms] = useState(false);
+  const [agreeTerms, setAgreeTerms] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
@@ -1356,6 +1456,10 @@ function AuthGate({ onAuthed }) {
   }
 
   async function doCreate() {
+    if (!agreeTerms) {
+      setErr("יש לאשר את תנאי השימוש כדי להירשם");
+      return;
+    }
     if (!email.trim() || !password.trim() || !orgName.trim() || !displayName.trim()) {
       setErr("יש למלא את כל השדות");
       return;
@@ -1364,6 +1468,7 @@ function AuthGate({ onAuthed }) {
     setBusy(true);
     try {
       const data = await window.auth.signUpCreateOrg({ email: email.trim(), password, orgName: orgName.trim(), displayName: displayName.trim(), phone: phone.trim() });
+      try { localStorage.setItem(TERMS_PENDING_KEY, JSON.stringify({ version: TERMS_VERSION, at: Date.now() })); } catch (e) {}
       markHasAccount();
       if (data?.session) onAuthed();
       else setConfirmNotice(true);
@@ -1375,6 +1480,10 @@ function AuthGate({ onAuthed }) {
   }
 
   async function doJoin() {
+    if (!agreeTerms) {
+      setErr("יש לאשר את תנאי השימוש כדי להירשם");
+      return;
+    }
     if (!email.trim() || !password.trim() || !joinOrgId.trim() || !displayName.trim()) {
       setErr("יש למלא את כל השדות");
       return;
@@ -1383,6 +1492,7 @@ function AuthGate({ onAuthed }) {
     setBusy(true);
     try {
       const data = await window.auth.signUpJoinOrg({ email: email.trim(), password, orgId: joinOrgId.trim(), displayName: displayName.trim(), phone: phone.trim() });
+      try { localStorage.setItem(TERMS_PENDING_KEY, JSON.stringify({ version: TERMS_VERSION, at: Date.now() })); } catch (e) {}
       markHasAccount();
       if (data?.session) onAuthed();
       else setConfirmNotice(true);
@@ -1476,8 +1586,9 @@ function AuthGate({ onAuthed }) {
             <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="טלפון (אופציונלי)" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
             <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
             <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            <TermsCheckbox checked={agreeTerms} onChange={setAgreeTerms} onOpen={() => setShowTerms(true)} />
             {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
-            <button onClick={doCreate} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
+            <button onClick={doCreate} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: agreeTerms ? C.brand : C.kraftDark, color: "#fff" }}>
               {busy ? "יוצר..." : "צור ארגון והירשם"}
             </button>
             <button onClick={() => setMode("choose")} className="text-xs" style={{ color: C.steel }}>חזרה</button>
@@ -1510,8 +1621,9 @@ function AuthGate({ onAuthed }) {
             <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="טלפון (אופציונלי)" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
             <input value={email} onChange={(e) => setEmail(e.target.value)} type="email" placeholder="מייל" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark, direction: "ltr" }} />
             <input value={password} onChange={(e) => setPassword(e.target.value)} type="password" placeholder="סיסמה" className="p-3 rounded-2xl border" style={{ borderColor: C.kraftDark }} />
+            <TermsCheckbox checked={agreeTerms} onChange={setAgreeTerms} onOpen={() => setShowTerms(true)} />
             {err && <p style={{ color: C.stamp }} className="text-sm">{err}</p>}
-            <button onClick={doJoin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: C.brand, color: "#fff" }}>
+            <button onClick={doJoin} disabled={busy} className="p-3 rounded-2xl font-bold wh-display" style={{ background: agreeTerms ? C.brand : C.kraftDark, color: "#fff" }}>
               {busy ? "מצטרף..." : "הצטרף והירשם"}
             </button>
             <button onClick={() => setMode("login")} className="text-xs underline" style={{ color: C.accent }}>
@@ -1553,16 +1665,10 @@ function AuthGate({ onAuthed }) {
           </a>
         </p>
         <div className="text-center mt-2">
-          <button onClick={() => setShowTerms((v) => !v)} className="text-xs underline" style={{ color: C.accent }}>
-            תנאי שימוש
+          <button onClick={() => setShowTerms(true)} className="text-xs underline" style={{ color: C.accent }}>
+            תנאי שימוש ומדיניות פרטיות
           </button>
-          {showTerms && (
-            <div className="mt-2 p-3 rounded-2xl text-xs text-right" style={{ background: C.kraft, color: C.steel, border: `1px solid ${C.kraftDark}` }}>
-              <p className="mb-1">האפליקציה נמצאת כרגע <b>בשלבי פיתוח</b> וניתנת לשימוש <b>ללא עלות בשלב זה</b>.</p>
-              <p className="mb-1">ייתכנו שינויים, תקלות, ואי-זמינות זמנית תוך כדי הפיתוח. אין התחייבות לזמינות רציפה או לשמירת נתונים באופן מוחלט.</p>
-              <p>השימוש באפליקציה הוא באחריות המשתמש. לשאלות או הצעות אפשר לפנות למספר שמופיע למעלה.</p>
-            </div>
-          )}
+          {showTerms && <TermsModal onClose={() => setShowTerms(false)} />}
         </div>
       </div>
     </div>
@@ -4403,6 +4509,8 @@ function App() {
   const [unitTemplates, setUnitTemplates] = useState({});
   const [personalPurchases, setPersonalPurchases] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
+  // null = still checking, true = approved current terms, false = must approve before entering.
+  const [termsOk, setTermsOk] = useState(null);
   const [tab, setTab] = useState(() => {
     // If the previous session crashed and the user chose "open tasks", respect that once.
     try {
@@ -5040,6 +5148,45 @@ function App() {
     })();
   }, [loaded, currentUser?.id, locked]);
 
+  /* Terms approval: every user approves the current TERMS_VERSION once. A fresh signup
+     already ticked the box, so that approval is recorded silently on first entry. */
+  useEffect(() => {
+    if (!loaded || !currentUser?.id) return;
+    let cancelled = false;
+    (async () => {
+      const uid = currentUser.id;
+      try { if (localStorage.getItem(termsLocalKey(uid)) === TERMS_VERSION) { setTermsOk(true); return; } } catch (e) {}
+      let all = {};
+      try { all = (await loadKey("terms-acceptances", {})) || {}; } catch (e) {}
+      if (cancelled) return;
+      if (all[uid]?.version === TERMS_VERSION) {
+        try { localStorage.setItem(termsLocalKey(uid), TERMS_VERSION); } catch (e) {}
+        setTermsOk(true);
+        return;
+      }
+      let pending = null;
+      try { pending = JSON.parse(localStorage.getItem(TERMS_PENDING_KEY) || "null"); } catch (e) {}
+      if (pending?.version === TERMS_VERSION) {
+        await recordTermsAcceptance(pending.at);
+        try { localStorage.removeItem(TERMS_PENDING_KEY); } catch (e) {}
+        return;
+      }
+      setTermsOk(false);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loaded, currentUser?.id]);
+  async function recordTermsAcceptance(at) {
+    const uid = currentUser?.id;
+    if (!uid) return;
+    let all = {};
+    try { all = (await loadKey("terms-acceptances", {})) || {}; } catch (e) {}
+    const next = { ...all, [uid]: { version: TERMS_VERSION, at: at || Date.now(), name: currentUser?.name || "" } };
+    try { await saveKey("terms-acceptances", next); } catch (e) {}
+    try { localStorage.setItem(termsLocalKey(uid), TERMS_VERSION); } catch (e) {}
+    setTermsOk(true);
+  }
+
   /* Follow-up reminders. Whichever device is open when one comes due fires it, and
      stamps followUpFiredAt so it never fires twice. Checked on load and every 5 min. */
   useEffect(() => {
@@ -5549,6 +5696,19 @@ function App() {
           await window.auth.signOut();
           setAuthProfile(null);
           setLocked(false);
+        }}
+      />
+    );
+  }
+
+  if (termsOk === false) {
+    return (
+      <TermsAcceptScreen
+        onAccept={() => recordTermsAcceptance()}
+        onLogout={async () => {
+          await window.auth.signOut();
+          setAuthProfile(null);
+          setTermsOk(null);
         }}
       />
     );
