@@ -7019,6 +7019,99 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
   async function deleteOrderReminder(id) {
     await deleteTasksById(id);
   }
+  // Auto reminders from dishes marked "להזמין X ימים לפני" — kept in step with the menu.
+  const remSyncBusy = useRef(false);
+  async function syncMenuOrderReminders(showResult) {
+    if (remSyncBusy.current) return;
+    remSyncBusy.current = true;
+    try {
+      const wk = targetWeekStart;
+      const desired = computeMenuOrderReminders(weeklyMenu, menuItems, wk);
+      const desiredMap = new Map(desired.map((d) => [d.autoKey, d]));
+      const now = Date.now();
+      let base = tasks || [];
+      try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) base = latest; } catch (e) {}
+      const existingKeys = new Set(base.filter((t) => t.autoKey).map((t) => t.autoKey));
+      let updated = 0;
+      const removeIds = [];
+      const kept = base.map((t) => {
+        if (t.kind !== "order-reminder" || !t.autoKey || t.followUpFiredAt || t.status === "done") return t;
+        const d = desiredMap.get(t.autoKey);
+        if (!d) {
+          if (t.autoWeek === wk) removeIds.push(t.id);
+          return t;
+        }
+        if (d.followUpAt > now && (t.followUpAt !== d.followUpAt || t.title !== d.title)) {
+          updated++;
+          return { ...t, followUpAt: d.followUpAt, title: d.title };
+        }
+        return t;
+      });
+      const added = desired
+        .filter((d) => !existingKeys.has(d.autoKey) && d.followUpAt > now)
+        .map((d) => ({
+          id: genId(),
+          kind: "order-reminder",
+          autoKey: d.autoKey,
+          autoWeek: wk,
+          title: d.title,
+          description: "נוצר אוטומטית מהתפריט השבועי",
+          location: "",
+          assignedToId: "",
+          priority: "normal",
+          categoryId: "",
+          followUpAt: d.followUpAt,
+          status: "open",
+          comments: [],
+          createdAt: Date.now(),
+          createdBy: currentUser?.name || "",
+          createdById: currentUser?.id || "",
+        }));
+      if (added.length || updated) await persistTasks([...added, ...kept]);
+      if (removeIds.length) await deleteTasksById(removeIds);
+      if (showResult) {
+        const n = added.length + updated + removeIds.length;
+        showToast(n ? `תזכורות הזמנה עודכנו (${added.length} חדשות${removeIds.length ? `, ${removeIds.length} הוסרו` : ""}) ✓` : "התזכורות כבר מעודכנות ✓");
+      }
+    } catch (e) {
+      if (showResult) showToast("עדכון התזכורות נכשל");
+    } finally {
+      remSyncBusy.current = false;
+    }
+  }
+  // Auto-run when the menu or a dish's reminder setting changes (not on mere opening,
+  // so viewing a different week doesn't create reminders by itself).
+  const menuRemSig = JSON.stringify([
+    weeklyMenu || {},
+    (menuItems || []).filter((m) => dishOrderReminderOf(m)).map((m) => [m.id, m.name, m.orderReminder]),
+  ]);
+  const menuRemSigRef = useRef(null);
+  useEffect(() => {
+    if (menuRemSigRef.current === null) { menuRemSigRef.current = menuRemSig; return; }
+    if (menuRemSigRef.current === menuRemSig) return;
+    menuRemSigRef.current = menuRemSig;
+    const t = setTimeout(() => { syncMenuOrderReminders(false); }, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [menuRemSig]);
+  async function saveDishReminder(itemId, rem) {
+    await persistMenuItems((menuItems || []).map((m) => {
+      if (m.id !== itemId) return m;
+      const { orderReminder, ...rest } = m;
+      return rem ? { ...rest, orderReminder: rem } : rest;
+    }));
+    showToast(rem ? "תזכורת ההזמנה נשמרה למנה ✓" : "תזכורת ההזמנה הוסרה");
+  }
+  async function dismissOrderReminder(t) {
+    // Auto reminders are closed rather than deleted, so the menu sync won't recreate them.
+    if (t.autoKey) {
+      let base = tasks || [];
+      try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) base = latest; } catch (e) {}
+      await persistTasks(base.map((x) => (x.id === t.id ? { ...x, status: "done" } : x)));
+    } else {
+      await deleteOrderReminder(t.id);
+    }
+  }
   const [selectedForOrder, setSelectedForOrder] = useState([]);
   // Reset the "already sent" suppliers whenever the selection or mode changes.
   useEffect(() => { setSentSuppliers([]); }, [pickedIds, selectedForOrder, orderMode]);
@@ -8776,6 +8869,20 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
               </button>
               <p className="text-xs" style={{ color: C.steel }}>ההתראה תישלח אליך בתאריך ובשעה שקבעת.</p>
 
+              <div className="mt-2 p-2 rounded-xl" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>
+                <div className="text-xs font-bold mb-1" style={{ color: C.ink }}>🍟 תזכורות אוטומטיות מהתפריט</div>
+                <p className="text-xs mb-2" style={{ color: C.steel }}>
+                  בבחירת מנה בתפריט השבועי לחץ "🔔 הוסף תזכורת הזמנה" (למשל צ׳יפס / פיתות – יום לפני). התזכורות נוצרות ומתעדכנות לבד כשמשנים את התפריט.
+                  {(() => {
+                    const n = (menuItems || []).filter((m) => dishOrderReminderOf(m)).length;
+                    return n ? ` כרגע ${n} מנות עם תזכורת.` : "";
+                  })()}
+                </p>
+                <button onClick={() => syncMenuOrderReminders(true)} className="w-full py-2 rounded-xl text-sm font-bold" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                  🔄 צור תזכורות לפי התפריט ({menuWeek === "next" ? "שבוע הבא" : "השבוע"})
+                </button>
+              </div>
+
               {orderReminders.length > 0 && (
                 <div className="mt-2 flex flex-col gap-1">
                   <div className="text-xs font-bold" style={{ color: C.steel }}>תזכורות קרובות:</div>
@@ -8785,7 +8892,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                         {t.title.replace(/^🛒 (להזמין: )?/, "")}
                         {t.followUpAt ? <span style={{ color: C.steel }}> · {new Date(t.followUpAt).toLocaleDateString("he-IL", { day: "numeric", month: "numeric" })} {new Date(t.followUpAt).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}</span> : null}
                       </span>
-                      <button onClick={() => deleteOrderReminder(t.id)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+                      <button onClick={() => dismissOrderReminder(t)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }}>✕</button>
                     </div>
                   ))}
                 </div>
@@ -9494,8 +9601,13 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                                 }}
                               >
                                 {m.name}
+                                {dishOrderReminderOf(m) && <span className="text-xs font-normal"> 🔔</span>}
                               </button>
                             ))}
+                            {(() => {
+                              const curItem = currentId && menuItems.find((m) => m.id === currentId);
+                              return curItem ? <DishOrderReminderEditor key={curItem.id} item={curItem} onSave={(rem) => saveDishReminder(curItem.id, rem)} /> : null;
+                            })()}
                           </div>
                         )}
                       </div>
@@ -9785,6 +9897,116 @@ function combineDateTime(dateStr, timeStr) {
   const d = new Date(dateStr);
   d.setHours(Number.isFinite(h) ? h : 9, Number.isFinite(m) ? m : 0, 0, 0);
   return d.getTime();
+}
+
+/* ---------- Dish order reminders ("להזמין צ'יפס יום לפני") ----------
+   A menu item may carry orderReminder: { leadDays, time, what }. When that dish is
+   planned in the weekly menu, an order-reminder task is created leadDays before the
+   day it's served, so the existing follow-up engine sends the notification. */
+function dishOrderReminderOf(m) {
+  const r = m && m.orderReminder;
+  return r && Number(r.leadDays) > 0 ? r : null;
+}
+function leadDaysLabel(n) {
+  const k = Number(n) || 0;
+  if (k === 1) return "יום לפני";
+  if (k === 2) return "יומיים לפני";
+  return `${k} ימים לפני`;
+}
+function computeMenuOrderReminders(weeklyMenu, menuItems, weekStartIsoStr) {
+  const byId = new Map((menuItems || []).map((m) => [m.id, m]));
+  const slotLabel = Object.fromEntries(MEAL_SLOTS.map(([k, l]) => [k, l]));
+  const acc = new Map(); // key -> { item, rem, dayIdx, dayKey, dayLabel, slots: [] }
+  WEEK_DAYS.forEach(([dayKey, dayLabel], dayIdx) => {
+    const day = (weeklyMenu || {})[dayKey] || {};
+    MEAL_SLOTS.forEach(([slotKey]) => {
+      const sel = day[slotKey] || {};
+      Object.values(sel).forEach((itemId) => {
+        const item = itemId && byId.get(itemId);
+        const rem = dishOrderReminderOf(item);
+        if (!rem) return;
+        const key = `${weekStartIsoStr}|${dayKey}|${item.id}`;
+        if (!acc.has(key)) acc.set(key, { item, rem, dayIdx, dayKey, dayLabel, slots: [] });
+        const e = acc.get(key);
+        if (!e.slots.includes(slotLabel[slotKey])) e.slots.push(slotLabel[slotKey]);
+      });
+    });
+  });
+  const out = [];
+  acc.forEach((e, key) => {
+    const d = parseIsoLocal(weekStartIsoStr);
+    d.setDate(d.getDate() + e.dayIdx - Number(e.rem.leadDays));
+    if (d.getDay() === 6) d.setDate(d.getDate() - 1); // never on Shabbat — move to Friday
+    const due = combineDateTime(isoLocalDate(d), e.rem.time || "10:00");
+    const what = (e.rem.what || "").trim() || e.item.name;
+    const forWhat = (e.rem.what || "").trim() && e.rem.what.trim() !== e.item.name ? ` (ל${e.item.name})` : "";
+    const dayWord = e.dayLabel === "שבת" ? "לשבת" : `ל${e.dayLabel}`;
+    out.push({
+      autoKey: key,
+      followUpAt: due,
+      title: `🛒 להזמין: ${what}${forWhat} — ${dayWord} ${e.slots.join(" ו")}`.trim(),
+    });
+  });
+  return out;
+}
+
+function DishOrderReminderEditor({ item, onSave }) {
+  const cur = dishOrderReminderOf(item);
+  const [open, setOpen] = useState(false);
+  const [lead, setLead] = useState("1");
+  const [time, setTime] = useState("10:00");
+  const [what, setWhat] = useState("");
+  function startEdit() {
+    setLead(String(cur?.leadDays || 1));
+    setTime(cur?.time || "10:00");
+    setWhat(cur?.what || "");
+    setOpen(true);
+  }
+  async function save() {
+    const n = Math.max(1, Math.min(14, parseInt(lead, 10) || 1));
+    await onSave({ leadDays: n, time: time || "10:00", what: what.trim() });
+    setOpen(false);
+  }
+  async function clear() {
+    await onSave(null);
+    setOpen(false);
+  }
+  if (!open) {
+    return (
+      <button
+        onClick={startEdit}
+        className="w-full text-right text-xs px-3 py-2 rounded-xl mt-1"
+        style={{ background: cur ? "rgba(76,175,80,0.12)" : C.paper, color: cur ? C.ink : C.steel, border: `1px dashed ${cur ? C.sage : C.kraftDark}` }}
+      >
+        {cur
+          ? <>🔔 להזמין {(cur.what || "").trim() || item.name} · {leadDaysLabel(cur.leadDays)} · {cur.time || "10:00"} <span style={{ color: C.steel }}>(לשינוי)</span></>
+          : <>🔔 הוסף תזכורת הזמנה למנה הזו (למשל יום לפני)</>}
+      </button>
+    );
+  }
+  return (
+    <div className="mt-1 p-2 rounded-xl flex flex-col gap-2" style={{ background: C.paper, border: `1px solid ${C.sage}` }}>
+      <div className="text-xs font-bold" style={{ color: C.ink }}>🔔 תזכורת הזמנה — {item.name}</div>
+      <input
+        value={what}
+        onChange={(e) => setWhat(e.target.value)}
+        placeholder={`מה להזמין (ריק = ${item.name})`}
+        className="w-full p-2 rounded-xl border text-sm"
+        style={{ borderColor: C.kraftDark }}
+      />
+      <div className="flex gap-2 items-center text-sm" style={{ color: C.ink }}>
+        <input type="number" inputMode="numeric" min="1" max="14" value={lead} onChange={(e) => setLead(e.target.value)} className="w-14 p-2 rounded-xl border text-center" style={{ borderColor: C.kraftDark }} />
+        <span>ימים לפני, בשעה</span>
+        <input type="time" value={time} onChange={(e) => setTime(e.target.value)} className="w-24 p-2 rounded-xl border" style={{ borderColor: C.kraftDark }} />
+      </div>
+      <p className="text-xs" style={{ color: C.steel }}>בכל פעם שהמנה משובצת בתפריט השבועי, תישלח התראה בזמן הזה. תזכורת שיוצאת בשבת תוקדם ליום שישי.</p>
+      <div className="flex gap-2">
+        <button onClick={save} className="flex-1 py-2 rounded-xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>שמור</button>
+        {cur && <button onClick={clear} className="px-3 py-2 rounded-xl text-sm font-bold" style={{ background: C.stamp, color: "#fff" }}>הסר</button>}
+        <button onClick={() => setOpen(false)} className="px-3 py-2 rounded-xl text-sm font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
+      </div>
+    </div>
+  );
 }
 
 function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
@@ -15846,6 +16068,17 @@ function MenuAdmin({ menuItems, persistMenuItems, products, persistProducts, sho
           <button onClick={addEditIngredient} className="w-full py-2 rounded-xl font-bold text-sm" style={{ background: C.sage, color: "#fff" }}>
             + הוסף תוספת
           </button>
+          <DishOrderReminderEditor
+            key={editingId}
+            item={editForm}
+            onSave={async (rem) => {
+              setEditForm((f) => {
+                const { orderReminder, ...rest } = f;
+                return rem ? { ...rest, orderReminder: rem } : rest;
+              });
+            }}
+          />
+          <p className="text-xs" style={{ color: C.steel }}>התזכורת נשמרת עם "שמור שינויים".</p>
           <div className="flex gap-2">
             <button onClick={saveEdit} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.brand, color: "#fff" }}>שמור שינויים</button>
             <button onClick={() => setEditingId(null)} className="flex-1 py-2 rounded-2xl font-bold" style={{ background: C.kraft, color: C.ink }}>ביטול</button>
