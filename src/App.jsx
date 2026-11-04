@@ -2234,7 +2234,7 @@ function LostDishTypesRepair({ dishTypes, persistDishTypes, menuItems, weeklyMen
   );
 }
 
-function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persistDishTypes, slotKey, slotLabel, weekStart }) {
+function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persistDishTypes, slotKey, slotLabel, weekStart, onSaveDishReminder }) {
   const [cell, setCell] = useState(null); // { dayKey, dayLabel, dishTypeId, dishTypeName }
   const [newRowName, setNewRowName] = useState("");
   const [addingRow, setAddingRow] = useState(false);
@@ -2265,7 +2265,8 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
 
   const nameOf = (dayKey, dtId) => {
     const id = weeklyMenu[dayKey]?.[slotKey]?.[dtId];
-    return menuItems.find((m) => m.id === id)?.name || "";
+    const m = menuItems.find((x) => x.id === id);
+    return m ? `${m.name}${dishOrderReminderOf(m) ? " 🔔" : ""}` : "";
   };
 
   return (
@@ -2442,6 +2443,17 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
               — רוקן תא —
             </button>
 
+            {(() => {
+              const selId = weeklyMenu[cell.dayKey]?.[slotKey]?.[cell.dishTypeId];
+              const selItem = selId && menuItems.find((m) => m.id === selId);
+              if (!selItem || !onSaveDishReminder) return null;
+              return (
+                <div className="mb-3">
+                  <DishOrderReminderEditor key={selItem.id} item={selItem} onSave={(rem) => onSaveDishReminder(selItem.id, rem)} />
+                </div>
+              );
+            })()}
+
             {menuItems.filter((m) => m.dishType === cell.dishTypeId).length === 0 ? (
               <p className="text-sm text-center py-6" style={{ color: C.steel }}>
                 אין מנות מסוג "{cell.dishTypeName}". הוסף בניהול ← תפריט.
@@ -2466,7 +2478,7 @@ function WeeklyMenuGrid({ weeklyMenu, setWeekSlot, menuItems, dishTypes, persist
                           border: `1.5px solid ${selected ? C.sage : C.kraftDark}`,
                         }}
                       >
-                        {selected && "✓ "}{m.name}
+                        {selected && "✓ "}{m.name}{dishOrderReminderOf(m) && " 🔔"}
                       </button>
                     );
                   })}
@@ -9659,6 +9671,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
                     slotKey={slotKey}
                     slotLabel={slotLabel}
                     weekStart={targetWeekStart}
+                    onSaveDishReminder={saveDishReminder}
                   />
                 ))}
               </>
