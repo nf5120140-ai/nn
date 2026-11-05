@@ -2627,6 +2627,30 @@ function UnitRequestTab({
     if (!window.confirm("לרוקן את כל הרשימה הקבועה?")) return;
     setTpl([]);
   }
+  // ===== Keep requests in the SAME order as the printed fixed list =====
+  // Items on the fixed list come first, in its order (so the request matches the paper
+  // the cook filled in); anything else follows in the order it was added.
+  function tplIndexOf(item, list) {
+    const tpl = list || tplRef.current || [];
+    const custom = !!(item && (item.custom || String(item.productId || "").startsWith("custom-")));
+    const nm = String(item?.name || "").trim();
+    return tpl.findIndex((t) =>
+      tplIsCustom(t) ? custom && String(t.name || "").trim() === nm : !custom && t.productId === item.productId
+    );
+  }
+  function sortByListOrder(items, list, seqOf) {
+    return (items || [])
+      .map((it, idx) => ({ it, idx, rank: tplIndexOf(it, list) }))
+      .sort((a, b) => {
+        const ra = a.rank < 0 ? Infinity : a.rank;
+        const rb = b.rank < 0 ? Infinity : b.rank;
+        if (ra !== rb) return ra - rb;
+        const sa = seqOf ? seqOf(a.it) : a.idx;
+        const sb = seqOf ? seqOf(b.it) : b.idx;
+        return sa - sb;
+      })
+      .map((x) => x.it);
+  }
   const escHtml = (v) => String(v == null ? "" : v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   // Print the fixed list with EMPTY quantity boxes, to hand to the cook to fill in by hand.
   function printBlankTemplate() {
@@ -2741,6 +2765,20 @@ function UnitRequestTab({
   const reqUnitsRef = useRef(reqUnits);
   const customRef = useRef(customList);
   const noteRef = useRef(noteDraft);
+  // When each product was first added — the order for items that aren't on the fixed list.
+  const addSeqRef = useRef({});
+  const addSeqCounter = useRef(0);
+  function seedSeq(items) {
+    const m = {};
+    (items || []).forEach((i, idx) => { if (i && i.productId) m[i.productId] = idx + 1; });
+    addSeqRef.current = m;
+    addSeqCounter.current = (items || []).length + 1;
+  }
+  function touchSeq(key) {
+    if (!addSeqRef.current[key]) addSeqRef.current[key] = ++addSeqCounter.current + 1000;
+  }
+  const seqOf = (i) => addSeqRef.current[i.productId] || 1e9;
+  if (addSeqCounter.current === 0 && (current?.items || []).length) seedSeq(current.items);
   const saveTimer = useRef(null);
   useEffect(() => { reqQtysRef.current = reqQtys; }, [reqQtys]);
   useEffect(() => { reqUnitsRef.current = reqUnits; }, [reqUnits]);
@@ -2753,6 +2791,7 @@ function UnitRequestTab({
     if ((current?.id || null) !== draftIdRef.current) {
       draftIdRef.current = current?.id || null;
       const { nq, nu, cust } = seedFromItems(current?.items);
+      seedSeq(current?.items);
       reqQtysRef.current = nq; reqUnitsRef.current = nu; customRef.current = cust; noteRef.current = current?.note || "";
       setReqQtys(nq); setReqUnits(nu); setCustomList(cust); setNoteDraft(current?.note || "");
     }
@@ -2768,7 +2807,7 @@ function UnitRequestTab({
     const cust = (customRef.current || [])
       .filter((c) => Number(c.qty) > 0)
       .map((c) => ({ productId: c.id, name: c.name, unit: c.unit || "", qty: Number(c.qty), custom: true }));
-    return [...prods, ...cust];
+    return sortByListOrder([...prods, ...cust], tplRef.current, seqOf);
   }
 
   async function flushDraftSave(items, note) {
@@ -2819,6 +2858,7 @@ function UnitRequestTab({
   function applyQty(pid, qty, unit) {
     if (locked) { showToast("הבקשה כבר נשלחה - לא ניתן לשנות"); return; }
     const q = Math.max(0, Number(qty) || 0);
+    if (q > 0) touchSeq(pid);
     const nq = { ...reqQtysRef.current, [pid]: q };
     reqQtysRef.current = nq; setReqQtys(nq);
     if (unit !== undefined) {
@@ -2829,6 +2869,7 @@ function UnitRequestTab({
   }
   function setCustom(nextArr) {
     if (locked) { showToast("הבקשה כבר נשלחה - לא ניתן לשנות"); return; }
+    (nextArr || []).forEach((c) => touchSeq(c.id));
     customRef.current = nextArr; setCustomList(nextArr);
     scheduleSave();
   }
@@ -2855,6 +2896,16 @@ function UnitRequestTab({
     if (!name) return;
     setCustom([...(customRef.current || []), { id: "custom-" + genId(), name, qty: 1, unit: "" }]);
     setCustomName("");
+  }
+  // Quantity for a free-text item that sits on the fixed list (matched by name).
+  function setCustomByName(name, qty, unit) {
+    const nm = String(name || "").trim();
+    if (!nm) return;
+    const q = Math.max(0, Number(qty) || 0);
+    const cur = customRef.current || [];
+    const ex = cur.find((c) => String(c.name || "").trim() === nm);
+    if (ex) setCustom(cur.map((c) => (c === ex ? { ...c, qty: q, ...(unit !== undefined ? { unit } : {}) } : c)));
+    else if (q > 0) setCustom([...cur, { id: "custom-" + genId(), name: nm, qty: q, unit: unit || "" }]);
   }
 
   function loadFromTemplate() {
@@ -2927,6 +2978,7 @@ function UnitRequestTab({
     draftIdRef.current = null;
     reqQtysRef.current = {}; reqUnitsRef.current = {}; customRef.current = []; noteRef.current = "";
     setReqQtys({}); setReqUnits({}); setCustomList([]); setNoteDraft("");
+    addSeqRef.current = {}; addSeqCounter.current = 0;
     setAddingMore(false);
     showToast("הבקשה נשלחה ✓ אפשר להכין בקשה נוספת");
   }
@@ -2947,6 +2999,7 @@ function UnitRequestTab({
   // Load a previous request's items into this week's draft, so it can be edited and re-sent.
   function reuseRequest(r) {
     const { nq, nu, cust } = seedFromItems(r.items);
+    seedSeq(r.items);
     reqQtysRef.current = nq; reqUnitsRef.current = nu; customRef.current = cust;
     setReqQtys(nq); setReqUnits(nu); setCustomList(cust);
     scheduleSave();
@@ -3038,6 +3091,135 @@ function UnitRequestTab({
     await persistUnitRequests(others);
     if (notifyManagers) await notifyManagers(`🗑️ ${currentUser.name} מחק בקשה שנשלחה`, { tab: "admin", section: "unitrequests" });
     showToast("הבקשה נמחקה");
+  }
+
+
+  // ===== Adding to a request that was already sent — allowed until the manager handles it =====
+  const [amendSearch, setAmendSearch] = useState({}); // reqId -> search text
+  const [amendTouched, setAmendTouched] = useState({}); // reqId -> true once something changed
+  async function amendItems(reqId, mutate) {
+    let blocked = false;
+    try {
+      const fresh = await loadListFresh(KEYS.unitRequests);
+      const fr = Array.isArray(fresh) ? fresh.find((r) => r.id === reqId) : null;
+      if (fr && fr.status !== "submitted") {
+        return showToast("המנהל כבר טיפל בבקשה – אי אפשר לשנות אותה. אפשר להכין בקשה חדשה.");
+      }
+    } catch (e) {}
+    await persistUnitRequests((list) => {
+      const arr = list || [];
+      const req = arr.find((r) => r.id === reqId);
+      if (!req || req.status !== "submitted") { blocked = true; return arr; }
+      const items = sortByListOrder(mutate([...(req.items || [])]), tplRef.current);
+      return arr.map((r) => (r.id === reqId ? { ...r, items, amendedAt: Date.now(), updatedAt: Date.now() } : r));
+    });
+    if (blocked) return showToast("המנהל כבר טיפל בבקשה – אי אפשר לשנות אותה. אפשר להכין בקשה חדשה.");
+    setAmendTouched((m) => ({ ...m, [reqId]: true }));
+  }
+  function amendAddProduct(reqId, p) {
+    const unit = p.unit || "";
+    amendItems(reqId, (items) => {
+      const ex = items.find((i) => i.productId === p.id);
+      if (ex) return items.map((i) => (i === ex ? { ...i, qty: (Number(i.qty) || 0) + 1 } : i));
+      return [...items, { productId: p.id, name: p.name, unit, qty: 1, addedLater: true }];
+    });
+    setAmendSearch((m) => ({ ...m, [reqId]: "" }));
+  }
+  function amendAddCustom(reqId, rawName) {
+    const name = String(rawName || "").trim();
+    if (!name) return;
+    amendItems(reqId, (items) => {
+      const ex = items.find((i) => isCustomItem(i) && String(i.name || "").trim() === name);
+      if (ex) return items.map((i) => (i === ex ? { ...i, qty: (Number(i.qty) || 0) + 1 } : i));
+      return [...items, { productId: "custom-" + genId(), name, unit: "", qty: 1, custom: true, addedLater: true }];
+    });
+    setAmendSearch((m) => ({ ...m, [reqId]: "" }));
+  }
+  function amendSetQty(reqId, pid, qty) {
+    const q = Math.max(0, Number(qty) || 0);
+    amendItems(reqId, (items) => items.map((i) => (i.productId === pid ? { ...i, qty: q } : i)));
+  }
+  function amendSetUnit(reqId, pid, unit) {
+    amendItems(reqId, (items) => items.map((i) => (i.productId === pid ? { ...i, unit } : i)));
+  }
+  function amendRemove(reqId, pid) {
+    amendItems(reqId, (items) => items.filter((i) => i.productId !== pid));
+  }
+  async function amendDone(r) {
+    const live = (unitRequests || []).find((x) => x.id === r.id) || r;
+    if (notifyManagers) {
+      await notifyManagers(
+        `🧺 ${currentUser.name} עדכן בקשה שכבר נשלחה (${(live.items || []).length} מוצרים) - ממתינה לאישורך`,
+        { tab: "admin", section: "unitrequests", requestId: r.id }
+      );
+    }
+    setAmendTouched((m) => ({ ...m, [r.id]: false }));
+    setOpenReqId(null);
+    showToast("הבקשה עודכנה והמנהל קיבל הודעה ✓");
+  }
+  function amendBlock(r) {
+    const term = String(amendSearch[r.id] || "").trim();
+    const inReq = new Set((r.items || []).map((i) => i.productId));
+    const matches = term
+      ? catalog.filter((p) => (p.name || "").includes(term)).sort((a, b) => (inReq.has(a.id) ? 1 : 0) - (inReq.has(b.id) ? 1 : 0)).slice(0, 8)
+      : [];
+    return (
+      <div className="mt-2 flex flex-col gap-1">
+        <div className="text-xs p-2 rounded-xl" style={{ background: "rgba(255,179,71,0.15)", color: C.ink, border: `1px solid ${C.mustard}` }}>
+          הבקשה עוד לא אושרה – אפשר להוסיף מוצרים ולשנות כמויות עד שהמנהל מטפל בה.
+        </div>
+        {(r.items || []).map((i) => {
+          const opts = unitOptions(settings, [i.unit]);
+          return (
+            <div key={i.productId} className="flex justify-between items-center gap-1 py-1 border-b" style={{ borderColor: C.kraftDark }}>
+              <span className="font-bold text-sm flex-1" style={{ color: C.ink }}>
+                {i.name}
+                {i.addedLater && <span className="text-xs font-normal" style={{ color: C.sage }}> · נוסף</span>}
+              </span>
+              <div className="flex items-center gap-1">
+                <button onClick={() => amendSetQty(r.id, i.productId, Math.max(0, (Number(i.qty) || 0) - 1))} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>−</button>
+                <input type="number" inputMode="numeric" value={Number(i.qty) ? i.qty : ""} onChange={(e) => amendSetQty(r.id, i.productId, e.target.value)} className="w-12 text-center p-1 rounded-lg border text-sm" style={{ borderColor: C.kraftDark }} />
+                <button onClick={() => amendSetQty(r.id, i.productId, (Number(i.qty) || 0) + 1)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>+</button>
+                <select value={i.unit || "יח׳"} onChange={(e) => amendSetUnit(r.id, i.productId, e.target.value)} className="px-1 h-7 rounded-lg font-bold text-xs" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                  {opts.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+                <button onClick={() => amendRemove(r.id, i.productId)} className="w-7 h-7 rounded-lg font-bold" style={{ background: C.kraft, color: C.stamp, border: `1px solid ${C.kraftDark}` }}>✕</button>
+              </div>
+            </div>
+          );
+        })}
+        <div className="text-xs font-bold mt-2" style={{ color: C.ink }}>➕ הוספת מוצר לבקשה</div>
+        <input
+          value={amendSearch[r.id] || ""}
+          onChange={(e) => { const v = e.target.value; setAmendSearch((m) => ({ ...m, [r.id]: v })); }}
+          placeholder="חיפוש מוצר..."
+          className="w-full p-2 rounded-xl border text-sm"
+          style={{ borderColor: C.kraftDark, background: C.paper }}
+        />
+        {term && (
+          <div className="flex flex-col gap-1">
+            {matches.map((p) => (
+              <button key={p.id} onClick={() => amendAddProduct(r.id, p)} className="text-right text-sm p-2 rounded-xl flex justify-between" style={{ background: C.paper, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                <span>{p.name}</span>
+                <span className="text-xs font-bold" style={{ color: C.sage }}>{inReq.has(p.id) ? "+1" : "+ הוסף"}</span>
+              </button>
+            ))}
+            {!catalog.some((p) => (p.name || "").trim() === term) && (
+              <button onClick={() => amendAddCustom(r.id, term)} className="text-right text-sm p-2 rounded-xl" style={{ background: C.paper, color: C.accent, border: `1px dashed ${C.kraftDark}` }}>
+                + הוסף "{term}" כמוצר שלא ברשימה
+              </button>
+            )}
+          </div>
+        )}
+        <button
+          onClick={() => amendDone(r)}
+          className="mt-2 py-2 rounded-xl text-sm font-bold"
+          style={{ background: amendTouched[r.id] ? C.sage : C.kraft, color: amendTouched[r.id] ? "#fff" : C.steel, border: `1px solid ${C.kraftDark}` }}
+        >
+          ✓ סיימתי – עדכן את המנהל
+        </button>
+      </div>
+    );
   }
 
   // The item list of a sent request with per-item "arrived / missing" toggles.
@@ -3168,10 +3350,34 @@ function UnitRequestTab({
       .filter((c) => Number(c.qty) > 0)
       .map((c) => ({ productId: c.id, name: c.name, unit: c.unit || "", qty: Number(c.qty), custom: true })),
   ];
+  const draftItemsSorted = sortByListOrder(draftItems, tplEdit, seqOf);
   const qtyOf = (id) => Number(reqQtys[id]) || 0;
   const unitOf = (p) => reqUnits[p.id] || p.unit;
   const totalItems = draftItems.length;
   const customItems = draftItems.filter((i) => i.custom);
+
+  // Entry list: with no search/filter, show the fixed list first — same order and the same
+  // line numbers as the printed blank sheet — then every other product.
+  const tplNumOf = {};
+  tplEdit.forEach((t, idx) => { if (!tplIsCustom(t)) tplNumOf[t.productId] = idx + 1; });
+  const followPaper = tplEdit.length > 0 && !search.trim() && catFilter === "all";
+  const entryRows = followPaper
+    ? [
+        ...tplEdit
+          .map((t, idx) => {
+            if (tplIsCustom(t)) return { kind: "c", t, num: idx + 1 };
+            const p = catalog.find((x) => x.id === t.productId);
+            return p ? { kind: "p", p, num: idx + 1 } : null;
+          })
+          .filter(Boolean),
+        ...filtered.filter((p) => !tplNumOf[p.id]).map((p) => ({ kind: "p", p, num: null, rest: true })),
+      ]
+    : filtered.map((p) => ({ kind: "p", p, num: tplNumOf[p.id] || null }));
+  const firstRestIdx = entryRows.findIndex((r) => r.rest);
+  const numBadge = (n) =>
+    n ? (
+      <span className="text-xs font-bold px-1.5 rounded-md ml-1" style={{ background: C.accent, color: "#fff", minWidth: 22, display: "inline-block", textAlign: "center" }}>{n}</span>
+    ) : null;
 
   return (
     <div>
@@ -3207,7 +3413,7 @@ function UnitRequestTab({
                   )}
 
                   <div className="flex flex-col gap-1 mt-2">
-                    {draftItems.map((i) => {
+                    {draftItemsSorted.map((i) => {
                       const isBox = i.unit === "ארגז";
                       const opts = unitOptions(settings, [i.unit]);
                       return (
@@ -3279,7 +3485,7 @@ function UnitRequestTab({
                           <div className="text-sm font-bold" style={{ color: C.ink }}>
                             {(r.items || []).length} מוצרים · {new Date(r.submittedAt || r.createdAt).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}
                           </div>
-                          <div className="text-xs font-bold" style={{ color: st.color }}>{st.label} · {isOpen ? "▲ סגור" : "▼ סמן חסרים"}</div>
+                          <div className="text-xs font-bold" style={{ color: st.color }}>{st.label} · {isOpen ? "▲ סגור" : r.status === "submitted" ? "▼ הוסף / ערוך מוצרים" : "▼ סמן חסרים"}</div>
                         </button>
                         <div className="flex gap-1">
                           <button onClick={() => printRequest(r)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.accent, color: "#fff" }} title="הדפסה ממחשב">🖨️</button>
@@ -3287,12 +3493,12 @@ function UnitRequestTab({
                           <button onClick={() => deleteRequest(r.id)} className="px-2 py-1 rounded-lg text-xs font-bold" style={{ background: C.stamp, color: "#fff" }} title="מחק בקשה">🗑️</button>
                         </div>
                       </div>
-                      {isOpen && receiptBlock(r)}
+                      {isOpen && (r.status === "submitted" ? amendBlock(r) : receiptBlock(r))}
                     </div>
                   );
                 })}
               </div>
-              <p className="text-xs mt-2" style={{ color: C.steel }}>פתח בקשה כדי לסמן מה חסר (מה שלא מסומן נחשב שהגיע), ואז "דווח חוסרים".</p>
+              <p className="text-xs mt-2" style={{ color: C.steel }}>בקשה שממתינה לאישור – פתח אותה כדי להוסיף מוצרים. בקשה שנופקה – פתח כדי לסמן מה חסר ולדווח.</p>
             </ShelfTag>
           )}
 
@@ -3351,21 +3557,56 @@ function UnitRequestTab({
             </ShelfTag>
           )}
 
+          {followPaper && (
+            <div className="text-xs font-bold mb-2 p-2 rounded-xl" style={{ background: "rgba(62,143,203,0.12)", color: C.ink, border: `1px solid ${C.accent}` }}>
+              📄 לפי סדר הרשימה המודפסת — המספרים זהים לדף
+            </div>
+          )}
           <div className="flex flex-col gap-2 mb-4">
-            {filtered.map((p) => {
+            {entryRows.map((row, ri) => {
+              const sep = followPaper && ri === firstRestIdx ? (
+                <div key="sep-rest" className="text-xs font-bold mt-2" style={{ color: C.steel }}>מוצרים נוספים (לא ברשימה הקבועה)</div>
+              ) : null;
+              if (row.kind === "c") {
+                const nm = String(row.t.name || "").trim();
+                const ex = (customList || []).find((c) => String(c.name || "").trim() === nm);
+                const q = Number(ex?.qty) || 0;
+                const u = ex?.unit || row.t.unit || "יח׳";
+                return (
+                  <ShelfTag key={"tc-" + row.t.productId} accent={q > 0 ? C.sage : C.kraftDark}>
+                    <div className="flex justify-between items-center">
+                      <div>
+                        <div className="font-bold text-sm" style={{ color: C.ink }}>{numBadge(row.num)}{nm}</div>
+                        <div className="text-xs" style={{ color: C.steel }}>מוצר שלא במלאי</div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => setCustomByName(nm, Math.max(0, q - 1))} disabled={q === 0} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, opacity: q === 0 ? 0.4 : 1 }}>−</button>
+                        <input type="number" value={q === 0 ? "" : q} onChange={(e) => setCustomByName(nm, e.target.value, u)} placeholder="0" className="w-14 text-center p-1.5 rounded-xl border" style={{ borderColor: C.kraftDark }} />
+                        <button onClick={() => setCustomByName(nm, q + 1, u)} className="w-8 h-8 rounded-xl font-bold" style={{ background: C.paper, border: `1px solid ${C.kraftDark}` }}>+</button>
+                        <select value={u} onChange={(e) => setCustomByName(nm, q > 0 ? q : 1, e.target.value)} className="px-1 h-8 rounded-xl font-bold text-xs" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}>
+                          {unitOptions(settings, [u]).map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+                        </select>
+                      </div>
+                    </div>
+                  </ShelfTag>
+                );
+              }
+              const p = row.p;
               const q = qtyOf(p.id);
               const u = unitOf(p);
               const isBox = u === "ארגז";
               const step = 1; // whole-unit steps for every unit (incl. ארגז)
               return (
-                <ShelfTag key={p.id} accent={q > 0 ? C.sage : C.kraftDark}>
+                <React.Fragment key={p.id}>
+                {sep}
+                <ShelfTag accent={q > 0 ? C.sage : C.kraftDark}>
                   <div className="flex justify-between items-center">
                     <div className="flex gap-2 items-center">
                       {p.imageData && (
                         <img src={p.imageData} alt="" className="rounded-xl" style={{ width: 44, height: 44, objectFit: "cover" }} />
                       )}
                       <div>
-                        <div className="font-bold text-sm" style={{ color: C.ink }}>{p.name}</div>
+                        <div className="font-bold text-sm" style={{ color: C.ink }}>{numBadge(row.num)}{p.name}</div>
                         <div className="text-xs" style={{ color: C.steel }}>{p.category || "ללא קטגוריה"}</div>
                       </div>
                     </div>
@@ -3412,6 +3653,7 @@ function UnitRequestTab({
                     </div>
                   </div>
                 </ShelfTag>
+                </React.Fragment>
               );
             })}
           </div>
@@ -14525,7 +14767,27 @@ function UnitRequestsAdmin({
       priorIssued: r.priorIssued || [],
       items: (r.items || []).map((i) => ({ ...i, give: r.reopened ? 0 : Math.min(i.qty, stockOf(i.productId)) })),
       note: r.managerNote || "",
+      itemsSig: JSON.stringify((r.items || []).map((i) => [i.productId, i.qty, i.unit])),
     });
+  }
+  // The unit may add to a pending request while the manager has it open — pull in the
+  // change, keeping the quantities the manager already set for the items that were there.
+  function syncEditingWithLive() {
+    const live = all.find((r) => r.id === editing?.requestId);
+    if (!live) return;
+    setEditing((cur) => {
+      const prevGive = {};
+      (cur.items || []).forEach((i) => { prevGive[i.productId] = i.give; });
+      return {
+        ...cur,
+        items: (live.items || []).map((i) => ({
+          ...i,
+          give: prevGive[i.productId] !== undefined ? Math.min(prevGive[i.productId], i.qty) : (cur.reopened ? 0 : Math.min(i.qty, stockOf(i.productId))),
+        })),
+        itemsSig: JSON.stringify((live.items || []).map((i) => [i.productId, i.qty, i.unit])),
+      };
+    });
+    showToast("השינויים של היחידה נטענו");
   }
 
   // Return an already-fulfilled request to "pending" so the manager can add to it and
@@ -14713,6 +14975,19 @@ function UnitRequestsAdmin({
           ) : null;
         })()}
 
+        {(() => {
+          const live = all.find((r) => r.id === editing.requestId);
+          if (!live || !editing.itemsSig) return null;
+          const liveSig = JSON.stringify((live.items || []).map((i) => [i.productId, i.qty, i.unit]));
+          if (liveSig === editing.itemsSig) return null;
+          return (
+            <div className="mb-3 p-2 rounded-xl flex justify-between items-center gap-2" style={{ background: "rgba(255,179,71,0.18)", border: `1.5px solid ${C.mustard}` }}>
+              <span className="text-sm font-bold" style={{ color: C.ink }}>🆕 {live.unitName} עדכן את הבקשה מאז שפתחת אותה</span>
+              <button onClick={syncEditingWithLive} className="px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap" style={{ background: C.mustard, color: C.ink }}>טען שינויים</button>
+            </div>
+          );
+        })()}
+
         <div className="flex justify-between items-center mb-2">
           <div className="wh-display font-bold text-sm" style={{ color: C.ink }}>
             מה לנפק ({editing.items.length} מוצרים)
@@ -14738,7 +15013,7 @@ function UnitRequestsAdmin({
         <div className="flex flex-col gap-2 mb-4">
           {editing.reopened && (
             <div className="text-xs p-2 rounded-xl" style={{ background: "rgba(232,168,77,0.15)", color: C.ink, border: `1px solid ${C.mustard}` }}>
-              הבקשה כבר נופקה קודם. הכמויות מתחילות מ-0 — הזן כמות רק למה שאתה <b>מוסיף עכשio</b>. מה שכבר ניפקת נשמר ולא יורד מהמלאי שוב.
+              הבקשה כבר נופקה קודם. הכמויות מתחילות מ-0 — הזן כמות רק למה שאתה <b>מוסיף עכשיו</b>. מה שכבר ניפקת נשמר ולא יורד מהמלאי שוב.
             </div>
           )}
           {editing.items.length === 0 && (
@@ -14757,6 +15032,7 @@ function UnitRequestsAdmin({
                   <div className="flex-1">
                     <div className="font-bold text-sm" style={{ color: i.give === 0 ? C.steel : C.ink }}>
                       {i.name}
+                      {i.addedLater && <span className="text-xs font-bold" style={{ color: C.sage }}> · 🆕 נוסף אחרי השליחה</span>}
                       {i.give === 0 && <span className="text-xs font-normal"> (לא ינופק)</span>}
                     </div>
                     <div className="text-xs" style={{ color: short ? C.stamp : C.steel }}>
