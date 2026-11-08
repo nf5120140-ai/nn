@@ -10320,7 +10320,15 @@ function combineDateTime(dateStr, timeStr) {
    day it's served, so the existing follow-up engine sends the notification. */
 function dishOrderReminderOf(m) {
   const r = m && m.orderReminder;
-  return r && Number(r.leadDays) > 0 ? r : null;
+  if (!r) return null;
+  if (r.mode === "weekday") return Number.isInteger(Number(r.weekday)) && Number(r.weekday) >= 0 && Number(r.weekday) <= 5 ? r : null;
+  return Number(r.leadDays) > 0 ? r : null;
+}
+const ORDER_WEEKDAY_NAMES = ["ראשון", "שני", "שלישי", "רביעי", "חמישי", "שישי"];
+function orderReminderWhenLabel(r) {
+  if (!r) return "";
+  if (r.mode === "weekday") return `ביום ${ORDER_WEEKDAY_NAMES[Number(r.weekday)] || ""}`;
+  return leadDaysLabel(r.leadDays);
 }
 function leadDaysLabel(n) {
   const k = Number(n) || 0;
@@ -10350,7 +10358,14 @@ function computeMenuOrderReminders(weeklyMenu, menuItems, weekStartIsoStr) {
   const out = [];
   acc.forEach((e, key) => {
     const d = parseIsoLocal(weekStartIsoStr);
-    d.setDate(d.getDate() + e.dayIdx - Number(e.rem.leadDays));
+    if (e.rem.mode === "weekday") {
+      // Fixed order day: the last chosen weekday BEFORE the day the dish is served.
+      d.setDate(d.getDate() + e.dayIdx - 1);
+      const want = Number(e.rem.weekday);
+      for (let k = 0; k < 7 && d.getDay() !== want; k++) d.setDate(d.getDate() - 1);
+    } else {
+      d.setDate(d.getDate() + e.dayIdx - Number(e.rem.leadDays));
+    }
     if (d.getDay() === 6) d.setDate(d.getDate() - 1); // never on Shabbat — move to Friday
     const due = combineDateTime(isoLocalDate(d), e.rem.time || "10:00");
     const what = (e.rem.what || "").trim() || e.item.name;
@@ -10371,15 +10386,24 @@ function DishOrderReminderEditor({ item, onSave }) {
   const [lead, setLead] = useState("1");
   const [time, setTime] = useState("10:00");
   const [what, setWhat] = useState("");
+  const [mode, setMode] = useState("lead");
+  const [weekday, setWeekday] = useState("3");
   function startEdit() {
+    setMode(cur?.mode === "weekday" ? "weekday" : "lead");
+    setWeekday(String(cur?.weekday ?? 3));
     setLead(String(cur?.leadDays || 1));
     setTime(cur?.time || "10:00");
     setWhat(cur?.what || "");
     setOpen(true);
   }
   async function save() {
-    const n = Math.max(1, Math.min(14, parseInt(lead, 10) || 1));
-    await onSave({ leadDays: n, time: time || "10:00", what: what.trim() });
+    const base = { time: time || "10:00", what: what.trim() };
+    if (mode === "weekday") {
+      await onSave({ ...base, mode: "weekday", weekday: Math.max(0, Math.min(5, parseInt(weekday, 10) || 0)) });
+    } else {
+      const n = Math.max(1, Math.min(14, parseInt(lead, 10) || 1));
+      await onSave({ ...base, mode: "lead", leadDays: n });
+    }
     setOpen(false);
   }
   async function clear() {
@@ -10394,8 +10418,8 @@ function DishOrderReminderEditor({ item, onSave }) {
         style={{ background: cur ? "rgba(76,175,80,0.12)" : C.paper, color: cur ? C.ink : C.steel, border: `1px dashed ${cur ? C.sage : C.kraftDark}` }}
       >
         {cur
-          ? <>🔔 להזמין {(cur.what || "").trim() || item.name} · {leadDaysLabel(cur.leadDays)} · {cur.time || "10:00"} <span style={{ color: C.steel }}>(לשינוי)</span></>
-          : <>🔔 הוסף תזכורת הזמנה למנה הזו (למשל יום לפני)</>}
+          ? <>🔔 להזמין {(cur.what || "").trim() || item.name} · {orderReminderWhenLabel(cur)} · {cur.time || "10:00"} <span style={{ color: C.steel }}>(לשינוי)</span></>
+          : <>🔔 הוסף תזכורת הזמנה למנה הזו (יום לפני / יום קבוע)</>}
       </button>
     );
   }
@@ -10409,12 +10433,32 @@ function DishOrderReminderEditor({ item, onSave }) {
         className="w-full p-2 rounded-xl border text-sm"
         style={{ borderColor: C.kraftDark }}
       />
-      <div className="flex gap-2 items-center text-sm" style={{ color: C.ink }}>
-        <input type="number" inputMode="numeric" min="1" max="14" value={lead} onChange={(e) => setLead(e.target.value)} className="w-14 p-2 rounded-xl border text-center" style={{ borderColor: C.kraftDark }} />
-        <span>ימים לפני, בשעה</span>
-        <input type="time" value={time} onChange={(e) => setTime(e.target.value)} className="w-24 p-2 rounded-xl border" style={{ borderColor: C.kraftDark }} />
+      <div className="flex gap-1">
+        {[["lead", "כמה ימים לפני"], ["weekday", "ביום קבוע בשבוע"]].map(([k, l]) => (
+          <button key={k} type="button" onClick={() => setMode(k)} className="flex-1 py-1.5 rounded-xl text-xs font-bold" style={{ background: mode === k ? C.sage : C.kraft, color: mode === k ? "#fff" : C.ink, border: `1px solid ${C.kraftDark}` }}>{l}</button>
+        ))}
       </div>
-      <p className="text-xs" style={{ color: C.steel }}>בכל פעם שהמנה משובצת בתפריט השבועי, תישלח התראה בזמן הזה. תזכורת שיוצאת בשבת תוקדם ליום שישי.</p>
+      {mode === "lead" ? (
+        <div className="flex gap-2 items-center text-sm" style={{ color: C.ink }}>
+          <input type="number" inputMode="numeric" min="1" max="14" value={lead} onChange={(e) => setLead(e.target.value)} className="w-14 p-2 rounded-xl border text-center" style={{ borderColor: C.kraftDark }} />
+          <span>ימים לפני, בשעה</span>
+          <input type="time" value={time} onChange={(e) => setTime(e.target.value)} className="w-24 p-2 rounded-xl border" style={{ borderColor: C.kraftDark }} />
+        </div>
+      ) : (
+        <div className="flex gap-2 items-center text-sm flex-wrap" style={{ color: C.ink }}>
+          <span>להזמין ביום</span>
+          <select value={weekday} onChange={(e) => setWeekday(e.target.value)} className="p-2 rounded-xl border font-bold" style={{ borderColor: C.kraftDark, background: C.kraft }}>
+            {ORDER_WEEKDAY_NAMES.map((n, i) => <option key={i} value={i}>{n}</option>)}
+          </select>
+          <span>בשעה</span>
+          <input type="time" value={time} onChange={(e) => setTime(e.target.value)} className="w-24 p-2 rounded-xl border" style={{ borderColor: C.kraftDark }} />
+        </div>
+      )}
+      <p className="text-xs" style={{ color: C.steel }}>
+        {mode === "lead"
+          ? "בכל פעם שהמנה משובצת בתפריט, תישלח התראה כמה ימים לפני. תזכורת שיוצאת בשבת תוקדם ליום שישי."
+          : "בכל פעם שהמנה משובצת בתפריט, תישלח התראה ביום שבחרת שלפני היום שבו מגישים אותה (למשל: שווארמה ביום חמישי + יום קבוע רביעי ← תזכורת ביום רביעי)."}
+      </p>
       <div className="flex gap-2">
         <button onClick={save} className="flex-1 py-2 rounded-xl text-sm font-bold" style={{ background: C.sage, color: "#fff" }}>שמור</button>
         {cur && <button onClick={clear} className="px-3 py-2 rounded-xl text-sm font-bold" style={{ background: C.stamp, color: "#fff" }}>הסר</button>}
