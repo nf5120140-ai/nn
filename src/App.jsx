@@ -5605,6 +5605,41 @@ function App() {
     setTasks(next);
     await saveKey(KEYS.tasks, next);
   }
+
+  // Auto-delete the photo of a task 5 days after it was closed. Runs once per app load,
+  // for managers only (so two devices don't race on the shared task list). The file is
+  // removed from Storage first; the task keeps its text, only the photo link is cleared.
+  const imgCleanupRef = useRef(false);
+  useEffect(() => {
+    if (!loaded || imgCleanupRef.current || !isManager(currentUser)) return;
+    if (!Array.isArray(tasks) || tasks.length === 0) return;
+    const DAY5 = 5 * 24 * 60 * 60 * 1000;
+    const isExpired = (t) => t && t.status === "done" && t.imageData && t.completedAt && Date.now() - t.completedAt > DAY5;
+    if (!tasks.some(isExpired)) return;
+    imgCleanupRef.current = true;
+    (async () => {
+      try {
+        let base = tasks;
+        try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) base = latest; } catch (e) {}
+        const expired = base.filter(isExpired);
+        if (!expired.length) return;
+        const expiredIds = new Set(expired.map((t) => t.id));
+        // Never delete a file that an open task or a location still uses.
+        const stillUsed = new Set(base.filter((t) => t && t.imageData && !expiredIds.has(t.id)).map((t) => t.imageData));
+        (locations || []).forEach((l) => { if (l && l.imageData) stillUsed.add(l.imageData); });
+        const cleared = new Set();
+        for (const t of expired) {
+          const url = String(t.imageData);
+          try {
+            if (url.startsWith("data:") || stillUsed.has(url)) { cleared.add(t.id); continue; }
+            if (window.storage && window.storage.deleteImage && (await window.storage.deleteImage(url))) cleared.add(t.id);
+          } catch (e) { console.error("task image delete failed", e); }
+        }
+        if (!cleared.size) return;
+        await persistTasks(base.map((t) => (cleared.has(t.id) ? { ...t, imageData: null, imageDeletedAt: Date.now() } : t)));
+      } catch (e) { console.error("task image cleanup failed", e); }
+    })();
+  }, [loaded, tasks, currentUser]);
   async function persistSettings(next) {
     setSettings(next);
     await saveKey(KEYS.settings, next);
@@ -6718,7 +6753,7 @@ function Dashboard({ tasks, products, orderHistory, users, currentUser, unitRequ
 
   const statusSegments = [
     { label: "חדש", value: newTasks.length, color: C.accent },
-    { label: "בטיפול", value: inProgress.length, color: C.mustard },
+    { label: "בביצוע", value: inProgress.length, color: C.mustard },
     { label: "הושלם", value: done.length, color: C.sage },
   ];
 
@@ -10468,7 +10503,7 @@ function DishOrderReminderEditor({ item, onSave }) {
   );
 }
 
-function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
+function TaskDetail({ task, users, currentUser, onSave, onClose, catById, notifyUser }) {
   const [comment, setComment] = useState("");
   const [customDate, setCustomDate] = useState("");
   const [customTime, setCustomTime] = useState("09:00");
@@ -10489,6 +10524,13 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
     };
     await onSave({ ...task, comments: [...comments, entry] });
     setComment("");
+    // Tell the other side (one recipient only, so two quick notifications can't overwrite each other):
+    // the worker's reply goes to whoever opened the task; anyone else's message goes to the assignee.
+    if (notifyUser) {
+      const other = currentUser.id === task.assignedToId ? task.createdById : (task.assignedToId || task.createdById);
+      const preview = text.length > 70 ? text.slice(0, 70) + "…" : text;
+      if (other) notifyUser(other, `💬 ${currentUser.name} כתב במשימה "${task.title}": ${preview}`, { tab: "tasks", taskId: task.id });
+    }
   }
 
   async function setFollowUp(ts) {
@@ -10631,6 +10673,24 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
           })}
         </div>
 
+        {currentUser.id !== task.assignedToId && (
+          <div className="flex gap-2 mb-2 flex-wrap">
+            <button
+              onClick={() => setComment("לא הבנתי מה הבעיה, אפשר לפרט?")}
+              className="px-3 py-1 rounded-full text-xs font-bold"
+              style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              ❓ מה הבעיה?
+            </button>
+            <button
+              onClick={() => setComment("אפשר תמונה של הבעיה?")}
+              className="px-3 py-1 rounded-full text-xs font-bold"
+              style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              📷 תמונה בבקשה
+            </button>
+          </div>
+        )}
         <div className="flex gap-2">
           <textarea
             value={comment}
@@ -11569,6 +11629,7 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
           currentUser={currentUser}
           catById={catById}
           onSave={saveTask}
+          notifyUser={notifyUser}
           onClose={() => setDetailTask(null)}
         />
       )}
@@ -11732,13 +11793,13 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
                   className="text-xs px-2 py-1 rounded-2xl font-bold whitespace-nowrap"
                   style={{ background: t.status === "done" ? C.sage : C.kraftDark, color: t.status === "done" ? "#fff" : C.ink }}
                 >
-                  {t.status === "done" ? "סגור" : t.status === "in_progress" ? "בטיפול" : "פתוח"}
+                  {t.status === "done" ? "סגור" : t.status === "in_progress" ? "בביצוע" : "פתוח"}
                 </span>
               </div>
               <div className="flex gap-2 mt-3 flex-wrap">
                 {t.status !== "in_progress" && t.status !== "done" && (
                   <button onClick={() => updateStatus(t, "in_progress")} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.mustard, color: "#fff" }}>
-                    התחל טיפול
+                    ▶️ עובר לביצוע
                   </button>
                 )}
                 {t.status !== "done" && (
