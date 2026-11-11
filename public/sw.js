@@ -1,9 +1,41 @@
-const CACHE = "nn-cache-v5";
+const CACHE = "nn-cache-v6";
+const SHARE_CACHE = "yeshivus-share"; // holds images shared into the app until the page picks them up
 self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => {
   event.waitUntil(caches.keys().then((keys) =>
-    Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))
+    Promise.all(keys.filter((k) => k !== CACHE && k !== SHARE_CACHE).map((k) => caches.delete(k)))
   ).then(() => self.clients.claim()));
+});
+
+// ===== Share target: gallery -> share -> ישיבוס =====
+// Android posts the shared images here (see share_target in manifest.json).
+// We park them in a cache and open the app, which turns them into a new task.
+self.addEventListener("fetch", (event) => {
+  const url = new URL(event.request.url);
+  if (event.request.method !== "POST" || url.pathname !== "/share-target") return;
+  event.respondWith((async () => {
+    try {
+      const form = await event.request.formData();
+      const files = form.getAll("images").filter((f) => f && typeof f !== "string" && f.size > 0);
+      await caches.delete(SHARE_CACHE);
+      const cache = await caches.open(SHARE_CACHE);
+      for (let i = 0; i < files.length; i++) {
+        await cache.put("/__shared/" + i, new Response(files[i], { headers: { "Content-Type": files[i].type || "image/jpeg" } }));
+      }
+      const meta = {
+        count: files.length,
+        names: files.map((f) => f.name || ""),
+        title: form.get("title") || "",
+        text: form.get("text") || "",
+        url: form.get("url") || "",
+        stamp: Date.now(),
+      };
+      await cache.put("/__shared/meta", new Response(JSON.stringify(meta), { headers: { "Content-Type": "application/json" } }));
+    } catch (e) {
+      // Even if reading failed, still open the app on a new task.
+    }
+    return Response.redirect("/?action=share-task", 303);
+  })());
 });
 
 self.addEventListener("push", (event) => {
