@@ -4800,6 +4800,7 @@ function App() {
   const [focusUnitReqId, setFocusUnitReqId] = useState(null); // warehouse request to highlight when opened from a notification
   const [focusTaskId, setFocusTaskId] = useState(null);   // task to auto-open after tapping a notification
   const [newTaskSignal, setNewTaskSignal] = useState(0);  // bump to open the "new task" form (header button / home-screen shortcut)
+  const [sharedFiles, setSharedFiles] = useState(null);   // images shared into the app from the phone's share menu
   const [chatOpenSignal, setChatOpenSignal] = useState(0); // bump to open the internal chat from the header
   const [chatUnread, setChatUnread] = useState(0);         // unread chat count, shown on the header chat button
 
@@ -4822,6 +4823,14 @@ function App() {
           // Opened from the home-screen "add task" shortcut - jump to tasks and open the form.
           setTab("tasks");
           setNewTaskSignal((n) => n + 1);
+        } else if (action === "share-task") {
+          // Opened from the phone's share menu (gallery -> share -> ישיבוס).
+          // The service worker parked the shared images in a cache; pick them up and open a new task.
+          setTab("tasks");
+          readSharedFiles().then((shared) => {
+            if (shared && shared.files.length) setSharedFiles(shared);
+            setNewTaskSignal((n) => n + 1);
+          });
         } else if (t) {
           setTab(t);
         }
@@ -5636,18 +5645,24 @@ function App() {
         if (!expired.length) return;
         const expiredIds = new Set(expired.map((t) => t.id));
         // Never delete a file that an open task or a location still uses.
-        const stillUsed = new Set(base.filter((t) => t && t.imageData && !expiredIds.has(t.id)).map((t) => t.imageData));
+        const stillUsed = new Set();
+        base.filter((t) => t && !expiredIds.has(t.id)).forEach((t) => { if (t.imageData) stillUsed.add(t.imageData); (t.moreImages || []).forEach((u) => stillUsed.add(u)); });
         (locations || []).forEach((l) => { if (l && l.imageData) stillUsed.add(l.imageData); });
         const cleared = new Set();
         for (const t of expired) {
-          const url = String(t.imageData);
-          try {
-            if (url.startsWith("data:") || stillUsed.has(url)) { cleared.add(t.id); continue; }
-            if (window.storage && window.storage.deleteImage && (await window.storage.deleteImage(url))) cleared.add(t.id);
-          } catch (e) { console.error("task image delete failed", e); }
+          // Main photo + any extra photos; the task is cleared only once all of them are gone.
+          const urls = [t.imageData, ...(t.moreImages || [])].filter(Boolean).map(String);
+          let allOk = true;
+          for (const url of urls) {
+            try {
+              if (url.startsWith("data:") || stillUsed.has(url)) continue;
+              if (!(window.storage && window.storage.deleteImage && (await window.storage.deleteImage(url)))) allOk = false;
+            } catch (e) { allOk = false; console.error("task image delete failed", e); }
+          }
+          if (allOk) cleared.add(t.id);
         }
         if (!cleared.size) return;
-        await persistTasks(base.map((t) => (cleared.has(t.id) ? { ...t, imageData: null, imageDeletedAt: Date.now() } : t)));
+        await persistTasks(base.map((t) => (cleared.has(t.id) ? { ...t, imageData: null, moreImages: [], imageDeletedAt: Date.now() } : t)));
       } catch (e) { console.error("task image cleanup failed", e); }
     })();
   }, [loaded, tasks, currentUser]);
@@ -6331,6 +6346,8 @@ function App() {
             focusTaskId={focusTaskId}
             onFocusConsumed={() => setFocusTaskId(null)}
             newTaskSignal={newTaskSignal}
+            sharedFiles={sharedFiles}
+            onSharedConsumed={() => setSharedFiles(null)}
           />
         )}
         {tab === "map" && (
@@ -11332,7 +11349,7 @@ function MapTab({ mapRooms, persistMapRooms, deleteMapRoomById, tasks, persistTa
   );
 }
 
-function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, showToast, notifyUser, locations, taskCategories, focusTaskId, onFocusConsumed, newTaskSignal }) {
+function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, showToast, notifyUser, locations, taskCategories, focusTaskId, onFocusConsumed, newTaskSignal, sharedFiles, onSharedConsumed }) {
   const [showNew, setShowNew] = useState(false);
   useEffect(() => {
     // Opened via the header "add task" button or the home-screen shortcut.
@@ -11470,6 +11487,7 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
     const next = [...(await freshTasks()), created];
     await persistTasks(next);
     setShowNew(false);
+    if (onSharedConsumed) onSharedConsumed();
     showToast("המשימה נוצרה");
     if (notifyNow && newTask.assignedToId && notifyUser) notifyUser(newTask.assignedToId, `משימה חדשה: ${newTask.title}`, { tab: "tasks", taskId: created.id });
   }
@@ -11513,12 +11531,20 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
       console.error("could not build file from image data", e);
       showToast("שגיאה: לא ניתן לקרוא את התמונה השמורה");
     }
+    // Extra photos of the task (shared together with the main one when possible).
+    const extraFiles = [];
+    if (file && task.imageData) {
+      for (const [i, u] of (task.moreImages || []).entries()) {
+        try { extraFiles.push(await photoToFile(u, `task-${i + 2}.jpg`)); } catch (e) { console.error("extra photo skipped", e); }
+      }
+    }
 
     // Don't trust navigator.canShare here: inside an installed PWA (WebAPK) it often
     // reports false for files even though the share actually works. The real test is
     // to just try it. We attempt richest-first, then progressively simpler payloads.
     if (file && navigator.share) {
       const attempts = [
+        ...(extraFiles.length ? [{ files: [file, ...extraFiles], text, title: "משימה" }, { files: [file, ...extraFiles], text }] : []),
         { files: [file], text, title: "משימה" },
         { files: [file], text },
         { files: [file] },
@@ -11669,7 +11695,16 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
       )}
 
       {showNew && (
-        <NewTaskForm users={users} onSubmit={addTask} onCancel={() => setShowNew(false)} locations={locations} taskCategories={cats} />
+        <NewTaskForm
+          key={sharedFiles ? sharedFiles.stamp : "manual"}
+          users={users}
+          onSubmit={addTask}
+          onCancel={() => { setShowNew(false); if (onSharedConsumed) onSharedConsumed(); }}
+          locations={locations}
+          taskCategories={cats}
+          initialFiles={sharedFiles ? sharedFiles.files : null}
+          initialText={sharedFiles ? sharedFiles.text : ""}
+        />
       )}
 
       {detailTask && (
@@ -11806,7 +11841,12 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
                     <div className="text-xs mt-1 font-bold" style={{ color: C.ink }}>📍 {t.location}</div>
                   )}
                   {t.imageData ? (
-                    <img src={t.imageData} alt="" onClick={() => openImage(t.imageData)} className="mt-2 rounded-2xl" style={{ maxHeight: 120, maxWidth: 180, cursor: "zoom-in" }} />
+                    <div className="mt-2 flex gap-2 flex-wrap items-end">
+                      <img src={t.imageData} alt="" onClick={() => openImage(t.imageData)} className="rounded-2xl" style={{ maxHeight: 120, maxWidth: 180, cursor: "zoom-in" }} />
+                      {(t.moreImages || []).map((u, i) => (
+                        <img key={i} src={u} alt="" onClick={() => openImage(u)} className="rounded-xl" style={{ width: 56, height: 56, objectFit: "cover", cursor: "zoom-in" }} />
+                      ))}
+                    </div>
                   ) : (
                     (() => {
                       const loc = (locations || []).find((l) => l.id === t.locationId);
@@ -12303,6 +12343,51 @@ function resizeImageToDataUrl(file, maxDim = 900, quality = 0.7) {
   });
 }
 
+/* ===== Share target (gallery -> share -> ישיבוס) =====
+   The service worker receives the shared images, parks them in the "yeshivus-share"
+   cache and opens the app with ?action=share-task. Here we read them back as Files
+   and empty the cache. */
+const SHARE_CACHE = "yeshivus-share";
+async function readSharedFiles() {
+  try {
+    if (!("caches" in window)) return null;
+    const cache = await caches.open(SHARE_CACHE);
+    const metaRes = await cache.match("/__shared/meta");
+    if (!metaRes) return null;
+    const meta = await metaRes.json();
+    const files = [];
+    for (let i = 0; i < (meta.count || 0); i++) {
+      const r = await cache.match(`/__shared/${i}`);
+      if (!r) continue;
+      const blob = await r.blob();
+      files.push(new File([blob], (meta.names && meta.names[i]) || `shared-${i + 1}.jpg`, { type: blob.type || "image/jpeg" }));
+    }
+    await caches.delete(SHARE_CACHE);
+    const text = [meta.title, meta.text, meta.url].filter(Boolean).join("\n");
+    return { files, text, stamp: meta.stamp || Date.now() };
+  } catch (e) {
+    console.error("reading shared files failed", e);
+    return null;
+  }
+}
+
+/* Small row of extra photos with a remove button on each. */
+function ExtraImagesStrip({ images, onRemove }) {
+  if (!images || !images.length) return null;
+  return (
+    <div className="mt-2 flex gap-2 flex-wrap">
+      {images.map((u, i) => (
+        <div key={u + i} className="relative inline-block">
+          <img src={u} alt="" onClick={() => openImage(u)} className="rounded-xl" style={{ width: 64, height: 64, objectFit: "cover", cursor: "zoom-in" }} />
+          {onRemove && (
+            <button onClick={() => onRemove(i)} className="absolute -top-2 -left-2 w-6 h-6 rounded-full font-bold text-xs" style={{ background: C.stamp, color: "#fff" }}>✕</button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /* ===== Image storage helpers =====
    Images are uploaded to Supabase Storage (bucket "task-images") and only their
    short public URL is stored in the data blob. This keeps the shared blob tiny so
@@ -12608,6 +12693,7 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
   const [categoryId, setCategoryId] = useState(task.categoryId || "");
   const [locationId, setLocationId] = useState(task.locationId || "");
   const [imageData, setImageData] = useState(task.imageData || null);
+  const [moreImages, setMoreImages] = useState(task.moreImages || []);
   const [annotating, setAnnotating] = useState(false);
 
   const locationGroups = Object.entries(
@@ -12631,6 +12717,7 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
       locationId,
       location: loc ? loc.name : "",
       imageData,
+      moreImages: imageData ? moreImages : [],
     });
   }
 
@@ -12713,8 +12800,9 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
                 🖼️ החלף מהגלריה
                 <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => { const f = e.target.files?.[0]; if (f) { try { setImageData(await uploadPickedImage(f)); } catch (err) {} } e.target.value = ""; }} />
               </label>
-              <button onClick={() => setImageData(null)} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>🗑️ הסר</button>
+              <button onClick={() => { if (moreImages.length) { setImageData(moreImages[0]); setMoreImages(moreImages.slice(1)); } else setImageData(null); }} className="px-4 py-2 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}>🗑️ הסר</button>
             </div>
+            <ExtraImagesStrip images={moreImages} onRemove={(i) => setMoreImages((prev) => prev.filter((_, j) => j !== i))} />
           </div>
         ) : (
           <div className="flex gap-2">
@@ -12745,33 +12833,55 @@ function EditTaskForm({ task, users, locations, taskCategories, onSubmit, onCanc
   );
 }
 
-function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, lockedLocationLabel }) {
+function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, lockedLocationLabel, initialFiles, initialText }) {
   const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const [description, setDescription] = useState(initialText || "");
   const [assignedToId, setAssignedToId] = useState(users[0]?.id || "");
   const [priority, setPriority] = useState("normal");
   const [categoryId, setCategoryId] = useState("");
   const [locationId, setLocationId] = useState("");
   const [imageData, setImageData] = useState(null);
+  const [moreImages, setMoreImages] = useState([]);   // extra photos beyond the main one
   const [annotating, setAnnotating] = useState(false);
   const [imageBusy, setImageBusy] = useState(false);
   const [remindDate, setRemindDate] = useState("");
   const [remindTime, setRemindTime] = useState("09:00");
   const [notifyNow, setNotifyNow] = useState(false);
 
-  async function handleImage(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Upload several files: the first fills the main photo (if empty), the rest go to the extras.
+  async function addFiles(files, replaceMain) {
+    const list = Array.from(files || []).filter(Boolean);
+    if (!list.length) return;
     setImageBusy(true);
     try {
-      const url = await uploadPickedImage(file);
-      setImageData(url);
-    } catch (err) {
-      console.error(err);
+      const urls = [];
+      for (const f of list) {
+        try { urls.push(await uploadPickedImage(f)); } catch (err) { console.error(err); }
+      }
+      if (!urls.length) return;
+      let main = replaceMain ? null : imageData;
+      if (!main) main = urls.shift();
+      setImageData(main);
+      if (urls.length) setMoreImages((prev) => [...prev, ...urls]);
     } finally {
       setImageBusy(false);
     }
   }
+
+  async function handleImage(e) {
+    const files = e.target.files;
+    // A single pick replaces the main photo (old behaviour); picking several adds them all.
+    await addFiles(files, files && files.length === 1);
+    e.target.value = "";
+  }
+
+  // Images shared into the app from the phone's share menu.
+  const sharedDoneRef = useRef(false);
+  useEffect(() => {
+    if (sharedDoneRef.current || !initialFiles || !initialFiles.length) return;
+    sharedDoneRef.current = true;
+    addFiles(initialFiles, false);
+  }, [initialFiles]);
 
   return (
     <ShelfTag accent={C.mustard} style={{ marginBottom: 16, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -12810,8 +12920,8 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
       <div>
         <div className="flex gap-2 flex-wrap">
           <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
-            🖼️ {imageData ? "החלף מהגלריה" : "מהגלריה"}
-            <input type="file" accept="image/*" onChange={handleImage} className="hidden" />
+            🖼️ {imageData ? "החלף / הוסף מהגלריה" : "מהגלריה"}
+            <input type="file" accept="image/*" multiple onChange={handleImage} className="hidden" />
           </label>
           <label className="inline-block px-3 py-2 rounded-full text-sm font-bold cursor-pointer" style={{ background: C.paper, border: `1.5px solid ${C.kraftDark}`, color: C.ink }}>
             📷 מצלמה
@@ -12828,7 +12938,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
           <div className="mt-2 relative inline-block">
             <img src={imageData} alt="" onClick={() => openImage(imageData)} className="rounded-2xl" style={{ maxHeight: 140, maxWidth: "100%", cursor: "zoom-in" }} />
             <button
-              onClick={() => setImageData(null)}
+              onClick={() => { if (moreImages.length) { setImageData(moreImages[0]); setMoreImages(moreImages.slice(1)); } else setImageData(null); }}
               className="absolute -top-2 -left-2 w-6 h-6 rounded-full font-bold text-xs"
               style={{ background: C.stamp, color: "#fff" }}
             >
@@ -12836,6 +12946,7 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
             </button>
           </div>
         )}
+        <ExtraImagesStrip images={moreImages} onRemove={(i) => setMoreImages((prev) => prev.filter((_, j) => j !== i))} />
         {annotating && imageData && (
           <ImageAnnotator src={imageData} onSave={async (d) => { setImageData(await uploadDataUrlImage(d)); setAnnotating(false); }} onCancel={() => setAnnotating(false)} />
         )}
@@ -12881,14 +12992,15 @@ function NewTaskForm({ users, onSubmit, onCancel, locations, taskCategories, loc
       <div className="flex gap-2">
         <button
           onClick={() => {
+            if (imageBusy) return;
             if (!title.trim()) return;
             if (lockedLocationLabel) {
-              onSubmit({ title, description, assignedToId, priority, categoryId, location: lockedLocationLabel, locationId: "", imageData, followUpAt: combineDateTime(remindDate, remindTime), notifyNow });
+              onSubmit({ title, description, assignedToId, priority, categoryId, location: lockedLocationLabel, locationId: "", imageData, moreImages: imageData ? moreImages : [], followUpAt: combineDateTime(remindDate, remindTime), notifyNow });
               return;
             }
             const loc = (locations || []).find((l) => l.id === locationId);
             const locationLabel = loc ? `${loc.group || "אחר"} · ${loc.name}` : "";
-            onSubmit({ title, description, assignedToId, priority, categoryId, location: locationLabel, locationId, imageData, followUpAt: combineDateTime(remindDate, remindTime), notifyNow });
+            onSubmit({ title, description, assignedToId, priority, categoryId, location: locationLabel, locationId, imageData, moreImages: imageData ? moreImages : [], followUpAt: combineDateTime(remindDate, remindTime), notifyNow });
           }}
           className="flex-1 py-2 rounded-2xl font-bold"
           style={{ background: C.brand, color: "#fff" }}
