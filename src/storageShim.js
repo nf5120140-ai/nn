@@ -177,6 +177,23 @@ async function uploadImage(blob, ext = "jpg") {
   return data.publicUrl;
 }
 
+/* מוחק קובץ תמונה מהדלי "task-images" לפי הכתובת הציבורית שלו.
+   מחזיר true אם הקובץ נמחק (או שכבר לא קיים), וזורק שגיאה אם המחיקה נחסמה. */
+async function deleteImage(url) {
+  const m = String(url || "").match(/\/task-images\/([^?#]+)/);
+  if (!m) return false;
+  const path = decodeURIComponent(m[1]);
+  const { data, error } = await supabase.storage.from("task-images").remove([path]);
+  if (error) throw error;
+  if (Array.isArray(data) && data.length > 0) return true;
+  // תשובה ריקה: או שאין הרשאת מחיקה, או שהקובץ כבר נמחק. בודקים אם הוא עדיין קיים.
+  try {
+    const r = await fetch(url, { method: "HEAD", cache: "no-store" });
+    if (!r.ok) return true;
+  } catch (e) {}
+  throw new Error("image delete blocked (missing storage delete policy?)");
+}
+
 /* ---------- Web Push ---------- */
 
 /** מפתח VAPID מגיע כ-base64url; ה-API של הדפדפן דורש Uint8Array. */
@@ -314,7 +331,7 @@ async function subscribeToOrgChanges(onChange) {
   };
 }
 
-window.storage = { get, set, delete: del, list, uploadImage };
+window.storage = { get, set, delete: del, list, uploadImage, deleteImage };
 window.auth = {
   signUpCreateOrg,
   signUpJoinOrg,

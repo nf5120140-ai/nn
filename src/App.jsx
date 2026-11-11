@@ -593,7 +593,9 @@ function channelMeta(id) {
 /** Normalize an Israeli/any phone to bare international digits (0501234567 -> 972501234567). */
 function cleanPhoneDigits(raw) {
   let d = String(raw || "").replace(/\D/g, "");
-  if (d.startsWith("0")) d = "972" + d.slice(1);
+  if (d.startsWith("00")) d = d.slice(2); // 00972... -> 972...
+  if (d.startsWith("9720")) d = "972" + d.slice(4); // +972-050... (extra 0 typed) -> 97250...
+  else if (d.startsWith("0")) d = "972" + d.slice(1);
   return d;
 }
 
@@ -775,6 +777,7 @@ function BarcodeScanner({ onDetected, onClose }) {
 
   useEffect(() => {
     let cancelled = false;
+    let quaggaHandler = null;
 
     function stopStream() {
       if (streamRef.current) {
@@ -842,11 +845,12 @@ function BarcodeScanner({ onDetected, onClose }) {
           }
         );
       });
-      window.Quagga.onDetected((result) => {
+      quaggaHandler = (result) => {
         if (result && result.codeResult && result.codeResult.code) {
           finish(result.codeResult.code);
         }
-      });
+      };
+      window.Quagga.onDetected(quaggaHandler);
     }
 
     async function start() {
@@ -875,6 +879,9 @@ function BarcodeScanner({ onDetected, onClose }) {
       cancelled = true;
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       stopStream();
+      if (window.Quagga && window.Quagga.offDetected && quaggaHandler) {
+        try { window.Quagga.offDetected(quaggaHandler); } catch (e) {}
+      }
       if (window.Quagga && window.Quagga.stop) {
         try { window.Quagga.stop(); } catch (e) {}
       }
@@ -2724,7 +2731,7 @@ function UnitRequestTab({
   const catalog = products.filter((p) => p.unitVisible !== false);
   const categories = Array.from(new Set(catalog.map((p) => p.category || "ללא קטגוריה")));
   const filtered = catalog
-    .filter((p) => (search ? p.name.includes(search) : true))
+    .filter((p) => (search ? (p.name || "").includes(search) : true))
     .filter((p) => (catFilter === "all" ? true : (p.category || "ללא קטגוריה") === catFilter));
 
   const isSubmitted = current?.status === "submitted";
@@ -3272,7 +3279,7 @@ function UnitRequestTab({
     const printItems = (r && r.status === "fulfilled" && Array.isArray(r.issuedItems) && r.issuedItems.length) ? r.issuedItems : (r ? r.items : []);
     if (!r || (printItems || []).length === 0) return showToast("אין מה להדפיס");
     const rows = (printItems || [])
-      .map((i, idx) => `<tr style="background:${idx % 2 ? "#EAF3FB" : "#fff"}"><td>${idx + 1}</td><td class="name">${i.name}</td><td class="qty">${i.qty} ${i.unit || ""}</td></tr>`)
+      .map((i, idx) => `<tr style="background:${idx % 2 ? "#EAF3FB" : "#fff"}"><td>${idx + 1}</td><td class="name">${escapeHtml(i.name)}</td><td class="qty">${escapeHtml(`${i.qty} ${i.unit || ""}`)}</td></tr>`)
       .join("");
     const noteText = (req ? r.managerNote || r.note : (noteDraft || r.note)) || "";
     const heading = r.status === "fulfilled" ? "בקשה שאושרה מהמחסן" : "בקשה מהמחסן";
@@ -3292,12 +3299,12 @@ function UnitRequestTab({
         .note { margin-top: 16px; padding: 10px; border: 1px dashed #888; border-radius: 8px; font-size: 14px; }
       </style></head><body>
         <h1>${heading}</h1>
-        <div class="sub">${r.unitName || currentUser.name || ""} · ${new Date(r.fulfilledAt || r.submittedAt || r.updatedAt || r.createdAt || Date.now()).toLocaleDateString("he-IL")}</div>
+        <div class="sub">${escapeHtml(r.unitName || currentUser.name || "")} · ${new Date(r.fulfilledAt || r.submittedAt || r.updatedAt || r.createdAt || Date.now()).toLocaleDateString("he-IL")}</div>
         <table>
           <thead><tr><th style="width:36px">#</th><th>מוצר</th><th style="width:110px">כמות</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
-        ${noteText ? `<div class="note"><b>הערה:</b> ${noteText}</div>` : ""}
+        ${noteText ? `<div class="note"><b>הערה:</b> ${escapeHtml(noteText)}</div>` : ""}
       </body></html>`;
     printHtmlDoc(html, () => showToast("הדפדפן חסם את ההדפסה - נסה שוב, או אשר חלונות קופצים ונסה שוב"));
   }
@@ -3720,14 +3727,14 @@ function UnitRequestTab({
           {tplSearch.trim() && (
             <div className="flex flex-col gap-1 mb-2">
               {catalog
-                .filter((p) => p.name.includes(tplSearch.trim()) && !tplEdit.some((t) => t.productId === p.id))
+                .filter((p) => (p.name || "").includes(tplSearch.trim()) && !tplEdit.some((t) => t.productId === p.id))
                 .slice(0, 8)
                 .map((p) => (
                   <button key={p.id} onClick={() => tplAddProduct(p)} className="text-right p-2 rounded-xl text-sm" style={{ background: C.paper, border: `1px solid ${C.kraftDark}`, color: C.ink }}>
                     + {p.name} <span className="text-xs" style={{ color: C.steel }}>· {p.category || "ללא קטגוריה"}</span>
                   </button>
                 ))}
-              {catalog.filter((p) => p.name.includes(tplSearch.trim()) && !tplEdit.some((t) => t.productId === p.id)).length === 0 && (
+              {catalog.filter((p) => (p.name || "").includes(tplSearch.trim()) && !tplEdit.some((t) => t.productId === p.id)).length === 0 && (
                 <div className="text-xs text-center py-1" style={{ color: C.steel }}>לא נמצא מוצר – אפשר להוסיף אותו כמוצר חופשי למטה</div>
               )}
             </div>
@@ -4225,7 +4232,7 @@ function InternalChat({ currentUser, users, isManager, notifyManagers, notifyUse
     try {
       const latest = await loadKey(KEYS.messages, []);
       const arr = Array.isArray(latest) ? latest : [];
-      const nextArr = [...arr, msg];
+      const nextArr = [...arr, msg].slice(-1500); // the whole list is re-saved on every send, so keep it bounded
       await saveKey(KEYS.messages, nextArr);
       setMessages(nextArr);
     } catch (e) {}
@@ -4454,7 +4461,7 @@ function KioskReport({ tasks, persistTasks, taskCategories, locations, notifyMan
   }
 
   const locSuggestions = (locations || [])
-    .filter((l) => locQuery.trim() && (l.name.includes(locQuery.trim()) || (l.group || "").includes(locQuery.trim())) && l.name !== locQuery.trim())
+    .filter((l) => locQuery.trim() && ((l.name || "").includes(locQuery.trim()) || (l.group || "").includes(locQuery.trim())) && l.name !== locQuery.trim())
     .slice(0, 8);
 
   const field = { padding: "12px 14px", borderRadius: 14, border: `1px solid ${C.kraftDark}`, width: "100%", fontSize: 16, background: C.kraft };
@@ -4746,6 +4753,10 @@ function App() {
     } catch (e) {}
   }, [settings?.welcomeSubtitle]);
   const [notifications, setNotifications] = useState([]);
+  // Always-current copy of the notifications list. Several notifications sent in a row (e.g. a few
+  // follow-ups due at once) used to each start from the same stale list, so only the last one survived.
+  const notificationsRef = useRef([]);
+  useEffect(() => { notificationsRef.current = notifications; }, [notifications]);
   const [menuItems, setMenuItems] = useState([]);
   const [weeklyMenu, setWeeklyMenu] = useState({});
   const [savedMenus, setSavedMenus] = useState([]);
@@ -5121,7 +5132,7 @@ function App() {
         const diff = (now.getDay() - weekday + 7) % 7;
         const d = new Date(now);
         d.setDate(now.getDate() - diff);
-        return d.toISOString().slice(0, 10);
+        return isoLocalDate(d);
       }
 
       finalReminders = finalReminders.map((rem) => {
@@ -5129,7 +5140,7 @@ function App() {
         let triggerDate;
         if (rem.scheduleType === "date") {
           if (!rem.date) return rem;
-          const todayIso = new Date().toISOString().slice(0, 10);
+          const todayIso = isoLocalDate(new Date());
           if (todayIso < rem.date) return rem; // not due yet
           triggerDate = rem.date;
         } else {
@@ -5488,7 +5499,7 @@ function App() {
     const hasUnread = notifications.some((n) => n.userId === currentUser?.id && !n.read);
     if (!hasUnread) return;
     const t = setTimeout(() => {
-      persistNotifications(notifications.map((n) => (n.userId === currentUser?.id ? { ...n, read: true } : n)));
+      persistNotifications((notificationsRef.current || []).map((n) => (n.userId === currentUser?.id ? { ...n, read: true } : n)));
     }, 800);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -5497,7 +5508,7 @@ function App() {
   /* Tapping a notification takes you to whatever it's about, marks it read,
      and closes the panel. Older notifications have no link - they just get marked read. */
   async function openNotification(n) {
-    const next = notifications.map((x) => (x.id === n.id ? { ...x, read: true } : x));
+    const next = (notificationsRef.current || []).map((x) => (x.id === n.id ? { ...x, read: true } : x));
     await persistNotifications(next);
     setShowNotifications(false);
 
@@ -5511,7 +5522,7 @@ function App() {
   }
 
   async function deleteNotification(n) {
-    await persistNotifications(notifications.filter((x) => x.id !== n.id));
+    await persistNotifications((notificationsRef.current || []).filter((x) => x.id !== n.id));
   }
   function tomorrowAt(h, m) {
     const d = new Date();
@@ -5527,7 +5538,7 @@ function App() {
     return d.getTime();
   }
   async function snoozeNotification(n, untilTs) {
-    await persistNotifications(notifications.map((x) => (x.id === n.id ? { ...x, snoozedUntil: untilTs, read: false } : x)));
+    await persistNotifications((notificationsRef.current || []).map((x) => (x.id === n.id ? { ...x, snoozedUntil: untilTs, read: false } : x)));
     setSnoozeTarget(null);
     setSnoozeTime("");
   }
@@ -5605,11 +5616,52 @@ function App() {
     setTasks(next);
     await saveKey(KEYS.tasks, next);
   }
+
+  // Auto-delete the photo of a task 5 days after it was closed. Runs once per app load,
+  // for managers only (so two devices don't race on the shared task list). The file is
+  // removed from Storage first; the task keeps its text, only the photo link is cleared.
+  const imgCleanupRef = useRef(false);
+  useEffect(() => {
+    if (!loaded || imgCleanupRef.current || !isManager(currentUser)) return;
+    if (!Array.isArray(tasks) || tasks.length === 0) return;
+    const DAY5 = 5 * 24 * 60 * 60 * 1000;
+    const isExpired = (t) => t && t.status === "done" && t.imageData && t.completedAt && Date.now() - t.completedAt > DAY5;
+    if (!tasks.some(isExpired)) return;
+    imgCleanupRef.current = true;
+    (async () => {
+      try {
+        let base = tasks;
+        try { const latest = await loadTasksFresh(); if (Array.isArray(latest)) base = latest; } catch (e) {}
+        const expired = base.filter(isExpired);
+        if (!expired.length) return;
+        const expiredIds = new Set(expired.map((t) => t.id));
+        // Never delete a file that an open task or a location still uses.
+        const stillUsed = new Set(base.filter((t) => t && t.imageData && !expiredIds.has(t.id)).map((t) => t.imageData));
+        (locations || []).forEach((l) => { if (l && l.imageData) stillUsed.add(l.imageData); });
+        const cleared = new Set();
+        for (const t of expired) {
+          const url = String(t.imageData);
+          try {
+            if (url.startsWith("data:") || stillUsed.has(url)) { cleared.add(t.id); continue; }
+            if (window.storage && window.storage.deleteImage && (await window.storage.deleteImage(url))) cleared.add(t.id);
+          } catch (e) { console.error("task image delete failed", e); }
+        }
+        if (!cleared.size) return;
+        await persistTasks(base.map((t) => (cleared.has(t.id) ? { ...t, imageData: null, imageDeletedAt: Date.now() } : t)));
+      } catch (e) { console.error("task image cleanup failed", e); }
+    })();
+  }, [loaded, tasks, currentUser]);
   async function persistSettings(next) {
     setSettings(next);
     await saveKey(KEYS.settings, next);
   }
   async function persistNotifications(next) {
+    // Keep the shared list small: unread and snoozed ones always stay; read ones are dropped
+    // after 14 days; and never more than 600 in total (the whole list is re-saved on every change).
+    const KEEP_MS = 14 * 24 * 60 * 60 * 1000;
+    const now = Date.now();
+    next = (next || []).filter((n) => n && (!n.read || n.snoozedUntil || now - (n.createdAt || now) < KEEP_MS)).slice(-600);
+    notificationsRef.current = next;
     setNotifications(next);
     await saveKey(KEYS.notifications, next);
   }
@@ -5867,14 +5919,34 @@ function App() {
     }
   }
 
+  // Add notifications without losing others: start from the freshest server copy (another device may
+  // have added or changed some), keep anything of ours that hasn't reached the server yet, then append.
+  // Calls are queued one after another: most callers don't await, so two at once would otherwise both
+  // start from the same list and the second would overwrite the first.
+  const notifQueueRef = useRef(Promise.resolve());
+  function appendNotifications(items) {
+    const run = notifQueueRef.current.then(async () => {
+      let base = notificationsRef.current || [];
+      try {
+        const fresh = await loadKey(KEYS.notifications, []);
+        if (Array.isArray(fresh)) {
+          const freshIds = new Set(fresh.map((n) => n && n.id));
+          const justNow = Date.now() - 60000;
+          base = [...fresh, ...base.filter((n) => n && !freshIds.has(n.id) && (n.createdAt || 0) > justNow)];
+        }
+      } catch (e) {}
+      await persistNotifications([...base, ...items]);
+    });
+    notifQueueRef.current = run.catch(() => {});
+    return run;
+  }
+
   async function notifyManagers(message, link) {
     const managers = users.filter((u) => u.role === "manager" && u.id !== currentUser?.id);
     if (managers.length === 0) return;
-    const next = [
-      ...notifications,
-      ...managers.map((u) => ({ id: genId(), userId: u.id, message, link, read: false, createdAt: Date.now() })),
-    ];
-    await persistNotifications(next);
+    await appendNotifications(
+      managers.map((u) => ({ id: genId(), userId: u.id, message, link, read: false, createdAt: Date.now() }))
+    );
     pushTo(managers.map((u) => u.id), "ישיבוס", message, link);
   }
   /* `link` tells the notification bell where to jump when tapped, e.g.
@@ -5883,11 +5955,7 @@ function App() {
   // scheduled reminders, which must reach everyone — including the person who set them.
   async function deliverNotification(userId, message, link) {
     if (!userId) return;
-    const next = [
-      ...notifications,
-      { id: genId(), userId, message, link, read: false, createdAt: Date.now() },
-    ];
-    await persistNotifications(next);
+    await appendNotifications([{ id: genId(), userId, message, link, read: false, createdAt: Date.now() }]);
     pushTo([userId], "ישיבוס", message, link);
   }
   async function notifyUser(userId, message, link) {
@@ -6103,7 +6171,7 @@ function App() {
             <span className="wh-display font-bold" style={{ color: C.ink }}>התראות</span>
             <button
               onClick={async () => {
-                const next = notifications.map((n) => (n.userId === currentUser.id ? { ...n, read: true } : n));
+                const next = (notificationsRef.current || []).map((n) => (n.userId === currentUser.id ? { ...n, read: true } : n));
                 await persistNotifications(next);
               }}
               className="text-xs font-bold"
@@ -6718,7 +6786,7 @@ function Dashboard({ tasks, products, orderHistory, users, currentUser, unitRequ
 
   const statusSegments = [
     { label: "חדש", value: newTasks.length, color: C.accent },
-    { label: "בטיפול", value: inProgress.length, color: C.mustard },
+    { label: "בביצוע", value: inProgress.length, color: C.mustard },
     { label: "הושלם", value: done.length, color: C.sage },
   ];
 
@@ -6861,7 +6929,7 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
   const [hwValue, setHwValue] = useState("");
   const [hwLog, setHwLog] = useState([]);
   const hwInputRef = useRef(null);
-  const filtered = products.filter((p) => p.name.includes(search) || p.barcode.includes(search));
+  const filtered = products.filter((p) => (p.name || "").includes(search) || (p.barcode || "").includes(search));
   const filteredByCategory =
     activeCategory === "all" ? filtered : filtered.filter((p) => (p.category || "ללא קטגוריה") === activeCategory);
 
@@ -7073,7 +7141,7 @@ function InventoryTab({ products, persistProducts, openScanner, scanResult, clea
         )}
         {viewMode === "name" || activeCategory !== "all" ? (
           <div className="flex flex-col gap-3">
-            {[...filteredByCategory].sort((a, b) => a.name.localeCompare(b.name, "he")).map((p) => (
+            {[...filteredByCategory].sort((a, b) => (a.name || "").localeCompare(b.name || "", "he")).map((p) => (
               <ProductCard key={p.id} p={p} onSetQty={setQty} />
             ))}
           </div>
@@ -7227,7 +7295,7 @@ function useHebrewHolidays() {
     const start = new Date();
     const end = new Date();
     end.setDate(end.getDate() + 90);
-    const fmt = (d) => d.toISOString().slice(0, 10);
+    const fmt = (d) => isoLocalDate(d);
     const url = `https://www.hebcal.com/hebcal?v=1&cfg=json&maj=on&min=on&mod=on&start=${fmt(start)}&end=${fmt(end)}&lg=he`;
     fetch(url)
       .then((r) => r.json())
@@ -7253,7 +7321,7 @@ function useParshiot() {
     start.setDate(start.getDate() - 7);
     const end = new Date();
     end.setDate(end.getDate() + 120);
-    const fmt = (d) => d.toISOString().slice(0, 10);
+    const fmt = (d) => isoLocalDate(d);
     // s=on adds the weekly parasha to the results.
     const url = `https://www.hebcal.com/hebcal?v=1&cfg=json&s=on&start=${fmt(start)}&end=${fmt(end)}&lg=he`;
 
@@ -7751,7 +7819,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
     menuItems
       .filter((m) => selectedMenuIds.includes(m.id))
       .forEach((m) => {
-        m.ingredients.forEach((ing) => {
+        (m.ingredients || []).forEach((ing) => {
           needed[ing.productId] = (needed[ing.productId] || 0) + ing.qty * Number(portions || 1);
         });
       });
@@ -8114,7 +8182,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
               {(() => {
                 const q = toBuyName.trim();
                 if (q.length < 2 || toBuyProductId) return null;
-                const matches = products.filter((p) => p.name && p.name.includes(q)).slice(0, 6);
+                const matches = products.filter((p) => p.name && (p.name || "").includes(q)).slice(0, 6);
                 if (matches.length === 0) return null;
                 return (
                   <div className="flex flex-col rounded-2xl overflow-hidden" style={{ border: `1px solid ${C.kraftDark}`, background: C.kraft }}>
@@ -8306,7 +8374,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
 
     const pickable = products
       .filter((p) => !orderExtras[p.id])
-      .filter((p) => !extraSearch || p.name.includes(extraSearch));
+      .filter((p) => !extraSearch || (p.name || "").includes(extraSearch));
 
     return (
       <div className="mb-4">
@@ -9088,10 +9156,10 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
             .map(([dayKey]) => {
               const id = weeklyMenu[dayKey]?.[slotKey]?.[dt.id];
               const m = menuItems.find((mi) => mi.id === id);
-              return `<td style="background:${rowBg}">${m ? m.name : ""}</td>`;
+              return `<td style="background:${rowBg}">${m ? escapeHtml(m.name) : ""}</td>`;
             })
             .join("");
-          return `<tr><th class="rowhead" style="background:${rowBg}">${dt.name}</th>${cells}</tr>`;
+          return `<tr><th class="rowhead" style="background:${rowBg}">${escapeHtml(dt.name)}</th>${cells}</tr>`;
         })
         .join("");
 
@@ -9132,7 +9200,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
           </style>
         </head>
         <body>
-          <h1>${parshaTitle ? `תפריט ${parshaTitle}` : "תפריט שבועי"}</h1>
+          <h1>${parshaTitle ? `תפריט ${escapeHtml(parshaTitle)}` : "תפריט שבועי"}</h1>
           <div class="sub">${weekLabel(targetWeekStart)}</div>
           ${tables || '<p style="text-align:center">לא שובצו מנות לשבוע הזה</p>'}
           <script>window.onload = () => window.print();</script>
@@ -9452,7 +9520,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
             ? products
             : products.filter((p) => (p.supplierId || "__unassigned__") === orderSupplierFilter);
         const filteredLowStock = orderSearch
-          ? baseList.filter((p) => p.name.includes(orderSearch))
+          ? baseList.filter((p) => (p.name || "").includes(orderSearch))
           : baseList;
         const supplierOptionsInList = Array.from(new Set(products.map((p) => p.supplierId || "__unassigned__")));
 
@@ -10468,7 +10536,7 @@ function DishOrderReminderEditor({ item, onSave }) {
   );
 }
 
-function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
+function TaskDetail({ task, users, currentUser, onSave, onClose, catById, notifyUser, onAddComment }) {
   const [comment, setComment] = useState("");
   const [customDate, setCustomDate] = useState("");
   const [customTime, setCustomTime] = useState("09:00");
@@ -10487,8 +10555,16 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
       text,
       createdAt: Date.now(),
     };
-    await onSave({ ...task, comments: [...comments, entry] });
+    if (onAddComment) await onAddComment(task.id, entry);
+    else await onSave({ ...task, comments: [...comments, entry] });
     setComment("");
+    // Tell the other side (one recipient only, so two quick notifications can't overwrite each other):
+    // the worker's reply goes to whoever opened the task; anyone else's message goes to the assignee.
+    if (notifyUser) {
+      const other = currentUser.id === task.assignedToId ? task.createdById : (task.assignedToId || task.createdById);
+      const preview = text.length > 70 ? text.slice(0, 70) + "…" : text;
+      if (other) notifyUser(other, `💬 ${currentUser.name} כתב במשימה "${task.title}": ${preview}`, { tab: "tasks", taskId: task.id });
+    }
   }
 
   async function setFollowUp(ts) {
@@ -10631,6 +10707,24 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById }) {
           })}
         </div>
 
+        {currentUser.id !== task.assignedToId && (
+          <div className="flex gap-2 mb-2 flex-wrap">
+            <button
+              onClick={() => setComment("לא הבנתי מה הבעיה, אפשר לפרט?")}
+              className="px-3 py-1 rounded-full text-xs font-bold"
+              style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              ❓ מה הבעיה?
+            </button>
+            <button
+              onClick={() => setComment("אפשר תמונה של הבעיה?")}
+              className="px-3 py-1 rounded-full text-xs font-bold"
+              style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+            >
+              📷 תמונה בבקשה
+            </button>
+          </div>
+        )}
         <div className="flex gap-2">
           <textarea
             value={comment}
@@ -11283,6 +11377,22 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
     return tasks;
   }
 
+  // Add a comment to the freshest copy of the task, so a reply written on another device a moment
+  // ago (or a status change) is never overwritten by this device's older copy of the task.
+  async function addTaskComment(taskId, entry) {
+    const base = await freshTasks();
+    let updated = null;
+    const next = base.map((t) => {
+      if (t.id !== taskId) return t;
+      const have = t.comments || [];
+      updated = have.some((c) => c.id === entry.id) ? t : { ...t, comments: [...have, entry] };
+      return updated;
+    });
+    if (!updated) return;
+    await persistTasks(next);
+    setDetailTask(updated);
+  }
+
   async function saveTask(updated) {
     const base = await freshTasks();
     const next = base.map((t) => (t.id === updated.id ? updated : t));
@@ -11307,7 +11417,7 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
     await persistTasks(next);
     setEditingTask(null);
     showToast("המשימה עודכנה");
-    if (notifyUser && original && updated.assignedToId !== original.assignedToId) {
+    if (notifyUser && original && updated.assignedToId && updated.assignedToId !== original.assignedToId) {
       notifyUser(updated.assignedToId, `שויכה אליך משימה: ${updated.title}`, { tab: "tasks", taskId: updated.id });
     }
   }
@@ -11569,6 +11679,8 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
           currentUser={currentUser}
           catById={catById}
           onSave={saveTask}
+          onAddComment={addTaskComment}
+          notifyUser={notifyUser}
           onClose={() => setDetailTask(null)}
         />
       )}
@@ -11732,13 +11844,13 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
                   className="text-xs px-2 py-1 rounded-2xl font-bold whitespace-nowrap"
                   style={{ background: t.status === "done" ? C.sage : C.kraftDark, color: t.status === "done" ? "#fff" : C.ink }}
                 >
-                  {t.status === "done" ? "סגור" : t.status === "in_progress" ? "בטיפול" : "פתוח"}
+                  {t.status === "done" ? "סגור" : t.status === "in_progress" ? "בביצוע" : "פתוח"}
                 </span>
               </div>
               <div className="flex gap-2 mt-3 flex-wrap">
                 {t.status !== "in_progress" && t.status !== "done" && (
                   <button onClick={() => updateStatus(t, "in_progress")} className="px-3 py-1 rounded-2xl text-sm font-bold" style={{ background: C.mustard, color: "#fff" }}>
-                    התחל טיפול
+                    ▶️ עובר לביצוע
                   </button>
                 )}
                 {t.status !== "done" && (
@@ -12008,6 +12120,14 @@ function renderWeeklyMenuPng({ title, subtitle, days, types, slots, weeklyMenu, 
 /* Print an HTML document: open it in a new tab showing the printable page (the user
    prints from the browser menu). This is the behaviour that worked on the user's
    device; auto-print via iframe/script was unreliable inside the installed PWA. */
+/* Escape text before putting it inside HTML that is written into a print window. That window shares the
+   app's origin, so an unescaped name like <img onerror=...> typed by a worker would run as the manager. */
+function escapeHtml(v) {
+  return String(v == null ? "" : v)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function printHtmlDoc(html, onBlocked) {
   try {
     const win = window.open("", "_blank");
@@ -12396,7 +12516,7 @@ function LocationPicker({ locations, value, onChange }) {
 
   const groups = Object.entries(
     (locations || [])
-      .filter((loc) => !q || loc.name.includes(q) || (loc.group || "").includes(q))
+      .filter((loc) => !q || (loc.name || "").includes(q) || (loc.group || "").includes(q))
       .reduce((acc, loc) => {
         const g = loc.group || "אחר";
         (acc[g] = acc[g] || []).push(loc);
@@ -13316,7 +13436,7 @@ function PersonalPurchasesAdmin({ products, personalPurchases, persistPersonalPu
   }
 
   const pickable = products
-    .filter((p) => !search || p.name.includes(search))
+    .filter((p) => !search || (p.name || "").includes(search))
     .slice(0, 30);
 
   const fmtDate = (ts) => new Date(ts).toLocaleString("he-IL", { day: "numeric", month: "numeric", hour: "2-digit", minute: "2-digit" });
@@ -13878,7 +13998,7 @@ function LocationsAdmin({ locations, persistLocations, deleteLocationById, showT
       let next = [...locations];
       let added = 0, updated = 0;
       for (const item of imported) {
-        const idx = next.findIndex((l) => l.name.trim().toLowerCase() === item.name.trim().toLowerCase());
+        const idx = next.findIndex((l) => String(l.name || "").trim().toLowerCase() === item.name.trim().toLowerCase());
         if (idx >= 0) {
           next[idx] = { ...next[idx], ...item };
           updated++;
@@ -13916,7 +14036,7 @@ function LocationsAdmin({ locations, persistLocations, deleteLocationById, showT
     await deleteLocationById(id);
   }
 
-  const filtered = locations.filter((l) => !search || l.name.includes(search) || (l.group || "").includes(search));
+  const filtered = locations.filter((l) => !search || (l.name || "").includes(search) || (l.group || "").includes(search));
   const grouped = Object.entries(
     filtered.reduce((acc, l) => {
       const g = l.group || "אחר";
@@ -14763,7 +14883,7 @@ function UnitRequestsAdmin({
   function printList(items, unitName, weekOf) {
     const rows = items
       .filter((i) => (i.give ?? i.qty) > 0)
-      .map((i) => `<tr><td>☐</td><td>${i.name}</td><td style="text-align:center">${i.give ?? i.qty} ${i.unit || ""}</td></tr>`)
+      .map((i) => `<tr><td>☐</td><td>${escapeHtml(i.name)}</td><td style="text-align:center">${escapeHtml(`${i.give ?? i.qty} ${i.unit || ""}`)}</td></tr>`)
       .join("");
     const html = `
       <!doctype html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><title>רשימת ליקוט</title>
@@ -14778,7 +14898,7 @@ function UnitRequestsAdmin({
         td:first-child { width: 32px; text-align: center; font-size: 20px; }
       </style></head><body>
         <h1>🧺 רשימת ליקוט למחסן</h1>
-        <div class="sub">${unitName ? `יחידה: ${unitName} · ` : ""}${weekOf ? weekLabel(weekOf) : ""}</div>
+        <div class="sub">${unitName ? `יחידה: ${escapeHtml(unitName)} · ` : ""}${weekOf ? weekLabel(weekOf) : ""}</div>
         <table><thead><tr><th>✓</th><th>מוצר</th><th>כמות</th></tr></thead><tbody>${rows}</tbody></table>
         <script>window.onload=()=>window.print();</script>
       </body></html>`;
@@ -14790,7 +14910,7 @@ function UnitRequestsAdmin({
   /* Delete a whole request permanently. */
   async function deleteRequest(reqId, unitName) {
     if (!window.confirm(`למחוק לצמיתות את הבקשה של ${unitName}? לא ניתן לשחזר.`)) return;
-    await persistUnitRequests((unitRequests || []).filter((r) => r.id !== reqId));
+    await persistUnitRequests((list) => (list || []).filter((r) => r.id !== reqId));
     setEditing(null);
     showToast("הבקשה נמחקה");
   }
@@ -14798,7 +14918,7 @@ function UnitRequestsAdmin({
   /* Clear all completed history. */
   async function clearHistory() {
     if (!window.confirm("למחוק את כל היסטוריית הבקשות שטופלו? לא ניתן לשחזר.")) return;
-    await persistUnitRequests((unitRequests || []).filter((r) => r.status === "submitted"));
+    await persistUnitRequests((list) => (list || []).filter((r) => r.status === "submitted"));
     showToast("ההיסטוריה נמחקה");
   }
 
@@ -15424,7 +15544,7 @@ function UnitTemplatesManager({ unitTemplates, persistUnitTemplates, users, prod
 
   const pickable = products
     .filter((p) => !list.some((i) => i.productId === p.id))
-    .filter((p) => !addSearch || p.name.includes(addSearch));
+    .filter((p) => !addSearch || (p.name || "").includes(addSearch));
 
   return (
     <div>
@@ -16358,7 +16478,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, persistProducts, sho
   }
 
   function startEdit(m) {
-    setEditForm({ ...m });
+    setEditForm({ ...m, ingredients: Array.isArray(m.ingredients) ? m.ingredients : [] });
     setEditingId(m.id);
   }
   function addEditIngredient() {
@@ -16592,7 +16712,7 @@ function MenuAdmin({ menuItems, persistMenuItems, products, persistProducts, sho
                   {m.dishType && <span style={{ color: C.steel }}> · {dishTypes.find((d) => d.id === m.dishType)?.name || ""}</span>}
                 </div>
                 <div className="text-xs mt-1" style={{ color: C.steel }}>
-                  {m.ingredients.map((ing) => {
+                  {(m.ingredients || []).map((ing) => {
                     const p = products.find((pp) => pp.id === ing.productId);
                     if (!p) return "";
                     return ing.label ? `${ing.label}: ${p.name} (${ing.qty})` : `${p.name} (${ing.qty})`;
@@ -16646,7 +16766,7 @@ function ProductAutocomplete({ products, value, onChange, onPick, onCreateProduc
   const display = open ? q : (selected ? selected.name : (valueMode === "name" && value ? value : ""));
 
   const matches = (products || [])
-    .filter((p) => !q.trim() || p.name.includes(q.trim()))
+    .filter((p) => !q.trim() || (p.name || "").includes(q.trim()))
     .slice(0, 30);
 
   function pick(p) {
@@ -17771,7 +17891,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
       <div className="flex flex-col gap-4">
         {Object.entries(
           products
-            .filter((p) => !adminSearch || p.name.includes(adminSearch) || (p.barcode || "").includes(adminSearch))
+            .filter((p) => !adminSearch || (p.name || "").includes(adminSearch) || (p.barcode || "").includes(adminSearch))
             .filter((p) =>
               visFilter === "all"
                 ? true
