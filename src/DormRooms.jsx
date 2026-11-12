@@ -25,6 +25,9 @@ const esc = (s) =>
 
 const cleanName = (s) => String(s == null ? "" : s).replace(/[\t ]/g, " ").replace(/\s+/g, " ").trim();
 
+/* Key for spotting the same bochur twice: ignores spaces, quotes/geresh and dashes. */
+export const nameKey = (s) => cleanName(s).replace(/["'\u05F3\u05F4\u2018\u2019\u201C\u201D.]/g, "").replace(/[-\u05BE\u2013\u2014]/g, " ").replace(/\s+/g, " ").trim();
+
 const defaultWing = (num) => `קומה ${Math.floor(Number(num) / 100)}`;
 
 const sortRooms = (a, b) => (Number(a.num) || 0) - (Number(b.num) || 0);
@@ -396,6 +399,20 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
 
   const freeRooms = sortedRooms.filter((r) => roomInfo(r).free > 0);
 
+  // Same name registered more than once (usually = one bochur in two rooms).
+  const duplicates = useMemo(() => {
+    const m = new Map();
+    students.forEach((s) => {
+      const k = nameKey(s.name);
+      if (!k) return;
+      if (!m.has(k)) m.set(k, []);
+      m.get(k).push(s);
+    });
+    return [...m.values()].filter((g) => g.length > 1)
+      .map((g) => g.sort((a, b) => (Number(a.room) || 99999) - (Number(b.room) || 99999)));
+  }, [students]);
+  const dupIds = useMemo(() => new Set(duplicates.flat().map((s) => s.id)), [duplicates]);
+
   /* ---------- actions ---------- */
   function assertRoomHasSpace(roomNum, list, roomList, ignoreId) {
     const r = roomList.find((x) => Number(x.num) === Number(roomNum));
@@ -407,9 +424,35 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
   function addStudent(name, roomNum) {
     const n = cleanName(name);
     if (!n) { toast("יש לרשום את שם הבחור"); return Promise.resolve(false); }
+    // Already registered? Don't create a second copy - offer to move him instead.
+    const existing = students.find((s) => nameKey(s.name) === nameKey(n));
+    if (existing) {
+      const where = existing.room ? `בחדר ${existing.room}` : "ללא חדר";
+      const target = roomNum != null && roomNum !== "" ? Number(roomNum) : null;
+      if (target != null && Number(existing.room) !== target) {
+        const move = window.confirm(`⚠️ ${existing.name} כבר רשום ${where}.\n\nלהעביר אותו לחדר ${target}?\n\nאישור = להעביר (בלי ליצור כפול)\nביטול = לא לשנות כלום\n\nאם זה בחור אחר עם אותו שם - יש להוסיף פרט מזהה לשם (למשל שם האב).`);
+        if (!move) return Promise.resolve(false);
+        let moved = false;
+        return run(async () => {
+          await mutateStudents((list, roomList) => {
+            const cur = list.find((s) => s.id === existing.id);
+            if (!cur) throw new Error("הבחור לא נמצא (אולי נמחק במכשיר אחר)");
+            assertRoomHasSpace(target, list, roomList, cur.id);
+            return list.map((s) => (s.id === cur.id ? { ...s, room: target, updatedAt: Date.now() } : s));
+          });
+          moved = true;
+          toast(`${existing.name} הועבר לחדר ${target}`);
+        }).then(() => moved);
+      }
+      toast(`⚠️ ${existing.name} כבר רשום ${where}. לא נוסף שוב.`);
+      return Promise.resolve(false);
+    }
     let ok = false;
     return run(async () => {
       await mutateStudents((list, roomList) => {
+        // Re-check against the freshest list (another device may have just added him).
+        const dup = list.find((s) => nameKey(s.name) === nameKey(n));
+        if (dup) throw new Error(`${dup.name} כבר רשום ${dup.room ? `בחדר ${dup.room}` : "ללא חדר"}. לא נוסף שוב.`);
         if (roomNum != null && roomNum !== "") assertRoomHasSpace(roomNum, list, roomList);
         const now = Date.now();
         return [...list, { id: uid(), name: n, room: roomNum === "" || roomNum == null ? null : Number(roomNum), shiur: "", phone: "", notes: "", createdAt: now, updatedAt: now }];
@@ -424,6 +467,10 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
       await mutateStudents((list, roomList) => {
         const cur = list.find((s) => s.id === id);
         if (!cur) throw new Error("הבחור לא נמצא (אולי נמחק במכשיר אחר)");
+        if (patch.name != null && nameKey(patch.name) !== nameKey(cur.name)) {
+          const dup = list.find((s) => s.id !== id && nameKey(s.name) === nameKey(patch.name));
+          if (dup) throw new Error(`כבר יש בחור בשם ${dup.name} ${dup.room ? `בחדר ${dup.room}` : "ללא חדר"}. אם זה בחור אחר - יש להוסיף פרט מזהה לשם.`);
+        }
         if (patch.room != null && patch.room !== "" && Number(patch.room) !== Number(cur.room)) {
           assertRoomHasSpace(patch.room, list, roomList, id);
         }
@@ -519,18 +566,24 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
         added = next.length;
       } else {
         await mutateStudents((list) => {
-          const names = new Set(list.map((s) => cleanName(s.name)));
+          const names = new Set(list.map((s) => nameKey(s.name)));
           const extra = [];
           data.students.forEach((s, i) => {
-            if (names.has(s.name)) { skipped++; return; }
-            names.add(s.name);
+            const k = nameKey(s.name);
+            if (names.has(k)) { skipped++; return; }
+            names.add(k);
             extra.push({ id: uid(), ...s, createdAt: now + i, updatedAt: now });
           });
           added = extra.length;
           return [...list, ...extra];
         });
       }
-      toast(`הייבוא הסתיים: נוספו ${added} בחורים${skipped ? `, ${skipped} דולגו כי כבר קיימים` : ""}`);
+      let fileDups = 0;
+      if (mode === "replace") {
+        const seen = new Set();
+        data.students.forEach((s) => { const k = nameKey(s.name); if (seen.has(k)) fileDups++; else seen.add(k); });
+      }
+      toast(`הייבוא הסתיים: נוספו ${added} בחורים${skipped ? `, ${skipped} דולגו כי כבר קיימים` : ""}${fileDups ? ` · ⚠️ בקובץ יש ${fileDups} שמות כפולים - הם מסומנים במסך הראשי` : ""}`);
     });
   }
 
@@ -650,14 +703,21 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
         </div>
       )}
 
+      {duplicates.length > 0 && view !== "home" && (
+        <button onClick={() => setView("home")} className="w-full p-3 mb-3 text-sm font-bold text-right"
+          style={{ ...card, background: "#FDECEC", border: "1.5px solid #F5B5B5", color: "#9C0006" }}>
+          ⚠️ יש {duplicates.length} בחורים שרשומים פעמיים - לחץ לטיפול
+        </button>
+      )}
+
       {view === "home" && (
-        <HomeView {...{ C, card, input, btn, stats, wings, sortedRooms, roomInfo, freeRooms, roomLabel, students, wingOf, addStudent, updateStudent, deleteStudent, setEditStudent, canEdit, busy, roomByNum }} />
+        <HomeView {...{ C, card, input, btn, stats, wings, sortedRooms, roomInfo, freeRooms, roomLabel, students, wingOf, addStudent, updateStudent, deleteStudent, setEditStudent, canEdit, busy, roomByNum, duplicates }} />
       )}
       {view === "map" && (
-        <MapView {...{ C, card, btn, wings, sortedRooms, byRoom, roomInfo, addStudent, setEditStudent, printMap, canEdit }} />
+        <MapView {...{ C, card, btn, wings, sortedRooms, byRoom, roomInfo, addStudent, setEditStudent, printMap, canEdit, dupIds }} />
       )}
       {view === "list" && (
-        <ListView {...{ C, card, input, btn, students, sortedRooms, roomByNum, wingOf, roomInfo, wings, setEditStudent, updateStudent, canEdit }} />
+        <ListView {...{ C, card, input, btn, students, sortedRooms, roomByNum, wingOf, roomInfo, wings, setEditStudent, updateStudent, canEdit, dupIds }} />
       )}
       {view === "rooms" && (
         <RoomsView {...{ C, card, input, btn, sortedRooms, roomInfo, saveRoom, deleteRoom, canEdit, handleImportFile, exportExcel, printByRooms, printMap, busy }} />
@@ -701,7 +761,7 @@ function Stat({ C, label, value, warn }) {
   );
 }
 
-function HomeView({ C, card, input, btn, stats, wings, sortedRooms, roomInfo, freeRooms, roomLabel, students, wingOf, addStudent, setEditStudent, canEdit, busy, roomByNum }) {
+function HomeView({ C, card, input, btn, stats, wings, sortedRooms, roomInfo, freeRooms, roomLabel, students, wingOf, addStudent, setEditStudent, canEdit, busy, roomByNum, duplicates = [] }) {
   const [name, setName] = useState("");
   const [room, setRoom] = useState("");
   const [q, setQ] = useState("");
@@ -725,6 +785,27 @@ function HomeView({ C, card, input, btn, stats, wings, sortedRooms, roomInfo, fr
 
   return (
     <div className="flex flex-col gap-4">
+      {duplicates.length > 0 && (
+        <div className="p-4" style={{ ...card, background: "#FDECEC", border: "1.5px solid #F5B5B5" }}>
+          <div className="wh-display font-black mb-1" style={{ color: "#9C0006" }}>⚠️ בחורים שרשומים פעמיים ({duplicates.length})</div>
+          <div className="text-xs mb-3" style={{ color: "#9C0006" }}>
+            כל בחור צריך להיות רשום פעם אחת. לחץ על הרישום הלא נכון ומחק אותו, או שנה את השם אם זה בחור אחר.
+          </div>
+          <div className="flex flex-col gap-2">
+            {duplicates.map((g) => (
+              <div key={g[0].id} className="flex flex-wrap items-center gap-1.5">
+                <span className="font-bold text-sm ml-1">{g[0].name}:</span>
+                {g.map((s) => (
+                  <button key={s.id} onClick={() => setEditStudent(s)} className="px-3 py-1 text-xs font-bold"
+                    style={{ borderRadius: 999, background: "#fff", color: "#9C0006", border: "1px solid #F5B5B5" }}>
+                    {s.room ? `חדר ${s.room}` : "ללא חדר"}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(105px, 1fr))", gap: 8 }}>
         <Stat C={C} label="מיטות" value={stats.beds} />
         <Stat C={C} label="משובצים" value={stats.taken} />
@@ -843,7 +924,7 @@ function HomeView({ C, card, input, btn, stats, wings, sortedRooms, roomInfo, fr
   );
 }
 
-function MapView({ C, card, btn, wings, sortedRooms, byRoom, roomInfo, addStudent, setEditStudent, printMap, canEdit }) {
+function MapView({ C, card, btn, wings, sortedRooms, byRoom, roomInfo, addStudent, setEditStudent, printMap, canEdit, dupIds = new Set() }) {
   const [wing, setWing] = useState("");
   const [adding, setAdding] = useState(null); // room num
   const [newName, setNewName] = useState("");
@@ -893,7 +974,7 @@ function MapView({ C, card, btn, wings, sortedRooms, byRoom, roomInfo, addStuden
                             <td className="px-1.5 py-1" style={s && s.chatan ? { background: "#FFE58F" } : undefined}>
                               {s ? (
                                 <button onClick={() => setEditStudent(s)} className="w-full text-right" style={{ color: C.ink, fontWeight: s.chatan ? 800 : undefined }}>
-                                  {s.name}{s.chatan && <span title="חתן"> 💍</span>}
+                                  {dupIds.has(s.id) && <span title="רשום פעמיים" style={{ color: "#C0392B" }}>⚠️ </span>}{s.name}{s.chatan && <span title="חתן"> 💍</span>}
                                 </button>
                               ) : isEmptyBed && canEdit ? (
                                 adding === r.num && newName !== null ? (
@@ -927,7 +1008,7 @@ function MapView({ C, card, btn, wings, sortedRooms, byRoom, roomInfo, addStuden
   );
 }
 
-function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingOf, roomInfo, wings, setEditStudent, updateStudent, canEdit }) {
+function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingOf, roomInfo, wings, setEditStudent, updateStudent, canEdit, dupIds = new Set() }) {
   const [q, setQ] = useState("");
   const [wing, setWing] = useState("");
   const [onlyNoRoom, setOnlyNoRoom] = useState(false);
@@ -974,7 +1055,7 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
             {rows.map((s) => (
               <tr key={s.id} style={{ borderTop: `1px solid ${C.kraftDark}`, background: s.chatan ? "#FFF6D1" : undefined }}>
                 <td className="px-3 py-1.5">
-                  <button onClick={() => setEditStudent(s)} className="font-bold text-right" style={{ color: C.ink }}>{s.name}</button>
+                  <button onClick={() => setEditStudent(s)} className="font-bold text-right" style={{ color: dupIds.has(s.id) ? "#C0392B" : C.ink }}>{dupIds.has(s.id) && <span title="רשום פעמיים">⚠️ </span>}{s.name}</button>
                   {s.chatan && <ChatanBadge />}
                   {canEdit && (
                     <button onClick={() => updateStudent(s.id, { chatan: !s.chatan })} title={s.chatan ? "בטל סימון חתן" : "סמן כחתן"}
