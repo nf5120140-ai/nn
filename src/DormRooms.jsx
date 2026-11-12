@@ -724,7 +724,9 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
       )}
 
       {editStudent && (
-        <StudentDialog {...{ C, card, input, btn, student: editStudent, sortedRooms, roomInfo, roomLabel, canEdit,
+        <StudentDialog key={editStudent.id} {...{ C, card, input, btn, student: editStudent, sortedRooms, roomInfo, roomLabel, canEdit, wingOf,
+          others: students.filter((x) => x.id !== editStudent.id && nameKey(x.name) === nameKey(editStudent.name)),
+          onOpenOther: (o) => setEditStudent(o),
           onClose: () => setEditStudent(null),
           onSave: async (patch) => { if (await updateStudent(editStudent.id, patch)) setEditStudent(null); },
           onDelete: () => { const s = editStudent; setEditStudent(null); deleteStudent(s); } }} />
@@ -957,7 +959,7 @@ function MapView({ C, card, btn, wings, sortedRooms, byRoom, roomInfo, addStuden
               return (
                 <div key={r.id} style={{ ...card, borderRadius: 14, overflow: "hidden" }}>
                   <div className="flex items-center justify-between px-2 py-1.5" style={{ background: headBg, color: "#fff" }}>
-                    <span className="wh-display font-black text-base">חדר {r.num}{list.some((x) => x.chatan) && <span title="יש חתן בחדר"> 💍</span>}</span>
+                    <span className="wh-display font-black text-base">חדר {r.num}{list.some((x) => x.chatan) && <span title="יש חתן בחדר"> 💍</span>}{list.some((x) => dupIds.has(x.id)) && <span title="יש בחדר בחור שרשום גם בחדר אחר"> ⚠️</span>}</span>
                     <span className="text-[11px] font-bold">{i.taken}/{i.beds}</span>
                   </div>
                   <table className="w-full text-xs" style={{ borderCollapse: "collapse" }}>
@@ -971,9 +973,10 @@ function MapView({ C, card, btn, wings, sortedRooms, byRoom, roomInfo, addStuden
                             <td className="text-center font-bold" style={{ width: 22, background: over ? "#F8C8C8" : C.paper, color: C.steel, borderLeft: `1px solid ${C.kraftDark}` }}>
                               {idx < Math.max(i.beds, list.length) ? idx + 1 : ""}
                             </td>
-                            <td className="px-1.5 py-1" style={s && s.chatan ? { background: "#FFE58F" } : undefined}>
+                            <td className="px-1.5 py-1" style={s && dupIds.has(s.id) ? { background: "#FDECEC", boxShadow: "inset 0 0 0 1.5px #E74C3C" } : s && s.chatan ? { background: "#FFE58F" } : undefined}>
                               {s ? (
-                                <button onClick={() => setEditStudent(s)} className="w-full text-right" style={{ color: C.ink, fontWeight: s.chatan ? 800 : undefined }}>
+                                <button onClick={() => setEditStudent(s)} className="w-full text-right" title={dupIds.has(s.id) ? "רשום יותר מפעם אחת - לחץ לפרטים" : undefined}
+                                  style={{ color: dupIds.has(s.id) ? "#C0392B" : C.ink, fontWeight: dupIds.has(s.id) || s.chatan ? 800 : undefined }}>
                                   {dupIds.has(s.id) && <span title="רשום פעמיים" style={{ color: "#C0392B" }}>⚠️ </span>}{s.name}{s.chatan && <span title="חתן"> 💍</span>}
                                 </button>
                               ) : isEmptyBed && canEdit ? (
@@ -1013,6 +1016,7 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
   const [wing, setWing] = useState("");
   const [onlyNoRoom, setOnlyNoRoom] = useState(false);
   const [onlyChatan, setOnlyChatan] = useState(false);
+  const [onlyDup, setOnlyDup] = useState(false);
 
   const rows = useMemo(() => {
     const t = q.trim();
@@ -1021,8 +1025,9 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
       .filter((s) => !wing || (s.room && wingOf(s.room) === wing))
       .filter((s) => !onlyNoRoom || !s.room || !roomByNum.has(Number(s.room)))
       .filter((s) => !onlyChatan || s.chatan)
-      .sort((a, b) => (Number(a.room) || 99999) - (Number(b.room) || 99999) || a.name.localeCompare(b.name, "he"));
-  }, [q, wing, onlyNoRoom, onlyChatan, students, roomByNum]); // eslint-disable-line react-hooks/exhaustive-deps
+      .filter((s) => !onlyDup || dupIds.has(s.id))
+      .sort((a, b) => (onlyDup ? a.name.localeCompare(b.name, "he") : 0) || (Number(a.room) || 99999) - (Number(b.room) || 99999) || a.name.localeCompare(b.name, "he"));
+  }, [q, wing, onlyNoRoom, onlyChatan, onlyDup, students, roomByNum, dupIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col gap-3">
@@ -1038,6 +1043,11 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
         <label className="flex items-center gap-2 text-sm px-2">
           <input type="checkbox" checked={onlyChatan} onChange={(e) => setOnlyChatan(e.target.checked)} /> רק חתנים 💍
         </label>
+        {dupIds.size > 0 && (
+          <label className="flex items-center gap-2 text-sm px-2 font-bold" style={{ color: "#C0392B" }}>
+            <input type="checkbox" checked={onlyDup} onChange={(e) => setOnlyDup(e.target.checked)} /> רק רשומים כפול ⚠️
+          </label>
+        )}
       </div>
       <div className="text-xs" style={{ color: C.steel }}>{rows.length} בחורים</div>
       <div className="overflow-x-auto" style={card}>
@@ -1053,9 +1063,9 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
           </thead>
           <tbody>
             {rows.map((s) => (
-              <tr key={s.id} style={{ borderTop: `1px solid ${C.kraftDark}`, background: s.chatan ? "#FFF6D1" : undefined }}>
+              <tr key={s.id} style={{ borderTop: `1px solid ${C.kraftDark}`, background: dupIds.has(s.id) ? "#FDECEC" : s.chatan ? "#FFF6D1" : undefined }}>
                 <td className="px-3 py-1.5">
-                  <button onClick={() => setEditStudent(s)} className="font-bold text-right" style={{ color: dupIds.has(s.id) ? "#C0392B" : C.ink }}>{dupIds.has(s.id) && <span title="רשום פעמיים">⚠️ </span>}{s.name}</button>
+                  <button onClick={() => setEditStudent(s)} className="font-bold text-right" title={dupIds.has(s.id) ? "רשום יותר מפעם אחת - לחץ לפרטים" : undefined} style={{ color: dupIds.has(s.id) ? "#C0392B" : C.ink }}>{dupIds.has(s.id) && <span title="רשום פעמיים">⚠️ </span>}{s.name}</button>
                   {s.chatan && <ChatanBadge />}
                   {canEdit && (
                     <button onClick={() => updateStudent(s.id, { chatan: !s.chatan })} title={s.chatan ? "בטל סימון חתן" : "סמן כחתן"}
@@ -1174,7 +1184,7 @@ function RoomsView({ C, card, input, btn, sortedRooms, roomInfo, saveRoom, delet
   );
 }
 
-function StudentDialog({ C, card, input, btn, student, sortedRooms, roomInfo, canEdit, onClose, onSave, onDelete }) {
+function StudentDialog({ C, card, input, btn, student, sortedRooms, roomInfo, canEdit, onClose, onSave, onDelete, others = [], onOpenOther, wingOf }) {
   const [f, setF] = useState({
     name: student.name || "",
     room: student.room == null ? "" : String(student.room),
@@ -1185,7 +1195,23 @@ function StudentDialog({ C, card, input, btn, student, sortedRooms, roomInfo, ca
   });
   return (
     <Modal C={C} card={card} onClose={onClose}>
-      <div className="wh-display font-black text-lg mb-3">{student.name}{student.chatan && <ChatanBadge />}</div>
+      <div className="wh-display font-black text-lg mb-3" style={{ color: others.length ? "#C0392B" : undefined }}>{student.name}{student.chatan && <ChatanBadge />}</div>
+      {others.length > 0 && (
+        <div className="p-3 mb-3 text-sm" style={{ background: "#FDECEC", border: "1.5px solid #F5B5B5", borderRadius: 12, color: "#9C0006" }}>
+          <div className="font-black mb-1">⚠️ הבחור הזה רשום עוד {others.length === 1 ? "פעם" : `${others.length} פעמים`}:</div>
+          <div className="text-xs mb-2">כרטיס זה: {student.room ? `חדר ${student.room}${wingOf ? ` · ${wingOf(student.room)}` : ""}` : "ללא חדר"}</div>
+          <div className="flex flex-col gap-1.5">
+            {others.map((o) => (
+              <button key={o.id} onClick={() => onOpenOther && onOpenOther(o)} className="flex items-center justify-between px-3 py-2 text-xs font-bold text-right"
+                style={{ background: "#fff", border: "1px solid #F5B5B5", borderRadius: 10, color: "#9C0006" }}>
+                <span>{o.room ? `חדר ${o.room}${wingOf ? ` · ${wingOf(o.room)}` : ""}` : "ללא חדר"}{o.shiur ? ` · ${o.shiur}` : ""}</span>
+                <span>פתח ←</span>
+              </button>
+            ))}
+          </div>
+          <div className="text-xs mt-2">מוחקים את הרישום המיותר, או משנים את השם אם זה בחור אחר.</div>
+        </div>
+      )}
       <div className="flex flex-col gap-2">
         <label className="text-xs" style={{ color: C.steel }}>שם
           <input disabled={!canEdit} value={f.name} onChange={(e) => setF({ ...f, name: e.target.value })} className="w-full px-3 py-2 text-sm mt-1" style={input} />
