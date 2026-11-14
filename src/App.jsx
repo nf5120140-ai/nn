@@ -2665,7 +2665,7 @@ function UnitRequestTab({
     if (list.length === 0) return showToast("הרשימה הקבועה ריקה");
     const extra = 6; // empty rows for things not on the list
     const rows =
-      list.map((t, idx) => `<tr><td>${idx + 1}</td><td class="name">${escHtml(tplName(t))}</td><td>${escHtml(tplUnit(t))}</td><td></td><td></td></tr>`).join("") +
+      list.map((t, idx) => { const hint = productPrintHint(tplProduct(t), null); return `<tr><td>${idx + 1}</td><td class="name">${escHtml(tplName(t))}${hint ? `<div class="hint">↳ ${escHtml(hint)}</div>` : ""}</td><td>${escHtml(tplUnit(t))}</td><td></td><td></td></tr>`; }).join("") +
       Array.from({ length: extra }).map(() => `<tr><td></td><td></td><td></td><td></td><td></td></tr>`).join("");
     const html = `
       <!DOCTYPE html><html dir="rtl" lang="he"><head><meta charset="utf-8"><title>רשימה קבועה – בקשה מהמחסן</title>
@@ -2682,6 +2682,7 @@ function UnitRequestTab({
         tbody tr:nth-child(even) td { background: #F2F7FC; }
         td { text-align: center; }
         td.name { text-align: right; font-weight: bold; }
+        .hint { font-weight: normal; font-size: 12px; color: #8A4B12; margin-top: 2px; }
         .notes { margin-top: 14px; font-size: 14px; }
         .line { border-bottom: 1px solid #888; height: 26px; }
       </style></head><body>
@@ -2700,7 +2701,7 @@ function UnitRequestTab({
     const list = tplRef.current || [];
     if (list.length === 0) return showToast("הרשימה הקבועה ריקה");
     const rows = [
-      ...list.map((t, idx) => ({ idx: idx + 1, name: tplName(t), qty: tplUnit(t) ? `_______ ${tplUnit(t)}` : "_______" })),
+      ...list.map((t, idx) => ({ idx: idx + 1, name: tplName(t), qty: tplUnit(t) ? `_______ ${tplUnit(t)}` : "_______", extra: productPrintHint(tplProduct(t), null) })),
       ...Array.from({ length: 5 }).map(() => ({ idx: "", name: "", qty: "" })),
     ];
     let dataUrl;
@@ -3279,7 +3280,10 @@ function UnitRequestTab({
     const printItems = (r && r.status === "fulfilled" && Array.isArray(r.issuedItems) && r.issuedItems.length) ? r.issuedItems : (r ? r.items : []);
     if (!r || (printItems || []).length === 0) return showToast("אין מה להדפיס");
     const rows = (printItems || [])
-      .map((i, idx) => `<tr style="background:${idx % 2 ? "#EAF3FB" : "#fff"}"><td>${idx + 1}</td><td class="name">${escapeHtml(i.name)}</td><td class="qty">${escapeHtml(`${i.qty} ${i.unit || ""}`)}</td></tr>`)
+      .map((i, idx) => {
+        const hint = productPrintHint(products.find((p) => p.id === i.productId), i.qty);
+        return `<tr style="background:${idx % 2 ? "#EAF3FB" : "#fff"}"><td>${idx + 1}</td><td class="name">${escapeHtml(i.name)}${hint ? `<div class="hint">↳ ${escapeHtml(hint)}</div>` : ""}</td><td class="qty">${escapeHtml(`${i.qty} ${i.unit || ""}`)}</td></tr>`;
+      })
       .join("");
     const noteText = (req ? r.managerNote || r.note : (noteDraft || r.note)) || "";
     const heading = r.status === "fulfilled" ? "בקשה שאושרה מהמחסן" : "בקשה מהמחסן";
@@ -3296,6 +3300,7 @@ function UnitRequestTab({
         thead th { background: #3E8FCB; color: #fff; }
         td { text-align: center; }
         td.name { text-align: right; font-weight: bold; }
+        .hint { font-weight: normal; font-size: 12.5px; color: #8A4B12; margin-top: 3px; }
         .note { margin-top: 16px; padding: 10px; border: 1px dashed #888; border-radius: 8px; font-size: 14px; }
       </style></head><body>
         <h1>${heading}</h1>
@@ -3318,7 +3323,7 @@ function UnitRequestTab({
     const heading = r.status === "fulfilled" ? "בקשה שאושרה מהמחסן" : "בקשה מהמחסן";
     const sub = `${r.unitName || currentUser.name || ""} · ${new Date(r.fulfilledAt || r.submittedAt || r.updatedAt || r.createdAt || Date.now()).toLocaleDateString("he-IL")}`;
     const noteText = (req ? r.managerNote || r.note : (noteDraft || r.note)) || "";
-    const rows = (printItems || []).map((i, idx) => ({ idx: idx + 1, name: i.name, qty: `${i.qty} ${i.unit || ""}` }));
+    const rows = (printItems || []).map((i, idx) => ({ idx: idx + 1, name: i.name, qty: `${i.qty} ${i.unit || ""}`, extra: productPrintHint(products.find((p) => p.id === i.productId), i.qty) }));
 
     let dataUrl;
     try {
@@ -12187,6 +12192,30 @@ function printHtmlDoc(html, onBlocked) {
 
 /* Render a request (heading + sub + rows [{idx,name,qty}] + optional note) as a PNG
    data URL, so it can be shared/printed from a phone via the Android share sheet. */
+/* Fixed print hint for a product (set in the product form):
+   - alternate unit: "3 שקים גדולים" -> "אם אין: 8 שקים קטנים" (rounded up)
+   - free note: printed as is ("רק מותג תנובה")
+   qty = null -> no specific amount (blank template): shows the conversion ratio instead. */
+function productPrintHint(product, qty) {
+  if (!product) return "";
+  const parts = [];
+  const alt = String(product.altUnit || "").trim();
+  // "X of the normal unit = Y of the alternate unit" (e.g. 3 big sacks = 8 small sacks)
+  const base = Number(product.altBaseQty) || 1;
+  const equals = Number(product.altEqualsQty) || 0;
+  if (alt && equals > 0) {
+    const q = Number(qty);
+    if (qty == null || qty === "") {
+      parts.push(`${base} ${String(product.unit || "יח׳").trim()} = ${equals} ${alt}`);
+    } else if (q > 0) {
+      parts.push(`אם אין: ${Math.max(1, Math.round((q * equals) / base))} ${alt}`);
+    }
+  }
+  const note = String(product.printNote || "").trim();
+  if (note) parts.push(note);
+  return parts.join(" · ");
+}
+
 function drawRequestImageDataUrl(heading, sub, rows, note) {
   const W = 760, pad = 28, titleH = 40, subH = 26, gap = 14;
   const headerRowH = 46, rowH = 42;
@@ -12194,7 +12223,9 @@ function drawRequestImageDataUrl(heading, sub, rows, note) {
   const noteLines = note ? Math.max(1, Math.ceil(("הערה: " + note).length / 70)) : 0;
   const noteBlockH = note ? 16 + noteLines * 22 + 16 : 0;
   const tableTop = pad + titleH + subH + gap;
-  const tableH = headerRowH + rows.length * rowH;
+  const extraRowH = 62; // rows with a print hint get a second, smaller line
+  const rowHeights = rows.map((r) => (r && r.extra ? extraRowH : rowH));
+  const tableH = headerRowH + rowHeights.reduce((a, b) => a + b, 0);
   const H = tableTop + tableH + (note ? 18 + noteBlockH : 0) + pad;
 
   const scale = 2;
@@ -12238,17 +12269,28 @@ function drawRequestImageDataUrl(heading, sub, rows, note) {
 
   // rows
   rows.forEach((row, i) => {
+    const h = rowHeights[i];
     ctx.fillStyle = i % 2 ? "#EAF3FB" : "#fff";
-    ctx.fillRect(tableX, y, tableW, rowH);
+    ctx.fillRect(tableX, y, tableW, h);
     ctx.fillStyle = "#111";
     ctx.textAlign = "center";
     ctx.font = "15px Arial";
-    ctx.fillText(String(row.idx), xHash + colHashW / 2, y + rowH / 2);
-    ctx.fillText(row.qty, xQty + colQtyW / 2, y + rowH / 2);
+    ctx.fillText(String(row.idx), xHash + colHashW / 2, y + h / 2);
+    ctx.fillText(row.qty, xQty + colQtyW / 2, y + h / 2);
     ctx.textAlign = "right";
     ctx.font = "bold 15px Arial";
-    ctx.fillText(row.name, xName + colNameW - 10, y + rowH / 2);
-    y += rowH;
+    if (row.extra) {
+      ctx.fillText(row.name, xName + colNameW - 10, y + 20);
+      ctx.font = "13px Arial";
+      ctx.fillStyle = "#8A4B12";
+      let ex = "↳ " + row.extra;
+      while (ex.length > 4 && ctx.measureText(ex).width > colNameW - 20) ex = ex.slice(0, -2);
+      if (ex !== "↳ " + row.extra) ex += "…";
+      ctx.fillText(ex, xName + colNameW - 10, y + 44);
+    } else {
+      ctx.fillText(row.name, xName + colNameW - 10, y + h / 2);
+    }
+    y += h;
   });
 
   // borders
@@ -12258,9 +12300,10 @@ function drawRequestImageDataUrl(heading, sub, rows, note) {
   ctx.beginPath();
   ctx.moveTo(xHash, tableTop); ctx.lineTo(xHash, tableTop + tableH);
   ctx.moveTo(xName, tableTop); ctx.lineTo(xName, tableTop + tableH);
+  let yy = tableTop + headerRowH;
   for (let i = 0; i <= rows.length; i++) {
-    const yy = tableTop + headerRowH + i * rowH;
     ctx.moveTo(tableX, yy); ctx.lineTo(tableX + tableW, yy);
+    if (i < rows.length) yy += rowHeights[i];
   }
   ctx.stroke();
 
@@ -14995,7 +15038,7 @@ function UnitRequestsAdmin({
   function printList(items, unitName, weekOf) {
     const rows = items
       .filter((i) => (i.give ?? i.qty) > 0)
-      .map((i) => `<tr><td>☐</td><td>${escapeHtml(i.name)}</td><td style="text-align:center">${escapeHtml(`${i.give ?? i.qty} ${i.unit || ""}`)}</td></tr>`)
+      .map((i) => { const hint = productPrintHint((products || []).find((p) => p.id === i.productId), i.give ?? i.qty); return `<tr><td>☐</td><td>${escapeHtml(i.name)}${hint ? `<div style="font-size:12.5px;color:#8A4B12;margin-top:3px">↳ ${escapeHtml(hint)}</div>` : ""}</td><td style="text-align:center">${escapeHtml(`${i.give ?? i.qty} ${i.unit || ""}`)}</td></tr>`; })
       .join("");
     const html = `
       <!doctype html><html lang="he" dir="rtl"><head><meta charset="UTF-8"><title>רשימת ליקוט</title>
@@ -17244,7 +17287,7 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
     await persistCategories(next);
   }
 
-  const empty = { name: "", orderName: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, weeklyUsage: 0, category: "", supplierId: "", unitVisible: true, imageData: null };
+  const empty = { name: "", orderName: "", barcode: "", quantity: 0, threshold: 1, price: 0, unit: "יח׳", unitsPerCarton: 0, weeklyUsage: 0, category: "", supplierId: "", unitVisible: true, imageData: null, altUnit: "", altBaseQty: 1, altEqualsQty: 0, printNote: "" };
   const [form, setForm] = useState(empty);
   const [editingId, setEditingId] = useState(null);
   const [scanningBarcode, setScanningBarcode] = useState(false);
@@ -17789,6 +17832,23 @@ function ProductsAdmin({ products, persistProducts, showToast, settings, persist
         <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>יחידות בקרטון (אופציונלי)</label>
           <input type="number" placeholder="יחידות בקרטון" value={form.unitsPerCarton || ""} onChange={(e) => setForm({ ...form, unitsPerCarton: Number(e.target.value) })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+        </div>
+        <div className="p-3 rounded-2xl" style={{ background: C.paper, border: `1px dashed ${C.kraftDark}` }}>
+          <div className="text-xs font-bold mb-2" style={{ color: C.ink }}>🖨️ הערה קבועה בהדפסת בקשה מהמחסן (אופציונלי)</div>
+          <label className="text-xs block mb-1" style={{ color: C.steel }}>יחידה חלופית (אם אין את הרגילה)</label>
+          <div className="flex items-center gap-1.5 flex-wrap text-sm" style={{ color: C.ink }}>
+            <input type="number" min="1" value={form.altBaseQty || ""} placeholder="3" onChange={(e) => setForm({ ...form, altBaseQty: e.target.value === "" ? 0 : Number(e.target.value) })} className="p-2 rounded-2xl border text-center" style={{ borderColor: C.kraftDark, width: 64 }} />
+            <span>{form.unit || "יח׳"} =</span>
+            <input type="number" min="0" value={form.altEqualsQty || ""} placeholder="8" onChange={(e) => setForm({ ...form, altEqualsQty: e.target.value === "" ? 0 : Number(e.target.value) })} className="p-2 rounded-2xl border text-center" style={{ borderColor: C.kraftDark, width: 64 }} />
+            <input placeholder="שקים קטנים" value={form.altUnit || ""} onChange={(e) => setForm({ ...form, altUnit: e.target.value })} className="p-2 rounded-2xl border flex-1" style={{ borderColor: C.kraftDark, minWidth: 110 }} />
+          </div>
+          <label className="text-xs block mt-2 mb-1" style={{ color: C.steel }}>הערה חופשית</label>
+          <input placeholder="למשל: רק מותג תנובה / לבדוק תוקף" value={form.printNote || ""} onChange={(e) => setForm({ ...form, printNote: e.target.value })} className="p-2 rounded-2xl border w-full" style={{ borderColor: C.kraftDark }} />
+          {productPrintHint(form, 3) && (
+            <p className="text-xs mt-2" style={{ color: "#8A4B12" }}>
+              דוגמה בהדפסה (3 {form.unit || "יח׳"}): ↳ {productPrintHint(form, 3)}
+            </p>
+          )}
         </div>
         <div>
           <label className="text-xs font-bold block mb-1" style={{ color: C.steel }}>צריכה שבועית (למעקב הזמנות)</label>
