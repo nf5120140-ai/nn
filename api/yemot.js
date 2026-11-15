@@ -13,7 +13,25 @@
    ============================================================ */
 
 const SB_URL = process.env.SUPABASE_URL || "https://axkgksyoaysvhthbxoee.supabase.co";
-const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+// מפתחות אפשריים: זה שהוגדר ידנית, ואחריו המפתחות שהחיבור של Supabase ל-Vercel הוסיף לבד.
+const cleanKey = (v) => String(v || "").trim().replace(/^["']|["']$/g, "").replace(/\s+/g, "");
+const KEY_CANDIDATES = [...new Set([
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  ...Object.entries(process.env).filter(([k]) => /SUPABASE_(SERVICE_ROLE_KEY|SECRET_KEY)$/.test(k)).map(([, v]) => v),
+].map(cleanKey).filter(Boolean))];
+let SB_KEY = KEY_CANDIDATES[0];
+let keyChecked = false;
+/** בוחר את המפתח הראשון ש-Supabase מקבל (נבדק פעם אחת) */
+async function pickKey() {
+  if (keyChecked) return;
+  for (const k of KEY_CANDIDATES) {
+    try {
+      const r = await fetch(`${SB_URL}/rest/v1/kv_store?select=key&limit=1`, { headers: { apikey: k, Authorization: `Bearer ${k}` } });
+      if (r.ok) { SB_KEY = k; keyChecked = true; return; }
+    } catch (e) {}
+  }
+  throw new Error("no working Supabase key (" + KEY_CANDIDATES.length + " tried)");
+}
 const ORG = process.env.YEMOT_ORG_ID;
 const SECRET = process.env.YEMOT_SECRET;
 
@@ -266,6 +284,7 @@ export default async function handler(req, res) {
   if (q.key !== SECRET) return res.status(200).send(end("אין הרשאה"));
 
   try {
+    await pickKey();
     res.status(200).send(await handle(q));
   } catch (e) {
     console.error(e);
