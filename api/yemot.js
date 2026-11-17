@@ -168,9 +168,10 @@ async function transcribe(path) {
     audio = buf.toString("base64");
   } catch (e) { return { text: "", err: "הורדה מימות נכשלה: " + e.message }; }
   // מודל: מה שהוגדר ב-GEMINI_MODEL, אחרת "flash-latest". אם גוגל אומרת שהמודל הוחלף – עוברים למודל שהיא מציעה
-  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest"].filter(Boolean);
+  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest", "gemini-flash-lite-latest"].filter(Boolean);
   let lastErr = "";
-  for (let i = 0; i < models.length && i < 4; i++) {
+  const busyRetried = new Set();
+  for (let i = 0; i < models.length && i < 6; i++) {
     try {
       const g = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${models[i]}:generateContent`, {
         method: "POST",
@@ -186,6 +187,13 @@ async function transcribe(path) {
         const body = await g.text();
         let msg = body; try { msg = JSON.parse(body).error.message; } catch (e) {}
         lastErr = `ג'מיני נכשל (${g.status}, ${models[i]}): ${String(msg).slice(0, 120)}`;
+        // עומס זמני – מחכים רגע ומנסים שוב את אותו מודל פעם אחת, ואחר כך עוברים למודל הבא
+        if ([429, 500, 503].includes(g.status) && !busyRetried.has(models[i])) {
+          busyRetried.add(models[i]);
+          await new Promise((r) => setTimeout(r, 1500));
+          i--;
+          continue;
+        }
         const suggested = String(msg).match(/models\/([\w.\-]+)/g);
         const next = suggested && suggested.map((m) => m.replace("models/", "").replace(/[.\-]+$/, "")).find((m) => !models.includes(m));
         if (next) models.push(next);
