@@ -167,26 +167,36 @@ async function transcribe(path) {
     if (type.includes("mpeg") || type.includes("mp3")) mime = "audio/mp3";
     audio = buf.toString("base64");
   } catch (e) { return { text: "", err: "הורדה מימות נכשלה: " + e.message }; }
-  try {
-    const g = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY },
-      body: JSON.stringify({
-        contents: [{ parts: [
-          { text: "זו הקלטה בעברית של בחור בישיבה שמדווח על תקלה בחדר. כתוב בעברית רק את מה שנאמר, במשפט או שניים, בלי הקדמות ובלי הסברים. אם לא נאמר כלום כתוב ריק." },
-          { inline_data: { mime_type: mime, data: audio } },
-        ] }],
-      }),
-    });
-    if (!g.ok) {
-      const body = await g.text();
-      let msg = body; try { msg = JSON.parse(body).error.message; } catch (e) {}
-      return { text: "", err: `ג'מיני נכשל (${g.status}): ${String(msg).slice(0, 120)}` };
-    }
-    const j = await g.json();
-    const t = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join(" ").replace(/\s+/g, " ").trim();
-    return t === "ריק" || !t ? { text: "", err: "ג'מיני לא זיהה דיבור בהקלטה" } : { text: t, err: "" };
-  } catch (e) { return { text: "", err: "ג'מיני נכשל: " + e.message }; }
+  // מודל: מה שהוגדר ב-GEMINI_MODEL, אחרת "flash-latest". אם גוגל אומרת שהמודל הוחלף – עוברים למודל שהיא מציעה
+  const models = [process.env.GEMINI_MODEL, "gemini-flash-latest"].filter(Boolean);
+  let lastErr = "";
+  for (let i = 0; i < models.length && i < 4; i++) {
+    try {
+      const g = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${models[i]}:generateContent`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY },
+        body: JSON.stringify({
+          contents: [{ parts: [
+            { text: "זו הקלטה בעברית של בחור בישיבה שמדווח על תקלה בחדר. כתוב בעברית רק את מה שנאמר, במשפט או שניים, בלי הקדמות ובלי הסברים. אם לא נאמר כלום כתוב ריק." },
+            { inline_data: { mime_type: mime, data: audio } },
+          ] }],
+        }),
+      });
+      if (!g.ok) {
+        const body = await g.text();
+        let msg = body; try { msg = JSON.parse(body).error.message; } catch (e) {}
+        lastErr = `ג'מיני נכשל (${g.status}, ${models[i]}): ${String(msg).slice(0, 120)}`;
+        const suggested = String(msg).match(/models\/([\w.\-]+)/g);
+        const next = suggested && suggested.map((m) => m.replace("models/", "").replace(/[.\-]+$/, "")).find((m) => !models.includes(m));
+        if (next) models.push(next);
+        continue;
+      }
+      const j = await g.json();
+      const t = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join(" ").replace(/\s+/g, " ").trim();
+      return t === "ריק" || !t ? { text: "", err: "ג'מיני לא זיהה דיבור בהקלטה" } : { text: t, err: "" };
+    } catch (e) { lastErr = "ג'מיני נכשל: " + e.message; }
+  }
+  return { text: "", err: lastErr };
 }
 
 async function report(q, { phone, staff, callerName, profiles }) {
