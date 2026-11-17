@@ -159,7 +159,7 @@ async function logIvr(entry) {
 const extPath = (q) => "/" + String(q.ApiExtension || "").replace(/^\/+|\/+$/g, "");
 const recFile = (q, prefix, idx) => prefix + String(q.ApiCallId || genId()).replace(/[^a-zA-Z0-9]/g, "").slice(-12) + (idx > 0 ? "x" + idx : "");
 // ימות מחזירה את נתיב הקובץ שנשמר; אם לא – בונים אותו לבד
-const recPathOf = (q, val, file) => (/^\/?[\w/]+\.(wav|mp3)$/i.test(val) ? "/" + val.replace(/^\/+/, "") : `${extPath(q)}/${file}.wav`);
+const recPathOf = (q, val, file) => (/^\/?[\w/]+\.(wav|mp3)$/i.test(val) ? "/" + val.replace(/^\/+/, "") : `${extPath(q).replace(/\/+$/, "")}/${file}.wav`);
 const noRec = (v) => !v || /^None$/i.test(v);
 
 async function handle(q) {
@@ -171,7 +171,13 @@ async function handle(q) {
   const roomMgr = known ? (auth || []).find((a) => a && a.active !== false && normPhone(a.phone) === phone) : null;
   const callerName = (me && me.name) || (staff && staff.display_name) || (roomMgr && roomMgr.name) || "";
 
-  // 2 פתוח לכולם אבל דורש קוד; מוקרא רק לצוות ולאחראי חדרים
+  // אחראי חדרים רשום (לפי מספר הטלפון) – ישר לתפריט החדרים, בלי התפריט הראשי
+  if (roomMgr) {
+    if (q.hangup === "yes") return "noop=hangup";
+    return roomsMenu(q, { phone, students, profiles, auth, staff, roomMgr, callerName });
+  }
+
+  // 2 פתוח לכולם אבל דורש קוד; מוקרא רק לצוות
   const allowed = staff ? "1234" : "123";
   const menu = lastVal(q, "Menu");
   if (!menu.val || !allowed.includes(menu.val)) {
@@ -179,15 +185,14 @@ async function handle(q) {
     if (menu.idx >= 2) return end("לא התקבלה בחירה", "להתראות");
     const hello = menu.idx < 0 ? (callerName ? `שלום ${callerName}` : "שלום") : "";
     return ask(
-      say(hello, "לדיווח על תקלה הקישו 1", (staff || roomMgr) ? "לאחראי חדרים הקישו 2" : "", "לבדיקת סטטוס תקלה הקישו 3",
-        staff ? "לשמיעת התקלות הפתוחות הקישו 4" : ""),
+      say(hello, "לדיווח תקלה 1", staff ? "לחדרים 2" : "", "לסטטוס תקלה 3", staff ? "לתקלות הפתוחות 4" : ""),
       menu.nextName, { allowed }
     );
   }
 
   if (menu.val === "1") return report(q, { phone, staff, roomMgr, callerName, profiles });
   if (q.hangup === "yes") return "noop=hangup";
-  if (menu.val === "2") return roomsMenu(q, { phone, students, profiles, auth });
+  if (menu.val === "2") return roomsMenu(q, { phone, students, profiles, auth, staff, roomMgr, callerName });
   if (menu.val === "3") return status(phone);
   return playOpen();
 }
@@ -390,7 +395,7 @@ function roomSpace(rooms, students) {
 }
 const bedsTxt = (n) => (n === 1 ? "מיטה פנויה אחת" : `${n} מיטות פנויות`);
 
-async function roomsMenu(q, { phone, students, profiles, auth }) {
+async function roomsMenu(q, { phone, students, profiles, auth, staff, roomMgr, callerName }) {
   const hung = q.hangup === "yes";
   const people = (auth || []).filter((a) => a && a.active !== false && a.code);
   if (!people.length) return end("עדיין לא הוגדרו אחראי חדרים", "להתראות");
@@ -407,12 +412,16 @@ async function roomsMenu(q, { phone, students, profiles, auth }) {
     const recentBad = log.filter((e) => e && e.action === "badcode" && (e.callerPhone || "") === phone && Date.now() - e.at < 30 * 60000).length;
     if (recentBad >= 6) return end("יותר מדי ניסיונות שגויים", "נסו שוב בעוד חצי שעה", "להתראות");
     if (c.idx >= 2) return end("הקוד שגוי", "להתראות");
-    return ask(say(c.val ? "הקוד שגוי" : "", "הקישו את הקוד האישי ולאחריו סולמית"), c.nextName, { max: 6, min: 4, timeout: 15 });
+    const hi = !c.val && roomMgr ? `שלום ${roomMgr.name || ""}` : "";
+    return ask(say(hi, c.val ? "הקוד שגוי" : "", "הקישו קוד וסולמית"), c.nextName, { max: 6, min: 4, timeout: 15 });
   }
 
   const rooms = (await loadKey(KEYS.dormRooms, [])) || [];
   const m = lastVal(q, "RMenu");
   if (m.val === "2") return assign(q, { phone, students, profiles, rooms, who });
+  // אחראי חדרים מדווח תקלה / שומע תקלות פתוחות מתוך תפריט החדרים
+  if (m.val === "3") return report(q, { phone, staff, roomMgr: roomMgr || who, callerName: callerName || who.name, profiles });
+  if (m.val === "4" && staff) return hung ? "noop=hangup" : playOpen();
   if (hung) return "noop=hangup";
   if (m.idx >= 5) return end("להתראות");
   if (m.val === "1") {
@@ -423,9 +432,10 @@ async function roomsMenu(q, { phone, students, profiles, auth }) {
       ...free.slice(0, 6).map((r) => `חדר ${r.num} ${r.used === 0 ? "ריק" : ""} ${bedsTxt(r.left)}`),
       free.length > 6 ? `ועוד ${free.length - 6} חדרים` : "",
     ];
-    return ask(say(...lines, "לשיבוץ בחור הקישו 2", "לשמיעה חוזרת הקישו 1"), m.nextName, { allowed: "12", timeout: 15 });
+    return ask(say(...lines, "לשיבוץ 2", "לשמיעה חוזרת 1"), m.nextName, { allowed: "12", timeout: 15 });
   }
-  return ask(say(m.idx < 0 ? `שלום ${who.name || ""}` : "", "לשמיעת החדרים הפנויים הקישו 1", "לשיבוץ בחור במיטה פנויה הקישו 2"), m.nextName, { allowed: "12" });
+  const keys = staff ? "1234" : "123";
+  return ask(say("חדרים פנויים 1", "שיבוץ בחור 2", "דיווח תקלה 3", staff ? "תקלות פתוחות 4" : ""), m.nextName, { allowed: keys });
 }
 
 /** שיבוץ בחור: חדר ← טלפון הבחור (אם הוא כבר ברשימה) או הקלטת השם ← אישור ← שמירה */
@@ -440,7 +450,7 @@ async function assign(q, { phone, students, profiles, rooms, who }) {
     if (hung) return "noop=hangup";
     if (r.idx >= 2) return end("לא נבחר חדר עם מיטה פנויה", "להתראות");
     const why = !r.val ? "" : !rs ? `חדר ${r.val} לא קיים` : `חדר ${rs.num} מלא`;
-    return ask(say(why, "הקישו את מספר החדר ולאחריו סולמית"), r.nextName, { max: 4, timeout: 15 });
+    return ask(say(why, "מספר חדר וסולמית"), r.nextName, { max: 4, timeout: 15 });
   }
   const room = rs.num;
 
@@ -450,7 +460,7 @@ async function assign(q, { phone, students, profiles, rooms, who }) {
   if (!p.val || (sPhone !== "0" && sPhone.length < 9 && p.idx < 1)) {
     if (hung) return "noop=hangup";
     return ask(say(p.val ? "המספר לא תקין" : `חדר ${room} ${bedsTxt(rs.left)}`,
-      "הקישו את מספר הטלפון של הבחור ולאחריו סולמית", "אם אין מספר הקישו אפס וסולמית"), p.nextName, { max: 10, timeout: 20 });
+      "טלפון הבחור וסולמית", "אין טלפון 0 וסולמית"), p.nextName, { max: 10, timeout: 20 });
   }
   if (sPhone.length < 9) sPhone = "";
 
@@ -463,7 +473,7 @@ async function assign(q, { phone, students, profiles, rooms, who }) {
     // שם הבחור בהקלטה, ותמלול בג'מיני
     const n = lastVal(q, "AName");
     const file = recFile(q, "N", Math.max(0, n.idx));
-    const recordName = (pre) => `read=${say(pre, "לאחר הצליל אמרו את השם המלא של הבחור ובסיום הקישו סולמית")}=${n.idx < 0 ? "AName" : `AName_${n.idx + 1}`},no,record,${extPath(q)},${recFile(q, "N", n.idx + 1)},no,yes,no,1,20`;
+    const recordName = (pre) => `read=${say(pre, "אחרי הצליל אמרו את שם הבחור וסולמית")}=${n.idx < 0 ? "AName" : `AName_${n.idx + 1}`},no,record,${extPath(q)},${recFile(q, "N", n.idx + 1)},no,yes,no,1,20`;
     if (noRec(n.val)) {
       if (hung) return "noop=hangup";
       if (n.idx >= 3) return end("לא התקבלה הקלטה", "להתראות");
@@ -490,7 +500,7 @@ async function assign(q, { phone, students, profiles, rooms, who }) {
           if (n.idx >= 3) return end("השיבוץ בוטל", "להתראות");
           return recordName("");
         }
-        return ask(say("השם שנקלט", name, `לשיבוץ בחדר ${room} הקישו 1`, "להקלטה מחדש הקישו 2"), okName, { allowed: "12" });
+        return ask(say(name, `לשיבוץ בחדר ${room} 1`, "להקלטה מחדש 2"), okName, { allowed: "12" });
       }
     }
   }
@@ -502,8 +512,8 @@ async function assign(q, { phone, students, profiles, rooms, who }) {
     if (cv !== "1") {
       if (hung) return "noop=hangup";
       if (cv === "2") return end("השיבוץ בוטל", "להתראות");
-      const where = target.room ? `רשום כעת בחדר ${target.room}` : "רשום כעת ללא חדר";
-      return ask(say(`נמצא ${target.name}`, where, `${target.room ? "להעברה" : "לשיבוץ"} לחדר ${room} הקישו 1`, "לביטול הקישו 2"), confName, { allowed: "12" });
+      const where = target.room ? `בחדר ${target.room}` : "ללא חדר";
+      return ask(say(target.name, where, `${target.room ? "להעברה" : "לשיבוץ"} לחדר ${room} 1`, "ביטול 2"), confName, { allowed: "12" });
     }
   }
   if (hung) return "noop=hangup";
