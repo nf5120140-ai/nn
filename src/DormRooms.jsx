@@ -7,13 +7,31 @@ import * as XLSX from "xlsx";
      dorm-rooms     - [{ id, num, wing, beds, notes, updatedAt }]
      dorm-students  - [{ id, name, room, shiur, phone, notes, updatedAt }]
      dorm-deletes   - [id, ...]  (רשימת מחיקות, כדי שפריט שנמחק לא "יחזור" ממכשיר אחר)
+     dorm-ivr-auth  - [{ id, name, phone, code, active }]  אחראי חדרים בקו הטלפוני (קוד אישי)
+     dorm-ivr-log   - [{ id, at, action, by, room, fromRoom, studentId, studentName, callerPhone }]  יומן פעולות מהטלפון
+   בחור ששובץ/הועבר בטלפון מקבל שדה ivr: { by, at, action, fromRoom, nameCheck, seen } ומסומן ☎️ עד שמסמנים "נבדק".
    ============================================================ */
 
 export const DORM_KEYS = {
   rooms: "dorm-rooms",
   students: "dorm-students",
   deletes: "dorm-deletes",
+  ivrAuth: "dorm-ivr-auth",
+  ivrLog: "dorm-ivr-log",
 };
+
+const fmtWhen = (ts) => {
+  if (!ts) return "";
+  const d = new Date(ts);
+  return d.toLocaleDateString("he-IL", { day: "numeric", month: "numeric" }) + " " + d.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+};
+const IVR_ACTION = { add: "נוסף ושובץ", assign: "שובץ", move: "הועבר" };
+export const ivrText = (v) => {
+  if (!v) return "";
+  const what = v.action === "move" ? `הועבר${v.fromRoom ? ` מחדר ${v.fromRoom}` : ""}` : (IVR_ACTION[v.action] || "שובץ");
+  return `${what} בטלפון ע"י ${v.by || "אחראי חדרים"} · ${fmtWhen(v.at)}`;
+};
+const ivrPending = (s) => !!(s && s.ivr && !s.ivr.seen);
 
 const uid = () =>
   (typeof crypto !== "undefined" && crypto.randomUUID)
@@ -298,6 +316,9 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
   const [busy, setBusy] = useState(false);
   const [editStudent, setEditStudent] = useState(null);
   const [importData, setImportData] = useState(null);
+  const [ivrLog, setIvrLog] = useState([]);
+  const [ivrAuth, setIvrAuth] = useState([]);
+  const isAdmin = currentUser?.role === "manager";
 
   const toast = (m) => (showToast ? showToast(m) : alert(m));
 
@@ -315,6 +336,11 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
     } catch (e) {
       console.error("dorm load failed", e);
     }
+    try {
+      const [lg, au] = await Promise.all([loadKey(DORM_KEYS.ivrLog, []), loadKey(DORM_KEYS.ivrAuth, [])]);
+      setIvrLog(Array.isArray(lg) ? lg.filter(Boolean) : []);
+      setIvrAuth(Array.isArray(au) ? au.filter(Boolean) : []);
+    } catch (e) { console.error("dorm ivr load failed", e); }
     setLoaded(true);
   }
   useEffect(() => { loadAll(); }, [reloadSignal]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -479,6 +505,23 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
     });
   }
 
+  function markSeen(ids) {
+    const set = new Set(ids);
+    if (!set.size) return Promise.resolve(false);
+    return run(async () => {
+      await mutateStudents((list) => list.map((s) => (set.has(s.id) && s.ivr ? { ...s, ivr: { ...s.ivr, seen: true, seenBy: currentUser?.name || currentUser?.display_name || "", seenAt: Date.now() } } : s)));
+      toast(set.size === 1 ? "סומן כנבדק" : `${set.size} סומנו כנבדקו`);
+    });
+  }
+
+  function saveIvrAuth(next) {
+    return run(async () => {
+      await saveKey(DORM_KEYS.ivrAuth, next);
+      setIvrAuth(next);
+      toast("נשמר");
+    });
+  }
+
   function deleteStudent(s) {
     if (!window.confirm(`למחוק את ${s.name}?`)) return;
     run(async () => {
@@ -590,11 +633,11 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
   function exportExcel() {
     const sRows = [...students]
       .sort((a, b) => (Number(a.room) || 99999) - (Number(b.room) || 99999) || a.name.localeCompare(b.name, "he"))
-      .map((s) => ({ "שם הבחור": s.name, "חדר": s.room || "", "אגף / קומה": s.room ? wingOf(s.room) : "", "שיעור / שנתון": s.shiur || "", "טלפון": s.phone || "", "הערות": s.notes || "", "חתן": s.chatan ? "חתן" : "" }));
+      .map((s) => ({ "שם הבחור": s.name, "חדר": s.room || "", "אגף / קומה": s.room ? wingOf(s.room) : "", "שיעור / שנתון": s.shiur || "", "טלפון": s.phone || "", "הערות": s.notes || "", "חתן": s.chatan ? "חתן" : "", "שובץ בטלפון": s.ivr ? ivrText(s.ivr) : "" }));
     const rRows = sortedRooms.map((r) => { const i = roomInfo(r); return { "חדר": r.num, "אגף / קומה": r.wing || defaultWing(r.num), "מיטות": i.beds, "תפוסים": i.taken, "פנויים": i.free, "הערות": r.notes || "" }; });
     const wb = XLSX.utils.book_new();
     const s1 = XLSX.utils.json_to_sheet(sRows.length ? sRows : [{ "שם הבחור": "", "חדר": "" }]);
-    s1["!cols"] = [{ wch: 24 }, { wch: 8 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 30 }, { wch: 8 }];
+    s1["!cols"] = [{ wch: 24 }, { wch: 8 }, { wch: 18 }, { wch: 16 }, { wch: 14 }, { wch: 30 }, { wch: 8 }, { wch: 34 }];
     const s2 = XLSX.utils.json_to_sheet(rRows.length ? rRows : [{ "חדר": "", "מיטות": "" }]);
     s2["!cols"] = [{ wch: 8 }, { wch: 18 }, { wch: 8 }, { wch: 8 }, { wch: 8 }, { wch: 20 }];
     if (!wb.Workbook) wb.Workbook = {};
@@ -680,6 +723,7 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
     ["map", "מפת חדרים"],
     ["list", "רשימת בחורים"],
     ["rooms", "חדרים וקבצים"],
+    ["phone", `☎️ טלפון${students.some(ivrPending) ? ` (${students.filter(ivrPending).length})` : ""}`],
   ];
 
   return (
@@ -710,6 +754,13 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
         </button>
       )}
 
+      {students.some(ivrPending) && view !== "phone" && (
+        <button onClick={() => setView("phone")} className="w-full p-3 mb-3 text-sm font-bold text-right"
+          style={{ ...card, background: "#E8F1FB", border: "1.5px solid #A9C8EC", color: "#1F4E8C" }}>
+          ☎️ {students.filter(ivrPending).length} שיבוצים חדשים מהקו הטלפוני ממתינים לבדיקה - לחץ לצפייה
+        </button>
+      )}
+
       {view === "home" && (
         <HomeView {...{ C, card, input, btn, stats, wings, sortedRooms, roomInfo, freeRooms, roomLabel, students, wingOf, addStudent, updateStudent, deleteStudent, setEditStudent, canEdit, busy, roomByNum, duplicates }} />
       )}
@@ -719,6 +770,9 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
       {view === "list" && (
         <ListView {...{ C, card, input, btn, students, sortedRooms, roomByNum, wingOf, roomInfo, wings, setEditStudent, updateStudent, canEdit, dupIds }} />
       )}
+      {view === "phone" && (
+        <PhoneView {...{ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, canEdit, busy, markSeen, saveIvrAuth, setEditStudent, toast }} />
+      )}
       {view === "rooms" && (
         <RoomsView {...{ C, card, input, btn, sortedRooms, roomInfo, saveRoom, deleteRoom, canEdit, handleImportFile, exportExcel, printByRooms, printMap, busy }} />
       )}
@@ -727,6 +781,7 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
         <StudentDialog key={editStudent.id} {...{ C, card, input, btn, student: editStudent, sortedRooms, roomInfo, roomLabel, canEdit, wingOf,
           others: students.filter((x) => x.id !== editStudent.id && nameKey(x.name) === nameKey(editStudent.name)),
           onOpenOther: (o) => setEditStudent(o),
+          onMarkSeen: async () => { if (await markSeen([editStudent.id])) setEditStudent(null); },
           onClose: () => setEditStudent(null),
           onSave: async (patch) => { if (await updateStudent(editStudent.id, patch)) setEditStudent(null); },
           onDelete: () => { const s = editStudent; setEditStudent(null); deleteStudent(s); } }} />
@@ -863,7 +918,7 @@ function HomeView({ C, card, input, btn, stats, wings, sortedRooms, roomInfo, fr
               {results.map((s) => (
                 <button key={s.id} onClick={() => setEditStudent(s)} className="flex items-center justify-between px-3 py-2 text-sm text-right"
                   style={{ background: C.paper, borderRadius: 12 }}>
-                  <span className="font-bold">{s.name}{s.chatan && <ChatanBadge />}</span>
+                  <span className="font-bold">{s.name}{s.chatan && <ChatanBadge />}<PhoneBadge s={s} /></span>
                   <span style={{ color: C.steel }}>{s.room ? `חדר ${s.room} · ${wingOf(s.room)}` : "ללא חדר"}</span>
                 </button>
               ))}
@@ -917,7 +972,7 @@ function HomeView({ C, card, input, btn, stats, wings, sortedRooms, roomInfo, fr
           <div className="flex flex-wrap gap-1.5">
             {unassigned.map((s) => (
               <button key={s.id} onClick={() => setEditStudent(s)} className="px-3 py-1 text-xs font-bold"
-                style={{ borderRadius: 999, background: s.chatan ? "#FFE58F" : "#FCE4D6", color: "#8A4B12" }}>{s.name}{s.chatan ? " 💍" : ""}</button>
+                style={{ borderRadius: 999, background: s.chatan ? "#FFE58F" : "#FCE4D6", color: "#8A4B12" }}>{s.name}{s.chatan ? " 💍" : ""}{ivrPending(s) ? " ☎️" : ""}</button>
             ))}
           </div>
         </div>
@@ -973,11 +1028,11 @@ function MapView({ C, card, btn, wings, sortedRooms, byRoom, roomInfo, addStuden
                             <td className="text-center font-bold" style={{ width: 22, background: over ? "#F8C8C8" : C.paper, color: C.steel, borderLeft: `1px solid ${C.kraftDark}` }}>
                               {idx < Math.max(i.beds, list.length) ? idx + 1 : ""}
                             </td>
-                            <td className="px-1.5 py-1" style={s && dupIds.has(s.id) ? { background: "#FDECEC", boxShadow: "inset 0 0 0 1.5px #E74C3C" } : s && s.chatan ? { background: "#FFE58F" } : undefined}>
+                            <td className="px-1.5 py-1" style={s && dupIds.has(s.id) ? { background: "#FDECEC", boxShadow: "inset 0 0 0 1.5px #E74C3C" } : s && s.chatan ? { background: "#FFE58F" } : ivrPending(s) ? { background: "#E8F1FB" } : undefined}>
                               {s ? (
                                 <button onClick={() => setEditStudent(s)} className="w-full text-right" title={dupIds.has(s.id) ? "רשום יותר מפעם אחת - לחץ לפרטים" : undefined}
                                   style={{ color: dupIds.has(s.id) ? "#C0392B" : C.ink, fontWeight: dupIds.has(s.id) || s.chatan ? 800 : undefined }}>
-                                  {dupIds.has(s.id) && <span title="רשום פעמיים" style={{ color: "#C0392B" }}>⚠️ </span>}{s.name}{s.chatan && <span title="חתן"> 💍</span>}
+                                  {dupIds.has(s.id) && <span title="רשום פעמיים" style={{ color: "#C0392B" }}>⚠️ </span>}{s.name}{s.chatan && <span title="חתן"> 💍</span>}<PhoneBadge s={s} />
                                 </button>
                               ) : isEmptyBed && canEdit ? (
                                 adding === r.num && newName !== null ? (
@@ -1017,6 +1072,7 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
   const [onlyNoRoom, setOnlyNoRoom] = useState(false);
   const [onlyChatan, setOnlyChatan] = useState(false);
   const [onlyDup, setOnlyDup] = useState(false);
+  const [onlyPhone, setOnlyPhone] = useState(false);
 
   const rows = useMemo(() => {
     const t = q.trim();
@@ -1026,8 +1082,9 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
       .filter((s) => !onlyNoRoom || !s.room || !roomByNum.has(Number(s.room)))
       .filter((s) => !onlyChatan || s.chatan)
       .filter((s) => !onlyDup || dupIds.has(s.id))
+      .filter((s) => !onlyPhone || !!s.ivr)
       .sort((a, b) => (onlyDup ? a.name.localeCompare(b.name, "he") : 0) || (Number(a.room) || 99999) - (Number(b.room) || 99999) || a.name.localeCompare(b.name, "he"));
-  }, [q, wing, onlyNoRoom, onlyChatan, onlyDup, students, roomByNum, dupIds]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [q, wing, onlyNoRoom, onlyChatan, onlyDup, onlyPhone, students, roomByNum, dupIds]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="flex flex-col gap-3">
@@ -1043,6 +1100,11 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
         <label className="flex items-center gap-2 text-sm px-2">
           <input type="checkbox" checked={onlyChatan} onChange={(e) => setOnlyChatan(e.target.checked)} /> רק חתנים 💍
         </label>
+        {students.some((s) => s.ivr) && (
+          <label className="flex items-center gap-2 text-sm px-2">
+            <input type="checkbox" checked={onlyPhone} onChange={(e) => setOnlyPhone(e.target.checked)} /> רק ששובצו בטלפון ☎️
+          </label>
+        )}
         {dupIds.size > 0 && (
           <label className="flex items-center gap-2 text-sm px-2 font-bold" style={{ color: "#C0392B" }}>
             <input type="checkbox" checked={onlyDup} onChange={(e) => setOnlyDup(e.target.checked)} /> רק רשומים כפול ⚠️
@@ -1063,10 +1125,11 @@ function ListView({ C, card, input, btn, students, sortedRooms, roomByNum, wingO
           </thead>
           <tbody>
             {rows.map((s) => (
-              <tr key={s.id} style={{ borderTop: `1px solid ${C.kraftDark}`, background: dupIds.has(s.id) ? "#FDECEC" : s.chatan ? "#FFF6D1" : undefined }}>
+              <tr key={s.id} style={{ borderTop: `1px solid ${C.kraftDark}`, background: dupIds.has(s.id) ? "#FDECEC" : s.chatan ? "#FFF6D1" : ivrPending(s) ? "#E8F1FB" : undefined }}>
                 <td className="px-3 py-1.5">
                   <button onClick={() => setEditStudent(s)} className="font-bold text-right" title={dupIds.has(s.id) ? "רשום יותר מפעם אחת - לחץ לפרטים" : undefined} style={{ color: dupIds.has(s.id) ? "#C0392B" : C.ink }}>{dupIds.has(s.id) && <span title="רשום פעמיים">⚠️ </span>}{s.name}</button>
                   {s.chatan && <ChatanBadge />}
+                  <PhoneBadge s={s} />
                   {canEdit && (
                     <button onClick={() => updateStudent(s.id, { chatan: !s.chatan })} title={s.chatan ? "בטל סימון חתן" : "סמן כחתן"}
                       className="mr-1 px-1.5 text-xs" style={{ opacity: s.chatan ? 1 : 0.35 }}>💍</button>
@@ -1184,7 +1247,7 @@ function RoomsView({ C, card, input, btn, sortedRooms, roomInfo, saveRoom, delet
   );
 }
 
-function StudentDialog({ C, card, input, btn, student, sortedRooms, roomInfo, canEdit, onClose, onSave, onDelete, others = [], onOpenOther, wingOf }) {
+function StudentDialog({ C, card, input, btn, student, sortedRooms, roomInfo, canEdit, onClose, onSave, onDelete, others = [], onOpenOther, wingOf, onMarkSeen }) {
   const [f, setF] = useState({
     name: student.name || "",
     room: student.room == null ? "" : String(student.room),
@@ -1210,6 +1273,15 @@ function StudentDialog({ C, card, input, btn, student, sortedRooms, roomInfo, ca
             ))}
           </div>
           <div className="text-xs mt-2">מוחקים את הרישום המיותר, או משנים את השם אם זה בחור אחר.</div>
+        </div>
+      )}
+      {student.ivr && (
+        <div className="p-3 mb-3 text-sm" style={{ background: "#E8F1FB", border: "1.5px solid #A9C8EC", borderRadius: 12, color: "#1F4E8C" }}>
+          <div className="font-bold">☎️ {ivrText(student.ivr)}</div>
+          {student.ivr.action === "add" && !student.ivr.seen && <div className="text-xs mt-1">השם נקלט מהקלטה קולית - כדאי לבדוק את האיות ולתקן אם צריך.</div>}
+          {student.ivr.seen
+            ? <div className="text-xs mt-1">✓ נבדק{student.ivr.seenBy ? ` ע"י ${student.ivr.seenBy}` : ""}{student.ivr.seenAt ? ` · ${fmtWhen(student.ivr.seenAt)}` : ""}</div>
+            : canEdit && onMarkSeen && <button className="mt-2 px-3 py-1.5 text-xs font-bold" style={btn(true)} onClick={onMarkSeen}>✓ סמן כנבדק</button>}
         </div>
       )}
       <div className="flex flex-col gap-2">
@@ -1256,6 +1328,186 @@ function StudentDialog({ C, card, input, btn, student, sortedRooms, roomInfo, ca
         {canEdit && <button className="px-4 py-2.5 text-sm font-bold" style={{ ...btn(false), color: "#9C0006" }} onClick={onDelete}>מחיקה</button>}
       </div>
     </Modal>
+  );
+}
+
+function PhoneBadge({ s }) {
+  if (!ivrPending(s)) return null;
+  return (
+    <span title={ivrText(s.ivr)} className="mr-1.5 px-1.5 py-0.5 text-[11px] font-black align-middle"
+      style={{ borderRadius: 999, background: "#D6E6F8", color: "#1F4E8C", border: "1px solid #A9C8EC", whiteSpace: "nowrap" }}>
+      ☎️{s.ivr.action === "add" ? " לבדיקה" : ""}
+    </span>
+  );
+}
+
+const randomCode = (taken) => {
+  for (let i = 0; i < 50; i++) {
+    const c = String(Math.floor(1000 + Math.random() * 9000));
+    if (!taken.has(c) && !/^(\d)\1+$/.test(c) && !"0123456789".includes(c) && !"9876543210".includes(c)) return c;
+  }
+  return String(Math.floor(100000 + Math.random() * 900000));
+};
+
+function PhoneView({ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, canEdit, busy, markSeen, saveIvrAuth, setEditStudent, toast }) {
+  const pending = students.filter(ivrPending).sort((a, b) => (b.ivr.at || 0) - (a.ivr.at || 0));
+  const [edit, setEdit] = useState(null);
+  const [showCodes, setShowCodes] = useState(false);
+  const [logLimit, setLogLimit] = useState(40);
+  const byId = useMemo(() => new Map(students.map((s) => [s.id, s])), [students]);
+  const log = useMemo(() => [...ivrLog].sort((a, b) => (b.at || 0) - (a.at || 0)), [ivrLog]);
+
+  function saveEdit() {
+    const name = cleanName(edit.name);
+    const code = String(edit.code || "").replace(/\D/g, "");
+    const phone = String(edit.phone || "").replace(/[^\d+]/g, "");
+    if (!name) { toast("יש לרשום שם"); return; }
+    if (code.length < 4 || code.length > 6) { toast("הקוד צריך להיות 4 עד 6 ספרות"); return; }
+    if (ivrAuth.some((a) => a.id !== edit.id && String(a.code) === code)) { toast("הקוד הזה כבר שייך למישהו אחר - בחר קוד אחר"); return; }
+    const row = { id: edit.id || uid(), name, phone, code, active: edit.active !== false, updatedAt: Date.now() };
+    const next = edit.id ? ivrAuth.map((a) => (a.id === edit.id ? { ...a, ...row } : a)) : [...ivrAuth, { ...row, createdAt: Date.now() }];
+    saveIvrAuth(next).then((ok) => ok && setEdit(null));
+  }
+
+  const logLine = (e) => {
+    if (e.action === "badcode") return { icon: "🔒", text: `קוד שגוי${e.callerPhone ? ` מהמספר ${e.callerPhone}` : " ממספר חסוי"}`, warn: true };
+    const what = e.action === "move" ? `הועבר מחדר ${e.fromRoom} לחדר ${e.room}` : e.action === "add" ? `נוסף חדש ושובץ בחדר ${e.room}` : `שובץ בחדר ${e.room}`;
+    return { icon: "🛏️", text: `${e.studentName || "בחור"} ${what}`, by: e.by };
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="p-4" style={{ ...card, border: pending.length ? "1.5px solid #A9C8EC" : card.border }}>
+        <div className="flex items-center justify-between mb-2">
+          <div className="wh-display font-black">☎️ שיבוצים מהטלפון לבדיקה ({pending.length})</div>
+          {canEdit && pending.length > 1 && (
+            <button className="px-3 py-1.5 text-xs font-bold" style={btn(false)} disabled={busy} onClick={() => markSeen(pending.map((s) => s.id))}>✓ סמן הכל כנבדק</button>
+          )}
+        </div>
+        {!pending.length ? (
+          <div className="text-sm" style={{ color: C.steel }}>אין שיבוצים חדשים שממתינים לבדיקה.</div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {pending.map((s) => (
+              <div key={s.id} className="flex flex-wrap items-center gap-2 px-3 py-2 text-sm" style={{ background: C.paper, borderRadius: 12 }}>
+                <button onClick={() => setEditStudent(s)} className="font-bold text-right" style={{ color: C.ink }}>{s.name}</button>
+                {s.ivr.action === "add" && <span className="text-[11px] font-bold px-1.5 py-0.5" style={{ borderRadius: 999, background: "#FFF1C2", color: "#7A5A00" }}>לבדוק איות</span>}
+                <span className="text-xs" style={{ color: C.steel }}>{s.room ? `חדר ${s.room}` : "ללא חדר"} · {ivrText(s.ivr)}</span>
+                <span className="mr-auto flex gap-1">
+                  <button className="px-2.5 py-1 text-xs font-bold" style={btn(false)} onClick={() => setEditStudent(s)}>פתח / תקן</button>
+                  {canEdit && <button className="px-2.5 py-1 text-xs font-bold" style={btn(true)} disabled={busy} onClick={() => markSeen([s.id])}>✓ נבדק</button>}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="p-4" style={card}>
+        <div className="wh-display font-black mb-2">📒 יומן פעולות מהקו הטלפוני</div>
+        {!log.length ? (
+          <div className="text-sm" style={{ color: C.steel }}>עדיין לא בוצעו פעולות מהטלפון.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm" style={{ borderCollapse: "collapse", minWidth: 420 }}>
+              <thead><tr style={{ color: C.steel }}>
+                <th className="text-right py-1 px-1">מתי</th><th className="text-right px-1">פעולה</th><th className="text-right px-1">ע"י</th>
+              </tr></thead>
+              <tbody>
+                {log.slice(0, logLimit).map((e) => {
+                  const l = logLine(e);
+                  const st = e.studentId && byId.get(e.studentId);
+                  return (
+                    <tr key={e.id} style={{ borderTop: `1px solid ${C.kraftDark}`, color: l.warn ? "#9C0006" : C.ink }}>
+                      <td className="py-1.5 px-1 text-xs whitespace-nowrap" style={{ color: C.steel }}>{fmtWhen(e.at)}</td>
+                      <td className="px-1">
+                        {l.icon} {st ? <button className="font-bold underline" onClick={() => setEditStudent(st)}>{l.text}</button> : l.text}
+                      </td>
+                      <td className="px-1 text-xs">{l.by || ""}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {log.length > logLimit && (
+              <button className="mt-2 px-3 py-1.5 text-xs font-bold" style={btn(false)} onClick={() => setLogLimit(logLimit + 100)}>הצג עוד</button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {isAdmin && (
+        <div className="p-4" style={card}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="wh-display font-black">🔑 אחראי חדרים בקו הטלפוני</div>
+            <button className="px-4 py-2 text-sm font-bold" style={btn(true)}
+              onClick={() => setEdit({ name: "", phone: "", code: randomCode(new Set(ivrAuth.map((a) => String(a.code)))), active: true })}>+ הוספה</button>
+          </div>
+          <div className="text-xs mb-3" style={{ color: C.steel }}>
+            רק מי שרשום כאן ייכנס לתפריט החדרים בטלפון: מקישים 2 בתפריט הראשי ואז את הקוד האישי וסולמית.
+            בפנים: 1 חדרים פנויים, 2 שיבוץ בחור במיטה פנויה (לפי הטלפון של הבחור, או אמירת השם בקול).
+            כל שיבוץ נרשם ביומן ומסומן ☎️ בטבלאות עד שמסמנים "נבדק". בחורים יכולים רק לדווח על תקלות - תקלה אחת בשבוע לכל מספר טלפון.
+          </div>
+          {!ivrAuth.length ? (
+            <div className="text-sm" style={{ color: "#9C0006" }}>עדיין אין אף אחראי - תפריט החדרים בטלפון סגור לכולם.</div>
+          ) : (
+            <>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm" style={{ borderCollapse: "collapse", minWidth: 380 }}>
+                  <thead><tr style={{ color: C.steel }}>
+                    <th className="text-right py-1">שם</th><th className="text-right">טלפון</th><th>קוד</th><th>פעיל</th><th></th>
+                  </tr></thead>
+                  <tbody>
+                    {ivrAuth.map((a) => (
+                      <tr key={a.id} style={{ borderTop: `1px solid ${C.kraftDark}`, opacity: a.active === false ? 0.5 : 1 }}>
+                        <td className="py-1.5 font-bold">{a.name}</td>
+                        <td dir="ltr" style={{ textAlign: "right" }}>{a.phone}</td>
+                        <td className="text-center font-mono">{showCodes ? a.code : "••••"}</td>
+                        <td className="text-center">
+                          <input type="checkbox" checked={a.active !== false} disabled={busy}
+                            onChange={(e) => saveIvrAuth(ivrAuth.map((x) => (x.id === a.id ? { ...x, active: e.target.checked, updatedAt: Date.now() } : x)))} />
+                        </td>
+                        <td className="text-left whitespace-nowrap">
+                          <button className="px-2 text-xs" onClick={() => setEdit({ ...a })}>✏️</button>
+                          <button className="px-2 text-xs" onClick={() => { if (window.confirm(`להסיר את ${a.name} מאחראי החדרים?`)) saveIvrAuth(ivrAuth.filter((x) => x.id !== a.id)); }}>🗑️</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <button className="mt-2 text-xs underline" style={{ color: C.steel }} onClick={() => setShowCodes(!showCodes)}>{showCodes ? "הסתר קודים" : "הצג קודים"}</button>
+            </>
+          )}
+        </div>
+      )}
+
+      {edit && (
+        <Modal C={C} card={card} onClose={() => setEdit(null)}>
+          <div className="wh-display font-black text-lg mb-3">{edit.id ? `עריכת ${edit.name}` : "אחראי חדרים חדש"}</div>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs" style={{ color: C.steel }}>שם (יוקרא בטלפון וייכתב ביומן)
+              <input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} className="w-full px-3 py-2 text-sm mt-1" style={input} />
+            </label>
+            <label className="text-xs" style={{ color: C.steel }}>טלפון (לא חובה - כדי שהתפריט יציע לו "אחראי חדרים")
+              <input dir="ltr" value={edit.phone} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} className="w-full px-3 py-2 text-sm mt-1" style={input} />
+            </label>
+            <label className="text-xs" style={{ color: C.steel }}>קוד אישי (4-6 ספרות)
+              <div className="flex gap-2 mt-1">
+                <input dir="ltr" inputMode="numeric" value={edit.code} onChange={(e) => setEdit({ ...edit, code: e.target.value.replace(/\D/g, "").slice(0, 6) })}
+                  className="flex-1 px-3 py-2 text-sm font-mono" style={input} />
+                <button type="button" className="px-3 text-xs font-bold" style={btn(false)}
+                  onClick={() => setEdit({ ...edit, code: randomCode(new Set(ivrAuth.filter((a) => a.id !== edit.id).map((a) => String(a.code)))) })}>🎲 קוד חדש</button>
+              </div>
+            </label>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <button className="flex-1 py-2.5 text-sm font-bold" style={btn(true)} disabled={busy} onClick={saveEdit}>שמירה</button>
+            <button className="px-4 py-2.5 text-sm" style={btn(false)} onClick={() => setEdit(null)}>ביטול</button>
+          </div>
+        </Modal>
+      )}
+    </div>
   );
 }
 
