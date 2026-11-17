@@ -1,21 +1,44 @@
 /* ============================================================
    ישיבוס ← ימות המשיח (שלוחת API, type=api)
    קו טלפוני לבחורים ולצוות:
-     1 - דיווח תקלה בחדר (נפתחת משימה באפליקציה + התראה למנהלים)
-     2 - מה קרה עם התקלות שדיווחתי
-     3 - בירור חדרים (בחור: החדר שלו ומי איתו; איש צוות: מי גר בכל חדר)
+     1 - דיווח תקלה: מספר חדר, הקלטה חופשית, ותמלול לטקסט בג'מיני (נפתחת משימה באפליקציה + התראה למנהלים)
+     2 - חדר פנוי
+     3 - סטטוס התקלות שדיווחתי
+     4 - לצוות בלבד: הקראת התקלות הפתוחות
 
    משתני סביבה ב-Vercel (Settings → Environment Variables):
      SUPABASE_URL               https://axkgksyoaysvhthbxoee.supabase.co
      SUPABASE_SERVICE_ROLE_KEY  מפתח service_role מ-Supabase (סודי! רק כאן)
      YEMOT_ORG_ID               מזהה הארגון (org_id) של הישיבה
      YEMOT_SECRET               סיסמה שתמציא, וזהה לזו שבהגדרת השלוחה
+     YEMOT_TOKEN                מספר המערכת:סיסמת הניהול (להורדת ההקלטה לתמלול)
+     GEMINI_API_KEY             מפתח Gemini מ-aistudio.google.com
    ============================================================ */
 
 const SB_URL = process.env.SUPABASE_URL || "https://axkgksyoaysvhthbxoee.supabase.co";
-const SB_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+// מפתחות אפשריים: זה שהוגדר ידנית, ואחריו המפתחות שהחיבור של Supabase ל-Vercel הוסיף לבד.
+const cleanKey = (v) => String(v || "").trim().replace(/^["']|["']$/g, "").replace(/\s+/g, "");
+const KEY_CANDIDATES = [...new Set([
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  ...Object.entries(process.env).filter(([k]) => /SUPABASE_(SERVICE_ROLE_KEY|SECRET_KEY)$/.test(k)).map(([, v]) => v),
+].map(cleanKey).filter(Boolean))];
+let SB_KEY = KEY_CANDIDATES[0];
+let keyChecked = false;
+/** בוחר את המפתח הראשון ש-Supabase מקבל (נבדק פעם אחת) */
+async function pickKey() {
+  if (keyChecked) return;
+  for (const k of KEY_CANDIDATES) {
+    try {
+      const r = await fetch(`${SB_URL}/rest/v1/kv_store?select=key&limit=1`, { headers: { apikey: k, Authorization: `Bearer ${k}` } });
+      if (r.ok) { SB_KEY = k; keyChecked = true; return; }
+    } catch (e) {}
+  }
+  throw new Error("no working Supabase key (" + KEY_CANDIDATES.length + " tried)");
+}
 const ORG = process.env.YEMOT_ORG_ID;
 const SECRET = process.env.YEMOT_SECRET;
+const YEMOT_TOKEN = process.env.YEMOT_TOKEN;      // מספר המערכת:סיסמת הניהול, למשל 0772029287:1234
+const GEMINI_KEY = process.env.GEMINI_API_KEY;    // מפתח מ-aistudio.google.com
 
 const KEYS = {
   tasks: "kitchen-tasks",
@@ -100,6 +123,8 @@ async function liveStudents() {
 }
 
 /* ---------- השיחה ---------- */
+const extPath = (q) => "/" + String(q.ApiExtension || "").replace(/^\/+|\/+$/g, "");
+
 async function handle(q) {
   const phone = normPhone(q.ApiPhone);
   const [students, profiles] = await Promise.all([liveStudents(), loadProfiles()]);
@@ -107,87 +132,94 @@ async function handle(q) {
   const staff = phone.length >= 9 ? profiles.find((p) => normPhone(p.phone) === phone) : null;
   const callerName = (me && me.name) || (staff && staff.display_name) || "";
 
+  const allowed = staff ? "1234" : "123";
   const menu = lastVal(q, "Menu");
-  if (!menu.val || !["1", "2", "3"].includes(menu.val)) {
+  if (!menu.val || !allowed.includes(menu.val)) {
+    if (q.hangup === "yes") return "noop=hangup";
     if (menu.idx >= 2) return end("לא התקבלה בחירה", "להתראות");
     const hello = menu.idx < 0 ? (callerName ? `שלום ${callerName}` : "שלום") : "";
     return ask(
-      say(hello, "לדיווח על תקלה הקישו 1", "לבירור מצב התקלות שדיווחתם הקישו 2", "לבירור חדרים הקישו 3"),
-      menu.nextName, { allowed: "123" }
+      say(hello, "לדיווח על תקלה הקישו 1", "לחדר פנוי הקישו 2", "לבדיקת סטטוס תקלה הקישו 3",
+        staff ? "לשמיעת התקלות הפתוחות הקישו 4" : ""),
+      menu.nextName, { allowed }
     );
   }
 
-  if (menu.val === "1") return report(q, { phone, me, staff, callerName, profiles });
-  if (menu.val === "2") return status(q, { phone, me });
-  return roomLookup(q, { me, staff, students });
+  if (menu.val === "1") return report(q, { phone, staff, callerName, profiles });
+  if (q.hangup === "yes") return "noop=hangup";
+  if (menu.val === "2") return freeRoom(students);
+  if (menu.val === "3") return status(phone);
+  return playOpen();
 }
 
-async function report(q, { phone, me, staff, callerName, profiles }) {
+/** מוריד את ההקלטה מימות ושולח לג'מיני לתמלול. מחזיר "" אם משהו נכשל */
+async function transcribe(path) {
+  if (!YEMOT_TOKEN || !GEMINI_KEY) return "";
+  try {
+    const dl = await fetch(`https://www.call2all.co.il/ym/api/DownloadFile?token=${encodeURIComponent(YEMOT_TOKEN)}&path=${encodeURIComponent("ivr2:" + path)}`);
+    const type = dl.headers.get("content-type") || "";
+    if (!dl.ok || type.includes("json")) { console.error("yemot download", dl.status, await dl.text()); return ""; }
+    const audio = Buffer.from(await dl.arrayBuffer()).toString("base64");
+    const g = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [
+          { text: "זו הקלטה בעברית של בחור בישיבה שמדווח על תקלה בחדר. כתוב בעברית רק את מה שנאמר, במשפט או שניים, בלי הקדמות ובלי הסברים. אם לא נאמר כלום כתוב ריק." },
+          { inline_data: { mime_type: "audio/wav", data: audio } },
+        ] }],
+      }),
+    });
+    if (!g.ok) { console.error("gemini", g.status, await g.text()); return ""; }
+    const j = await g.json();
+    const t = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join(" ").replace(/\s+/g, " ").trim();
+    return t === "ריק" ? "" : t;
+  } catch (e) { console.error("transcribe", e); return ""; }
+}
+
+async function report(q, { phone, staff, callerName, profiles }) {
+  const hung = q.hangup === "yes";
   const rooms = (await loadKey(KEYS.dormRooms, [])) || [];
   const roomNums = new Set(rooms.map((r) => String(r.num)));
 
-  // חדר: בחור מזוהה – החדר שלו. אחרת – מקיש.
-  let room = me && me.room ? String(me.room) : null;
-  if (!room) {
-    const r = lastVal(q, "Room");
-    const okRoom = r.val && /^\d+$/.test(r.val) && (roomNums.size === 0 || roomNums.has(String(Number(r.val))));
-    if (!okRoom) {
-      if (r.idx >= 2) return end("מספר החדר לא נמצא", "להתראות");
-      return ask(say(r.val ? "החדר לא נמצא ברשימה" : "", "הקישו את מספר החדר ובסיומו סולמית"), r.nextName, { max: 4, timeout: 15 });
-    }
-    room = String(Number(r.val));
+  // מספר חדר
+  const r = lastVal(q, "Room");
+  const okRoom = r.val && /^\d+$/.test(r.val) && (roomNums.size === 0 || roomNums.has(String(Number(r.val))));
+  if (!okRoom) {
+    if (hung) return "noop=hangup";
+    if (r.idx >= 2) return end("מספר החדר לא נמצא", "להתראות");
+    return ask(say(r.val ? "החדר לא נמצא ברשימה" : "", "הקישו מספר חדר ולאחריו סולמית"), r.nextName, { max: 4, timeout: 15 });
   }
+  const room = String(Number(r.val));
 
-  // קטגוריה
-  const cats = ((await loadKey(KEYS.taskCategories, [])) || []).filter((c) => c && c.name);
-  let cat = null;
-  if (cats.length) {
-    const c = lastVal(q, "Cat");
-    const n = Number(c.val);
-    cat = Number.isInteger(n) && n >= 1 && n <= cats.length ? cats[n - 1] : null;
-    if (!cat) {
-      if (c.idx >= 2) return end("לא התקבלה בחירה", "להתראות");
-      const list = cats.map((x, i) => `ל${x.name} הקישו ${i + 1}`);
-      const max = String(cats.length).length;
-      return ask(say(me && c.idx < 0 ? `דיווח על תקלה בחדר ${room}` : "", "בחרו את סוג התקלה", ...list), c.nextName,
-        { max, allowed: max === 1 ? cats.map((_, i) => i + 1).join("") : "", timeout: max > 1 ? 5 : 10 });
-    }
+  // הקלטת התקלה – נשמרת בימות, ואז מתומללת בג'מיני
+  const rec = lastVal(q, "Rec");
+  const file = "T" + String(q.ApiCallId || genId()).replace(/[^a-zA-Z0-9]/g, "").slice(-12);
+  if (!rec.val || /^None$/i.test(rec.val)) {
+    if (hung) return "noop=hangup";
+    if (rec.idx >= 1) return end("לא התקבלה הקלטה", "להתראות");
+    // 1 שם, 2 לא להשתמש בקודם, 3 הקלטה, 4 תיקייה, 5 שם קובץ, 6 אישור מיידי בסולמית, 7 לשמור גם בניתוק, 8 לא לשרשר, 9 מינימום שניות, 10 מקסימום
+    return `read=${say(`חדר ${room}`, "לאחר הצליל פרטו את התקלה ובסיום הקישו סולמית")}=${rec.nextName},no,record,${extPath(q)},${file},no,yes,no,1,90`;
   }
-
-  // דחיפות
-  const u = lastVal(q, "Urg");
-  if (!["1", "2"].includes(u.val)) {
-    if (u.idx >= 2) return end("לא התקבלה בחירה", "להתראות");
-    return ask(say("אם התקלה דחופה הקישו 1", "אם לא הקישו 2"), u.nextName, { allowed: "12" });
-  }
-  const urgent = u.val === "1";
-
-  // אישור
-  const ok = lastVal(q, "Ok");
-  if (!["1", "2"].includes(ok.val)) {
-    if (ok.idx >= 2) return end("הדיווח בוטל", "להתראות");
-    return ask(
-      say(`דיווח על תקלת ${cat ? cat.name : ""} בחדר ${room}`, urgent ? "דחוף" : "", "לאישור הקישו 1", "לביטול הקישו 2"),
-      ok.nextName, { allowed: "12" }
-    );
-  }
-  if (ok.val === "2") return end("הדיווח בוטל", "להתראות");
+  const recPath = `${extPath(q)}/${file}.wav`;
+  const text = await transcribe(recPath);
 
   // פתיחת המשימה (בלי כפילות אם ימות שולח שוב את אותה בקשה)
   const tasks = (await loadKey(KEYS.tasks, [])) || [];
   const callId = String(q.ApiCallId || "");
   if (!callId || !tasks.some((t) => t && t.ivrCallId === callId)) {
-    const title = `${cat ? cat.name : "תקלה"} · חדר ${room}`;
+    const short = text ? text.split(" ").slice(0, 6).join(" ") : "תקלה (הקלטה)";
+    const title = `חדר ${room} · ${short}`;
     const reporter = callerName || `טלפון ${phone}`;
     const task = {
       id: genId(),
       title,
-      description: `דווח בטלפון ע"י ${reporter}${phone ? ` (${phone})` : ""}`,
+      description: `${text || "לא הצלחנו לתמלל את ההקלטה. לשמיעה: בקו, שלוחת התקלות, הקשה 4."}\n\nדווח בטלפון ע"י ${reporter}${phone ? ` (${phone})` : ""}`,
       assignedToId: "",
-      priority: urgent ? "urgent" : "normal",
+      priority: "normal",
       location: `חדר ${room}`,
       locationId: "",
-      categoryId: cat ? cat.id : "",
+      categoryId: "",
       status: "open",
       createdAt: Date.now(),
       createdBy: reporter,
@@ -196,11 +228,12 @@ async function report(q, { phone, me, staff, callerName, profiles }) {
       source: "ivr",
       reporterPhone: phone,
       ivrCallId: callId,
+      ivrRecording: recPath,
     };
     await saveKey(KEYS.tasks, [task, ...tasks]);
-    await notifyManagers(profiles, `☎️ ${urgent ? "דחוף! " : ""}דיווח טלפוני מ${reporter}: ${title}`, task.id);
+    await notifyManagers(profiles, `☎️ דיווח טלפוני מ${reporter}: ${title}`, task.id);
   }
-  return end("התקלה נקלטה ותטופל בעזרת השם", "תודה ולהתראות");
+  return hung ? "noop=hangup" : end("התקלה נקלטה ותטופל בעזרת השם", "תודה ולהתראות");
 }
 
 async function notifyManagers(profiles, message, taskId) {
@@ -222,38 +255,55 @@ async function notifyManagers(profiles, message, taskId) {
   } catch (e) { console.error("push", e); }
 }
 
-async function status(q, { phone, me }) {
+async function status(phone) {
   const tasks = (await loadKey(KEYS.tasks, [])) || [];
-  const roomLoc = me && me.room ? `חדר ${me.room}` : null;
   const mine = tasks
-    .filter((t) => t && (t.reporterPhone === phone || (roomLoc && t.source === "ivr" && t.location === roomLoc)))
+    .filter((t) => t && t.source === "ivr" && t.reporterPhone === phone)
     .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
     .slice(0, 3);
-  if (!mine.length) return end("לא נמצאו תקלות שדיווחתם", "להתראות");
-  const lines = mine.map((t) => `תקלת ${t.title.replace("·", "ב")} שדווחה ${ago(t.createdAt)}: ${STATUS_TXT[t.status] || "ממתינה לטיפול"}`);
+  if (!mine.length) return end("לא נמצאו תקלות שדיווחתם מהטלפון הזה", "להתראות");
+  const lines = mine.map((t) => `תקלה ב${t.location || "חדר"} שדווחה ${ago(t.createdAt)}: ${STATUS_TXT[t.status] || "ממתינה לטיפול"}`);
   return end(...lines, "להתראות");
 }
 
-async function roomLookup(q, { me, staff, students }) {
-  const namesIn = (num) => students.filter((s) => String(s.room) === String(num)).map((s) => s.name);
+/** חדר פנוי: קודם חדרים ריקים לגמרי, אחר כך חדרים עם הכי הרבה מיטות פנויות */
+async function freeRoom(students) {
+  const rooms = (await loadKey(KEYS.dormRooms, [])) || [];
+  const count = new Map();
+  students.forEach((s) => { if (s.room) count.set(String(s.room), (count.get(String(s.room)) || 0) + 1); });
+  const free = rooms
+    .map((r) => {
+      const used = count.get(String(r.num)) || 0;
+      const beds = Number(r.beds) || 0;
+      return { num: r.num, used, left: beds > 0 ? beds - used : (used === 0 ? 1 : 0), beds };
+    })
+    .filter((r) => r.left > 0)
+    .sort((a, b) => (a.used === 0 ? 0 : 1) - (b.used === 0 ? 0 : 1) || b.left - a.left || Number(a.num) - Number(b.num))
+    .slice(0, 3);
+  if (!free.length) return end("אין כרגע חדרים פנויים", "להתראות");
+  const lines = free.map((r) =>
+    r.used === 0 ? `חדר ${r.num} ריק${r.beds ? ` ויש בו ${r.beds} מיטות` : ""}`
+      : `בחדר ${r.num} ${r.left === 1 ? "מיטה פנויה אחת" : `${r.left} מיטות פנויות`}`);
+  return end("חדרים פנויים", ...lines, "לשיבוץ פנו להנהלה", "להתראות");
+}
 
-  if (!staff) {
-    if (!me) return end("המספר שלכם לא רשום במערכת", "לבירור פנו להנהלה");
-    if (!me.room) return end(`${me.name}`, "עדיין לא שובצת לחדר");
-    const others = namesIn(me.room).filter((n) => n !== me.name);
-    return end(`${me.name} אתה בחדר ${me.room}`, others.length ? `איתך בחדר: ${others.join(" ו")}` : "אתה לבד בחדר");
-  }
-
-  // איש צוות – בירור לפי מספר חדר, אפשר כמה חדרים ברצף
-  const r = lastVal(q, "LRoom");
-  const prev = r.val && /^\d+$/.test(r.val) ? String(Number(r.val)) : null;
-  let info = "";
-  if (prev) {
-    const names = namesIn(prev);
-    info = names.length ? `בחדר ${prev}: ${names.join(" ו")}` : `חדר ${prev} ריק או לא קיים`;
-  }
-  if (r.idx >= 8) return end(info, "להתראות");
-  return ask(say(info, "להקשת מספר חדר ובסיומו סולמית", "לסיום נתקו"), r.nextName, { max: 4, timeout: 20 });
+/** לצוות: הקראת התקלות הפתוחות שדווחו בטלפון (ואם אין תמלול – השמעת ההקלטה) */
+async function playOpen() {
+  const tasks = (await loadKey(KEYS.tasks, [])) || [];
+  const open = tasks
+    .filter((t) => t && t.source === "ivr" && t.status !== "done")
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0))
+    .slice(0, 6);
+  if (!open.length) return end("אין תקלות טלפוניות פתוחות", "להתראות");
+  const parts = [];
+  open.forEach((t) => {
+    const desc = String(t.description || "").split("\n")[0];
+    const transcribed = desc && !desc.startsWith("לא הצלחנו");
+    parts.push("t-" + clean(`${t.location} ${ago(t.createdAt)}${transcribed ? ": " + desc : ""}`));
+    if (!transcribed && t.ivrRecording) parts.push("f-" + String(t.ivrRecording).replace(/\.wav$/, "").replace(/[^a-zA-Z0-9/_]/g, ""));
+  });
+  parts.push("t-" + clean("סוף הרשימה"));
+  return "id_list_message=" + parts.join(".");
 }
 
 /* ---------- Vercel handler ---------- */
@@ -261,11 +311,11 @@ export default async function handler(req, res) {
   res.setHeader("Content-Type", "text/plain; charset=utf-8");
   const q = { ...(req.query || {}), ...(typeof req.body === "object" && req.body ? req.body : {}) };
 
-  if (q.hangup === "yes") return res.status(200).send("noop=hangup");
   if (!SB_KEY || !ORG || !SECRET) return res.status(200).send(end("המערכת אינה מוגדרת"));
   if (q.key !== SECRET) return res.status(200).send(end("אין הרשאה"));
 
   try {
+    await pickKey();
     res.status(200).send(await handle(q));
   } catch (e) {
     console.error(e);
