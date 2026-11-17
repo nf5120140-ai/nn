@@ -2,7 +2,11 @@
    ישיבוס ← ימות המשיח (שלוחת API, type=api)
    קו טלפוני לבחורים ולצוות:
      1 - דיווח תקלה: מספר חדר, הקלטה חופשית, ותמלול לטקסט בג'מיני (נפתחת משימה באפליקציה + התראה למנהלים)
-     2 - חדר פנוי
+         בחור יכול לדווח פעם אחת בשבוע (ראשון עד שבת), לפי מספר הטלפון שממנו התקשר. צוות ואחראי חדרים – בלי הגבלה.
+     2 - אחראי חדרים (רק עם קוד אישי שמוגדר באפליקציה: ניהול חדרים ← טלפון):
+           1 חדרים פנויים
+           2 שיבוץ בחור למיטה פנויה – לפי מספר הטלפון של הבחור, או הקלטת השם (תמלול בג'מיני)
+         כל פעולה נרשמת ביומן "טלפון" במסך ניהול החדרים, והבחור מסומן ☎️ בטבלאות עד שמסמנים "נבדק".
      3 - סטטוס התקלות שדיווחתי
      4 - לצוות בלבד: הקראת התקלות הפתוחות
 
@@ -14,6 +18,7 @@
      YEMOT_TOKEN                מספר המערכת:סיסמת הניהול (להורדת ההקלטה לתמלול)
      GEMINI_API_KEY             מפתח Gemini מ-aistudio.google.com
    ============================================================ */
+
 
 const SB_URL = process.env.SUPABASE_URL || "https://axkgksyoaysvhthbxoee.supabase.co";
 // מפתחות אפשריים: זה שהוגדר ידנית, ואחריו המפתחות שהחיבור של Supabase ל-Vercel הוסיף לבד.
@@ -47,6 +52,10 @@ const KEYS = {
   dormRooms: "dorm-rooms",
   dormStudents: "dorm-students",
   dormDeletes: "dorm-deletes",
+  ivrAuth: "dorm-ivr-auth",       // אחראי חדרים בטלפון: [{ id, name, phone, code, active }] – מנוהל באפליקציה
+  ivrLog: "dorm-ivr-log",         // יומן פעולות חדרים מהטלפון
+  ivrReports: "ivr-report-log",   // מי דיווח תקלה מתי (להגבלה של פעם בשבוע)
+  ivrCache: "ivr-cache",          // תמלולים זמניים בתוך שיחה
 };
 
 /* ---------- Supabase (REST, בלי ספריות) ---------- */
@@ -107,7 +116,6 @@ function lastVal(q, base) {
   const nextName = idx < 0 ? base : `${base}_${idx + 1}`;
   return { val: val === undefined ? undefined : String(val).trim(), idx, nextName };
 }
-
 const STATUS_TXT = { open: "ממתינה לטיפול", in_progress: "בטיפול", done: "טופלה" };
 function ago(ts) {
   const days = Math.floor((Date.now() - ts) / 86400000);
@@ -116,22 +124,54 @@ function ago(ts) {
   return `לפני ${days} ימים`;
 }
 
+/** תחילת השבוע הנוכחי (יום ראשון 00:00 שעון ישראל) */
+function weekStart(now = Date.now()) {
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Jerusalem", year: "numeric", month: "numeric", day: "numeric",
+    hour: "numeric", minute: "numeric", second: "numeric", hourCycle: "h23",
+  }).formatToParts(new Date(now)).map((x) => [x.type, x.value]));
+  const y = +p.year, mo = +p.month - 1, d = +p.day;
+  const offset = Date.UTC(y, mo, d, +p.hour, +p.minute, +p.second) - Math.floor(now / 1000) * 1000;
+  const dow = new Date(Date.UTC(y, mo, d)).getUTCDay();
+  return Date.UTC(y, mo, d - dow) - offset;
+}
+
+// כמו nameKey באפליקציה: מתעלם מרווחים, גרשיים ומקפים
+const nameKey = (s) => String(s || "").replace(/["'׳״‘’“”.]/g, "").replace(/[-־–—]/g, " ").replace(/\s+/g, " ").trim();
+const uuid = () => (globalThis.crypto && globalThis.crypto.randomUUID ? globalThis.crypto.randomUUID() : "d" + genId());
+
 async function liveStudents() {
   const [students, dels] = await Promise.all([loadKey(KEYS.dormStudents, []), loadKey(KEYS.dormDeletes, [])]);
   const gone = new Set(dels || []);
   return (students || []).filter((s) => s && !gone.has(s.id));
 }
 
+/** רישום ביומן הטלפון של ניהול החדרים (נשמרות 500 הפעולות האחרונות) */
+async function logIvr(entry) {
+  try {
+    const list = (await loadKey(KEYS.ivrLog, [])) || [];
+    if (entry.dedupe && list.some((e) => e && e.dedupe === entry.dedupe)) return;
+    await saveKey(KEYS.ivrLog, [{ id: genId(), at: Date.now(), ...entry }, ...list].slice(0, 500));
+  } catch (e) { console.error("ivr log", e); }
+}
+
 /* ---------- השיחה ---------- */
 const extPath = (q) => "/" + String(q.ApiExtension || "").replace(/^\/+|\/+$/g, "");
+const recFile = (q, prefix, idx) => prefix + String(q.ApiCallId || genId()).replace(/[^a-zA-Z0-9]/g, "").slice(-12) + (idx > 0 ? "x" + idx : "");
+// ימות מחזירה את נתיב הקובץ שנשמר; אם לא – בונים אותו לבד
+const recPathOf = (q, val, file) => (/^\/?[\w/]+\.(wav|mp3)$/i.test(val) ? "/" + val.replace(/^\/+/, "") : `${extPath(q)}/${file}.wav`);
+const noRec = (v) => !v || /^None$/i.test(v);
 
 async function handle(q) {
   const phone = normPhone(q.ApiPhone);
-  const [students, profiles] = await Promise.all([liveStudents(), loadProfiles()]);
-  const me = phone.length >= 9 ? students.find((s) => normPhone(s.phone) === phone) : null;
-  const staff = phone.length >= 9 ? profiles.find((p) => normPhone(p.phone) === phone) : null;
-  const callerName = (me && me.name) || (staff && staff.display_name) || "";
+  const known = phone.length >= 9;
+  const [students, profiles, auth] = await Promise.all([liveStudents(), loadProfiles(), loadKey(KEYS.ivrAuth, [])]);
+  const me = known ? students.find((s) => normPhone(s.phone) === phone) : null;
+  const staff = known ? profiles.find((p) => normPhone(p.phone) === phone) : null;
+  const roomMgr = known ? (auth || []).find((a) => a && a.active !== false && normPhone(a.phone) === phone) : null;
+  const callerName = (me && me.name) || (staff && staff.display_name) || (roomMgr && roomMgr.name) || "";
 
+  // 2 פתוח לכולם אבל דורש קוד; מוקרא רק לצוות ולאחראי חדרים
   const allowed = staff ? "1234" : "123";
   const menu = lastVal(q, "Menu");
   if (!menu.val || !allowed.includes(menu.val)) {
@@ -139,21 +179,24 @@ async function handle(q) {
     if (menu.idx >= 2) return end("לא התקבלה בחירה", "להתראות");
     const hello = menu.idx < 0 ? (callerName ? `שלום ${callerName}` : "שלום") : "";
     return ask(
-      say(hello, "לדיווח על תקלה הקישו 1", "לחדר פנוי הקישו 2", "לבדיקת סטטוס תקלה הקישו 3",
+      say(hello, "לדיווח על תקלה הקישו 1", (staff || roomMgr) ? "לאחראי חדרים הקישו 2" : "", "לבדיקת סטטוס תקלה הקישו 3",
         staff ? "לשמיעת התקלות הפתוחות הקישו 4" : ""),
       menu.nextName, { allowed }
     );
   }
 
-  if (menu.val === "1") return report(q, { phone, staff, callerName, profiles });
+  if (menu.val === "1") return report(q, { phone, staff, roomMgr, callerName, profiles });
   if (q.hangup === "yes") return "noop=hangup";
-  if (menu.val === "2") return freeRoom(students);
+  if (menu.val === "2") return roomsMenu(q, { phone, students, profiles, auth });
   if (menu.val === "3") return status(phone);
   return playOpen();
 }
 
-/** מוריד את ההקלטה מימות ושולח לג'מיני לתמלול. מחזיר { text, err } */
-async function transcribe(path) {
+/** מוריד הקלטה מימות ושולח לג'מיני לתמלול. מחזיר { text, err } */
+const FAULT_PROMPT = "זו הקלטה בעברית של בחור בישיבה שמדווח על תקלה בחדר. כתוב בעברית רק את מה שנאמר, במשפט או שניים, בלי הקדמות ובלי הסברים. אם לא נאמר כלום כתוב ריק.";
+const NAME_PROMPT = "זו הקלטה קצרה בעברית שבה אומרים שם של בחור בישיבה (שם פרטי ושם משפחה, לפעמים גם שם האב או העיר). כתוב רק את השם באותיות עבריות, בלי ניקוד ובלי שום מילה נוספת. אם לא נאמר שם כתוב ריק.";
+
+async function transcribe(path, prompt = FAULT_PROMPT) {
   if (!YEMOT_TOKEN) return { text: "", err: "חסר YEMOT_TOKEN ב-Vercel" };
   if (!GEMINI_KEY) return { text: "", err: "חסר GEMINI_API_KEY ב-Vercel" };
   let audio, mime = "audio/wav";
@@ -178,7 +221,7 @@ async function transcribe(path) {
         headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY },
         body: JSON.stringify({
           contents: [{ parts: [
-            { text: "זו הקלטה בעברית של בחור בישיבה שמדווח על תקלה בחדר. כתוב בעברית רק את מה שנאמר, במשפט או שניים, בלי הקדמות ובלי הסברים. אם לא נאמר כלום כתוב ריק." },
+            { text: prompt },
             { inline_data: { mime_type: mime, data: audio } },
           ] }],
         }),
@@ -207,8 +250,38 @@ async function transcribe(path) {
   return { text: "", err: lastErr };
 }
 
-async function report(q, { phone, staff, callerName, profiles }) {
+/** תמלול ששמור לכל השיחה – כדי שבשלב האישור לא נתמלל שוב ונקבל שם אחר */
+async function cachedTranscribe(q, tag, path, prompt) {
+  const key = `${q.ApiCallId || ""}:${tag}`;
+  let cache = {};
+  try { cache = (await loadKey(KEYS.ivrCache, {})) || {}; } catch (e) {}
+  if (q.ApiCallId && cache[key]) return cache[key];
+  const r = await transcribe(path, prompt);
+  const now = Date.now();
+  const next = Object.fromEntries(Object.entries(cache).filter(([, v]) => v && now - (v.at || 0) < 3 * 3600e3));
+  next[key] = { ...r, at: now };
+  try { await saveKey(KEYS.ivrCache, next); } catch (e) {}
+  return r;
+}
+
+/* ---------- 1: דיווח תקלה ---------- */
+async function report(q, { phone, staff, roomMgr, callerName, profiles }) {
   const hung = q.hangup === "yes";
+  const callId = String(q.ApiCallId || "");
+
+  // בחור: תקלה אחת בשבוע לכל מספר טלפון (צוות ואחראי חדרים – בלי הגבלה)
+  const limited = !staff && !roomMgr;
+  if (limited) {
+    if (phone.length < 9) return hung ? "noop=hangup" : end("המספר שלכם חסוי", "כדי לדווח על תקלה יש להתקשר ממספר מזוהה", "להתראות");
+    const weekLog = (await loadKey(KEYS.ivrReports, [])) || [];
+    const since = weekStart();
+    const used = weekLog.find((e) => e && e.phone === phone && e.at >= since && (!callId || e.callId !== callId));
+    if (used) {
+      return hung ? "noop=hangup" : end("כבר דווחה השבוע תקלה מהטלפון הזה", `הדיווח נקלט ${ago(used.at)}`,
+        "אפשר לדווח שוב החל מיום ראשון", "לבדיקת סטטוס התקלה התקשרו והקישו 3", "להתראות");
+    }
+  }
+
   const rooms = (await loadKey(KEYS.dormRooms, [])) || [];
   const roomNums = new Set(rooms.map((r) => String(r.num)));
 
@@ -218,28 +291,26 @@ async function report(q, { phone, staff, callerName, profiles }) {
   if (!okRoom) {
     if (hung) return "noop=hangup";
     if (r.idx >= 2) return end("מספר החדר לא נמצא", "להתראות");
-    return ask(say(r.val ? "החדר לא נמצא ברשימה" : "", "הקישו מספר חדר ולאחריו סולמית"), r.nextName, { max: 4, timeout: 15 });
+    return ask(say(r.val ? "החדר לא נמצא ברשימה" : "", limited ? "שימו לב אפשר לדווח על תקלה אחת בשבוע" : "", "הקישו מספר חדר ולאחריו סולמית"), r.nextName, { max: 4, timeout: 15 });
   }
   const room = String(Number(r.val));
 
   // הקלטת התקלה – נשמרת בימות, ואז מתומללת בג'מיני
   const rec = lastVal(q, "Rec");
-  const file = "T" + String(q.ApiCallId || genId()).replace(/[^a-zA-Z0-9]/g, "").slice(-12);
-  if (!rec.val || /^None$/i.test(rec.val)) {
+  const file = recFile(q, "T", 0);
+  if (noRec(rec.val)) {
     if (hung) return "noop=hangup";
     if (rec.idx >= 1) return end("לא התקבלה הקלטה", "להתראות");
     // 1 שם, 2 לא להשתמש בקודם, 3 הקלטה, 4 תיקייה, 5 שם קובץ, 6 אישור מיידי בסולמית, 7 לשמור גם בניתוק, 8 לא לשרשר, 9 מינימום שניות, 10 מקסימום
     return `read=${say(`חדר ${room}`, "לאחר הצליל פרטו את התקלה ובסיום הקישו סולמית")}=${rec.nextName},no,record,${extPath(q)},${file},no,yes,no,1,90`;
   }
-  // ימות מחזירה את נתיב הקובץ שנשמר; אם לא – בונים אותו לבד
-  const recPath = /^\/?[\w/]+\.(wav|mp3)$/i.test(rec.val) ? "/" + rec.val.replace(/^\/+/, "") : `${extPath(q)}/${file}.wav`;
-  const { text, err } = await transcribe(recPath);
-  if (err) console.error("transcribe:", err, recPath);
+  const recPath = recPathOf(q, rec.val, file);
 
   // פתיחת המשימה (בלי כפילות אם ימות שולח שוב את אותה בקשה)
   const tasks = (await loadKey(KEYS.tasks, [])) || [];
-  const callId = String(q.ApiCallId || "");
   if (!callId || !tasks.some((t) => t && t.ivrCallId === callId)) {
+    const { text, err } = await transcribe(recPath);
+    if (err) console.error("transcribe:", err, recPath);
     const short = text ? text.split(" ").slice(0, 6).join(" ") : "תקלה (הקלטה)";
     const title = `חדר ${room} · ${short}`;
     const reporter = callerName || `טלפון ${phone}`;
@@ -262,16 +333,24 @@ async function report(q, { phone, staff, callerName, profiles }) {
       ivrCallId: callId,
       ivrRecording: recPath,
     };
-    await saveKey(KEYS.tasks, [task, ...tasks]);
-    await notifyManagers(profiles, `☎️ דיווח טלפוני מ${reporter}: ${title}`, task.id);
+    // קודם המשימה עצמה – ורק אחר כך שאר הרישומים
+    const fresh = (await loadKey(KEYS.tasks, [])) || [];
+    if (!callId || !fresh.some((t) => t && t.ivrCallId === callId)) {
+      await saveKey(KEYS.tasks, [task, ...fresh]);
+      try {
+        const weekLog = (await loadKey(KEYS.ivrReports, [])) || [];
+        const keep = weekLog.filter((e) => e && Date.now() - (e.at || 0) < 21 * 86400000);
+        await saveKey(KEYS.ivrReports, [{ phone, at: task.createdAt, callId, taskId: task.id }, ...keep]);
+      } catch (e) { console.error("report log", e); }
+      await notifyManagers(profiles, `☎️ דיווח טלפוני מ${reporter}: ${title}`, { tab: "tasks", taskId: task.id }, `/?tab=tasks&taskId=${task.id}&org=${ORG}`);
+    }
   }
   return hung ? "noop=hangup" : end("התקלה נקלטה ותטופל בעזרת השם", "תודה ולהתראות");
 }
 
-async function notifyManagers(profiles, message, taskId) {
+async function notifyManagers(profiles, message, link, url) {
   const managers = profiles.filter((p) => p.role === "manager");
   if (!managers.length) return;
-  const link = { tab: "tasks", taskId };
   try {
     const list = (await loadKey(KEYS.notifications, [])) || [];
     const items = managers.map((m) => ({ id: genId(), userId: m.id, message, link, read: false, createdAt: Date.now() }));
@@ -282,11 +361,12 @@ async function notifyManagers(profiles, message, taskId) {
     await fetch(`${SB_URL}/functions/v1/send-push`, {
       method: "POST",
       headers: sbHeaders(),
-      body: JSON.stringify({ userIds: managers.map((m) => m.id), title: "ישיבוס", body: message, url: `/?tab=tasks&taskId=${taskId}&org=${ORG}` }),
+      body: JSON.stringify({ userIds: managers.map((m) => m.id), title: "ישיבוס", body: message, url }),
     });
   } catch (e) { console.error("push", e); }
 }
 
+/* ---------- 3: סטטוס ---------- */
 async function status(phone) {
   const tasks = (await loadKey(KEYS.tasks, [])) || [];
   const mine = tasks
@@ -298,25 +378,178 @@ async function status(phone) {
   return end(...lines, "להתראות");
 }
 
-/** חדר פנוי: קודם חדרים ריקים לגמרי, אחר כך חדרים עם הכי הרבה מיטות פנויות */
-async function freeRoom(students) {
-  const rooms = (await loadKey(KEYS.dormRooms, [])) || [];
+/* ---------- 2: אחראי חדרים (עם קוד) ---------- */
+function roomSpace(rooms, students) {
   const count = new Map();
-  students.forEach((s) => { if (s.room) count.set(String(s.room), (count.get(String(s.room)) || 0) + 1); });
-  const free = rooms
-    .map((r) => {
-      const used = count.get(String(r.num)) || 0;
-      const beds = Number(r.beds) || 0;
-      return { num: r.num, used, left: beds > 0 ? beds - used : (used === 0 ? 1 : 0), beds };
-    })
-    .filter((r) => r.left > 0)
-    .sort((a, b) => (a.used === 0 ? 0 : 1) - (b.used === 0 ? 0 : 1) || b.left - a.left || Number(a.num) - Number(b.num))
-    .slice(0, 3);
-  if (!free.length) return end("אין כרגע חדרים פנויים", "להתראות");
-  const lines = free.map((r) =>
-    r.used === 0 ? `חדר ${r.num} ריק${r.beds ? ` ויש בו ${r.beds} מיטות` : ""}`
-      : `בחדר ${r.num} ${r.left === 1 ? "מיטה פנויה אחת" : `${r.left} מיטות פנויות`}`);
-  return end("חדרים פנויים", ...lines, "לשיבוץ פנו להנהלה", "להתראות");
+  students.forEach((s) => { if (s.room != null && s.room !== "") count.set(Number(s.room), (count.get(Number(s.room)) || 0) + 1); });
+  return rooms.filter(Boolean).map((r) => {
+    const used = count.get(Number(r.num)) || 0;
+    const beds = Number(r.beds) || 0;
+    return { num: Number(r.num), beds, used, left: beds - used };
+  });
+}
+const bedsTxt = (n) => (n === 1 ? "מיטה פנויה אחת" : `${n} מיטות פנויות`);
+
+async function roomsMenu(q, { phone, students, profiles, auth }) {
+  const hung = q.hangup === "yes";
+  const people = (auth || []).filter((a) => a && a.active !== false && a.code);
+  if (!people.length) return end("עדיין לא הוגדרו אחראי חדרים", "להתראות");
+
+  // קוד אישי
+  const c = lastVal(q, "Code");
+  const who = c.val ? people.find((a) => String(a.code) === c.val) : null;
+  if (!who) {
+    if (hung) return "noop=hangup";
+    const callId = String(q.ApiCallId || "");
+    if (c.val) await logIvr({ action: "badcode", callerPhone: phone, callId, dedupe: `${callId}:code${c.idx}` });
+    // חסימה זמנית אחרי הרבה ניסיונות שגויים מאותו מספר
+    const log = (await loadKey(KEYS.ivrLog, [])) || [];
+    const recentBad = log.filter((e) => e && e.action === "badcode" && (e.callerPhone || "") === phone && Date.now() - e.at < 30 * 60000).length;
+    if (recentBad >= 6) return end("יותר מדי ניסיונות שגויים", "נסו שוב בעוד חצי שעה", "להתראות");
+    if (c.idx >= 2) return end("הקוד שגוי", "להתראות");
+    return ask(say(c.val ? "הקוד שגוי" : "", "הקישו את הקוד האישי ולאחריו סולמית"), c.nextName, { max: 6, min: 4, timeout: 15 });
+  }
+
+  const rooms = (await loadKey(KEYS.dormRooms, [])) || [];
+  const m = lastVal(q, "RMenu");
+  if (m.val === "2") return assign(q, { phone, students, profiles, rooms, who });
+  if (hung) return "noop=hangup";
+  if (m.idx >= 5) return end("להתראות");
+  if (m.val === "1") {
+    const free = roomSpace(rooms, students).filter((r) => r.left > 0).sort((a, b) => b.left - a.left || a.num - b.num);
+    const total = free.reduce((n, r) => n + r.left, 0);
+    const lines = !free.length ? ["אין כרגע מיטות פנויות"] : [
+      `יש ${total === 1 ? "מיטה פנויה אחת" : `${total} מיטות פנויות`} ב${free.length === 1 ? "חדר אחד" : `${free.length} חדרים`}`,
+      ...free.slice(0, 6).map((r) => `חדר ${r.num} ${r.used === 0 ? "ריק" : ""} ${bedsTxt(r.left)}`),
+      free.length > 6 ? `ועוד ${free.length - 6} חדרים` : "",
+    ];
+    return ask(say(...lines, "לשיבוץ בחור הקישו 2", "לשמיעה חוזרת הקישו 1"), m.nextName, { allowed: "12", timeout: 15 });
+  }
+  return ask(say(m.idx < 0 ? `שלום ${who.name || ""}` : "", "לשמיעת החדרים הפנויים הקישו 1", "לשיבוץ בחור במיטה פנויה הקישו 2"), m.nextName, { allowed: "12" });
+}
+
+/** שיבוץ בחור: חדר ← טלפון הבחור (אם הוא כבר ברשימה) או הקלטת השם ← אישור ← שמירה */
+async function assign(q, { phone, students, profiles, rooms, who }) {
+  const hung = q.hangup === "yes";
+  const space = roomSpace(rooms, students);
+
+  // חדר
+  const r = lastVal(q, "ARoom");
+  const rs = r.val && /^\d+$/.test(r.val) ? space.find((x) => x.num === Number(r.val)) : null;
+  if (!rs || rs.left <= 0) {
+    if (hung) return "noop=hangup";
+    if (r.idx >= 2) return end("לא נבחר חדר עם מיטה פנויה", "להתראות");
+    const why = !r.val ? "" : !rs ? `חדר ${r.val} לא קיים` : `חדר ${rs.num} מלא`;
+    return ask(say(why, "הקישו את מספר החדר ולאחריו סולמית"), r.nextName, { max: 4, timeout: 15 });
+  }
+  const room = rs.num;
+
+  // טלפון הבחור – כדי למצוא אותו אם הוא כבר ברשימה (וגם כדי לזהות אותו בדיווח תקלות)
+  const p = lastVal(q, "APhone");
+  let sPhone = p.val ? normPhone(p.val) : "";
+  if (!p.val || (sPhone !== "0" && sPhone.length < 9 && p.idx < 1)) {
+    if (hung) return "noop=hangup";
+    return ask(say(p.val ? "המספר לא תקין" : `חדר ${room} ${bedsTxt(rs.left)}`,
+      "הקישו את מספר הטלפון של הבחור ולאחריו סולמית", "אם אין מספר הקישו אפס וסולמית"), p.nextName, { max: 10, timeout: 20 });
+  }
+  if (sPhone.length < 9) sPhone = "";
+
+  let target = sPhone ? students.find((s) => normPhone(s.phone) === sPhone) : null;
+  let name = target ? target.name : "";
+  let recPath = "";
+  let tag = "P";
+
+  if (!target) {
+    // שם הבחור בהקלטה, ותמלול בג'מיני
+    const n = lastVal(q, "AName");
+    const file = recFile(q, "N", Math.max(0, n.idx));
+    const recordName = (pre) => `read=${say(pre, "לאחר הצליל אמרו את השם המלא של הבחור ובסיום הקישו סולמית")}=${n.idx < 0 ? "AName" : `AName_${n.idx + 1}`},no,record,${extPath(q)},${recFile(q, "N", n.idx + 1)},no,yes,no,1,20`;
+    if (noRec(n.val)) {
+      if (hung) return "noop=hangup";
+      if (n.idx >= 3) return end("לא התקבלה הקלטה", "להתראות");
+      return recordName(n.idx < 0 && sPhone ? "המספר לא נמצא ברשימת הבחורים" : "");
+    }
+    recPath = recPathOf(q, n.val, file);
+    const t = await cachedTranscribe(q, `AName${n.idx}`, recPath, NAME_PROMPT);
+    name = String(t.text || "").replace(/[^א-ת\s'"׳״]/g, " ").replace(/\s+/g, " ").trim().slice(0, 40);
+    if (!name || name === "ריק") {
+      if (hung) return "noop=hangup";
+      if (t.err) console.error("name transcribe:", t.err, recPath);
+      if (n.idx >= 2) return end("לא הצלחנו לזהות את השם", "אפשר לשבץ את הבחור באפליקציה", "להתראות");
+      return recordName("לא הצלחנו לזהות את השם");
+    }
+    tag = `N${n.idx}`;
+    // השם כבר רשום? אז זה אותו בחור – מעבירים אותו במקום ליצור כפול
+    target = students.find((s) => nameKey(s.name) === nameKey(name)) || null;
+    if (!target) {
+      const okName = `AOk${n.idx}`;
+      const ok = q[okName] === undefined ? undefined : String(q[okName]).trim();
+      if (ok !== "1") {
+        if (hung) return "noop=hangup";
+        if (ok === "2") {
+          if (n.idx >= 3) return end("השיבוץ בוטל", "להתראות");
+          return recordName("");
+        }
+        return ask(say("השם שנקלט", name, `לשיבוץ בחדר ${room} הקישו 1`, "להקלטה מחדש הקישו 2"), okName, { allowed: "12" });
+      }
+    }
+  }
+
+  if (target) {
+    if (target.room != null && Number(target.room) === room) return end(`${target.name} כבר רשום בחדר ${room}`, "להתראות");
+    const confName = `AConf${tag}`;
+    const cv = q[confName] === undefined ? undefined : String(q[confName]).trim();
+    if (cv !== "1") {
+      if (hung) return "noop=hangup";
+      if (cv === "2") return end("השיבוץ בוטל", "להתראות");
+      const where = target.room ? `רשום כעת בחדר ${target.room}` : "רשום כעת ללא חדר";
+      return ask(say(`נמצא ${target.name}`, where, `${target.room ? "להעברה" : "לשיבוץ"} לחדר ${room} הקישו 1`, "לביטול הקישו 2"), confName, { allowed: "12" });
+    }
+  }
+  if (hung) return "noop=hangup";
+
+  return saveAssign(q, { phone, profiles, room, target, name, sPhone, recPath, who });
+}
+
+async function saveAssign(q, { phone, profiles, room, target, name, sPhone, recPath, who }) {
+  const callId = String(q.ApiCallId || "");
+  const log = (await loadKey(KEYS.ivrLog, [])) || [];
+  const done = callId && log.find((e) => e && e.callId === callId && ["add", "move", "assign"].includes(e.action));
+  if (done) return end(`${done.studentName} שובץ בחדר ${done.room}`, "תודה ולהתראות");
+
+  // קריאה טרייה ובדיקה חוזרת שהמיטה עדיין פנויה
+  const [raw, dels, rooms] = await Promise.all([loadKey(KEYS.dormStudents, []), loadKey(KEYS.dormDeletes, []), loadKey(KEYS.dormRooms, [])]);
+  const gone = new Set(dels || []);
+  const all = (raw || []).filter(Boolean);
+  const live = all.filter((s) => !gone.has(s.id));
+  const rs = roomSpace(rooms || [], live).find((x) => x.num === room);
+  if (!rs || rs.left <= 0) return end(`חדר ${room} התמלא בינתיים`, "השיבוץ לא נשמר", "להתראות");
+
+  const now = Date.now();
+  const by = who.name || "אחראי חדרים";
+  const base = { by, byId: who.id, at: now, callerPhone: phone, seen: false };
+  let next, action, fromRoom = null, sid, sname;
+  if (target) {
+    const cur = live.find((s) => s.id === target.id);
+    if (!cur) return end("הבחור לא נמצא ברשימה", "להתראות");
+    fromRoom = cur.room != null && cur.room !== "" ? Number(cur.room) : null;
+    action = fromRoom ? "move" : "assign";
+    sid = cur.id; sname = cur.name;
+    next = all.map((s) => (s.id === cur.id ? { ...s, room, phone: s.phone || sPhone, updatedAt: now, ivr: { ...base, action, fromRoom } } : s));
+  } else {
+    const dup = live.find((s) => nameKey(s.name) === nameKey(name));
+    if (dup) return end(`${dup.name} כבר רשום`, "השיבוץ לא נשמר", "להתראות");
+    action = "add";
+    sid = uuid(); sname = name;
+    next = [...all, { id: sid, name, room, shiur: "", phone: sPhone, notes: "", createdAt: now, updatedAt: now,
+      ivr: { ...base, action, nameCheck: true, recording: recPath } }];
+  }
+  await saveKey(KEYS.dormStudents, next);
+  await logIvr({ action, by, byId: who.id, callerPhone: phone, callId, room, fromRoom, studentId: sid, studentName: sname, studentPhone: sPhone, nameCheck: action === "add" });
+
+  const verb = action === "move" ? `הועבר מחדר ${fromRoom} לחדר ${room}` : `שובץ בחדר ${room}`;
+  await notifyManagers(profiles, `☎️ ${sname} ${verb} (בטלפון, ע"י ${by})`, { tab: "dorms" }, `/?tab=dorms&org=${ORG}`);
+  return end(`${sname} ${verb}`, action === "add" ? "איות השם ייבדק במשרד" : "", "תודה ולהתראות");
 }
 
 /** לצוות: הקראת התקלות הפתוחות שדווחו בטלפון (ואם אין תמלול – השמעת ההקלטה) */
