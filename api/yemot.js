@@ -152,29 +152,41 @@ async function handle(q) {
   return playOpen();
 }
 
-/** מוריד את ההקלטה מימות ושולח לג'מיני לתמלול. מחזיר "" אם משהו נכשל */
+/** מוריד את ההקלטה מימות ושולח לג'מיני לתמלול. מחזיר { text, err } */
 async function transcribe(path) {
-  if (!YEMOT_TOKEN || !GEMINI_KEY) return "";
+  if (!YEMOT_TOKEN) return { text: "", err: "חסר YEMOT_TOKEN ב-Vercel" };
+  if (!GEMINI_KEY) return { text: "", err: "חסר GEMINI_API_KEY ב-Vercel" };
+  let audio, mime = "audio/wav";
   try {
     const dl = await fetch(`https://www.call2all.co.il/ym/api/DownloadFile?token=${encodeURIComponent(YEMOT_TOKEN)}&path=${encodeURIComponent("ivr2:" + path)}`);
     const type = dl.headers.get("content-type") || "";
-    if (!dl.ok || type.includes("json")) { console.error("yemot download", dl.status, await dl.text()); return ""; }
-    const audio = Buffer.from(await dl.arrayBuffer()).toString("base64");
-    const g = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_KEY}`, {
+    const buf = Buffer.from(await dl.arrayBuffer());
+    if (!dl.ok || type.includes("json") || type.includes("text") || buf.length < 1000) {
+      return { text: "", err: `הורדה מימות נכשלה (${dl.status}): ${buf.toString("utf8").slice(0, 120)}` };
+    }
+    if (type.includes("mpeg") || type.includes("mp3")) mime = "audio/mp3";
+    audio = buf.toString("base64");
+  } catch (e) { return { text: "", err: "הורדה מימות נכשלה: " + e.message }; }
+  try {
+    const g = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": GEMINI_KEY },
       body: JSON.stringify({
         contents: [{ parts: [
           { text: "זו הקלטה בעברית של בחור בישיבה שמדווח על תקלה בחדר. כתוב בעברית רק את מה שנאמר, במשפט או שניים, בלי הקדמות ובלי הסברים. אם לא נאמר כלום כתוב ריק." },
-          { inline_data: { mime_type: "audio/wav", data: audio } },
+          { inline_data: { mime_type: mime, data: audio } },
         ] }],
       }),
     });
-    if (!g.ok) { console.error("gemini", g.status, await g.text()); return ""; }
+    if (!g.ok) {
+      const body = await g.text();
+      let msg = body; try { msg = JSON.parse(body).error.message; } catch (e) {}
+      return { text: "", err: `ג'מיני נכשל (${g.status}): ${String(msg).slice(0, 120)}` };
+    }
     const j = await g.json();
     const t = (j.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join(" ").replace(/\s+/g, " ").trim();
-    return t === "ריק" ? "" : t;
-  } catch (e) { console.error("transcribe", e); return ""; }
+    return t === "ריק" || !t ? { text: "", err: "ג'מיני לא זיהה דיבור בהקלטה" } : { text: t, err: "" };
+  } catch (e) { return { text: "", err: "ג'מיני נכשל: " + e.message }; }
 }
 
 async function report(q, { phone, staff, callerName, profiles }) {
@@ -201,8 +213,10 @@ async function report(q, { phone, staff, callerName, profiles }) {
     // 1 שם, 2 לא להשתמש בקודם, 3 הקלטה, 4 תיקייה, 5 שם קובץ, 6 אישור מיידי בסולמית, 7 לשמור גם בניתוק, 8 לא לשרשר, 9 מינימום שניות, 10 מקסימום
     return `read=${say(`חדר ${room}`, "לאחר הצליל פרטו את התקלה ובסיום הקישו סולמית")}=${rec.nextName},no,record,${extPath(q)},${file},no,yes,no,1,90`;
   }
-  const recPath = `${extPath(q)}/${file}.wav`;
-  const text = await transcribe(recPath);
+  // ימות מחזירה את נתיב הקובץ שנשמר; אם לא – בונים אותו לבד
+  const recPath = /^\/?[\w/]+\.(wav|mp3)$/i.test(rec.val) ? "/" + rec.val.replace(/^\/+/, "") : `${extPath(q)}/${file}.wav`;
+  const { text, err } = await transcribe(recPath);
+  if (err) console.error("transcribe:", err, recPath);
 
   // פתיחת המשימה (בלי כפילות אם ימות שולח שוב את אותה בקשה)
   const tasks = (await loadKey(KEYS.tasks, [])) || [];
@@ -214,7 +228,7 @@ async function report(q, { phone, staff, callerName, profiles }) {
     const task = {
       id: genId(),
       title,
-      description: `${text || "לא הצלחנו לתמלל את ההקלטה. לשמיעה: בקו, שלוחת התקלות, הקשה 4."}\n\nדווח בטלפון ע"י ${reporter}${phone ? ` (${phone})` : ""}`,
+      description: `${text || `לא הצלחנו לתמלל את ההקלטה (${err}). לשמיעה: בקו, שלוחת התקלות, הקשה 4.`}\n\nדווח בטלפון ע"י ${reporter}${phone ? ` (${phone})` : ""}`,
       assignedToId: "",
       priority: "normal",
       location: `חדר ${room}`,
