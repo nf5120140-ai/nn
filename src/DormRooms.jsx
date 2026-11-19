@@ -1511,8 +1511,9 @@ function PhoneView({ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, ca
             <button className="px-4 py-2 text-sm font-bold" style={btn(true)} onClick={() => setMaonEdit({ name: "", phone: "", active: true })}>+ הוספה</button>
           </div>
           <div className="text-xs mb-3" style={{ color: C.steel }}>
-            מי שמתקשר לקו מאחד המספרים האלה מגיע ישר להקלטת תקלה במעון, בלי התפריט של הישיבה ובלי הגבלה שבועית.
-            המשימה נפתחת ברשימת המשימות הרגילה עם הכותרת "מעון · ..." והמיקום "מעון".
+            מי שמתקשר לקו מאחד המספרים האלה מגיע ישר לדיווח תקלה במעון, בלי התפריט של הישיבה ובלי הגבלה שבועית.
+            קודם בוחרים כיתה - לפי המיקומים בקבוצת "מעון" (בהגדרות המיקומים באפליקציה), או 0 למקום אחר - ואז מקליטים.
+            המשימה נפתחת ברשימת המשימות הרגילה, עם הכיתה כמיקום.
           </div>
           {!maonPhones.length ? (
             <div className="text-sm" style={{ color: C.steel }}>עדיין לא נוספו מספרים של המעון.</div>
