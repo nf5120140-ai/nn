@@ -1,6 +1,7 @@
 /* ============================================================
    ישיבוס ← ימות המשיח (שלוחת API, type=api)
    קו טלפוני לבחורים ולצוות:
+     מספרים של המעון (רשומים באפליקציה) – ישר לדיווח תקלה במעון; המשימה נפתחת עם "מעון ·" ומיקום "מעון".
      1 - דיווח תקלה: הקלטה חופשית (אם אומרים מספר חדר – הוא מזוהה לבד), ותמלול לטקסט בג'מיני (נפתחת משימה באפליקציה + התראה למנהלים)
          בחור יכול לדווח פעם אחת בשבוע (ראשון עד שבת), לפי מספר הטלפון שממנו התקשר. צוות ואחראי חדרים – בלי הגבלה.
      2 - אחראי חדרים (רק עם קוד אישי שמוגדר באפליקציה: ניהול חדרים ← טלפון):
@@ -56,6 +57,7 @@ const KEYS = {
   ivrLog: "dorm-ivr-log",         // יומן פעולות חדרים מהטלפון
   ivrReports: "ivr-report-log",   // מי דיווח תקלה מתי (להגבלה של פעם בשבוע)
   ivrCache: "ivr-cache",          // תמלולים זמניים בתוך שיחה
+  maonPhones: "ivr-maon-phones",  // מספרי המעון: [{ id, name, phone, active }] – מנוהל באפליקציה (ניהול חדרים ← טלפון)
 };
 
 /* ---------- Supabase (REST, בלי ספריות) ---------- */
@@ -165,7 +167,7 @@ const noRec = (v) => !v || /^None$/i.test(v);
 async function handle(q) {
   const phone = normPhone(q.ApiPhone);
   const known = phone.length >= 9;
-  const [students, profiles, auth] = await Promise.all([liveStudents(), loadProfiles(), loadKey(KEYS.ivrAuth, [])]);
+  const [students, profiles, auth, maonList] = await Promise.all([liveStudents(), loadProfiles(), loadKey(KEYS.ivrAuth, []), loadKey(KEYS.maonPhones, [])]);
   const me = known ? students.find((s) => normPhone(s.phone) === phone) : null;
   const staff = known ? profiles.find((p) => normPhone(p.phone) === phone) : null;
   const roomMgr = known ? (auth || []).find((a) => a && a.active !== false && normPhone(a.phone) === phone) : null;
@@ -176,6 +178,10 @@ async function handle(q) {
     if (q.hangup === "yes") return "noop=hangup";
     return roomsMenu(q, { phone, students, profiles, auth, staff, roomMgr, callerName });
   }
+
+  // מספר של המעון – ישר לדיווח תקלה במעון (משימה מסומנת "מעון", בלי חדר ובלי הגבלה שבועית)
+  const maon = known ? (maonList || []).find((m) => m && m.active !== false && normPhone(m.phone) === phone) : null;
+  if (maon) return report(q, { phone, staff, roomMgr, callerName: maon.name || callerName, profiles, maon });
 
   // 2 פתוח לכולם אבל דורש קוד; מוקרא רק לצוות
   const allowed = staff ? "1234" : "123";
@@ -207,6 +213,13 @@ const FAULT_PROMPT = "זו הקלטה טלפונית בעברית (איכות נ
   + "ענה בדיוק בשתי שורות, בלי שום דבר נוסף:\n"
   + "חדר: <מספר החדר בספרות, או ריק אם לא נאמר>\n"
   + "תקלה: <מה התקלה, במשפט או שניים קצרים וברורים, בלי מספר החדר>\n"
+  + "אם מילה לא נשמעה טוב, בחר את המילה הסבירה ביותר בהקשר של תקלה במבנה. אל תמציא פרטים שלא נאמרו. אם לא נאמר כלום כתוב בשורת התקלה: ריק.";
+// מעון: אותו פורמט תשובה, אבל בלי חדרי הפנימייה – כל מקום שנאמר נשאר בתוך התיאור
+const MAON_PROMPT = "זו הקלטה טלפונית בעברית (איכות נמוכה, אולי רעש רקע) של איש צוות במעון של הישיבה שמדווח על תקלה. "
+  + "מילים נפוצות בדיווחים כאלה: " + FAULT_TERMS + ", גן, כיתה, חצר, מתקן, עריסה, מטבחון. "
+  + "ענה בדיוק בשתי שורות, בלי שום דבר נוסף:\n"
+  + "חדר: ריק\n"
+  + "תקלה: <מה התקלה ואיפה במעון, במשפט או שניים קצרים וברורים>\n"
   + "אם מילה לא נשמעה טוב, בחר את המילה הסבירה ביותר בהקשר של תקלה במבנה. אל תמציא פרטים שלא נאמרו. אם לא נאמר כלום כתוב בשורת התקלה: ריק.";
 const namePrompt = (names) => "זו הקלטה טלפונית קצרה בעברית (איכות נמוכה) שבה אומרים שם של בחור בישיבה: שם פרטי ושם משפחה, לפעמים גם שם האב או העיר. "
   + (names && names.length ? "אלה הבחורים שכבר רשומים בישיבה: " + names.join(", ") + ". אם השם שנאמר הוא אחד מהם (גם אם לא נשמע מושלם), כתוב אותו בדיוק כמו ברשימה. אם לא – כתוב את השם כפי שנשמע, בכתיב הנפוץ. " : "")
@@ -323,12 +336,12 @@ async function cachedTranscribe(q, tag, path, prompt) {
 }
 
 /* ---------- 1: דיווח תקלה ---------- */
-async function report(q, { phone, staff, roomMgr, callerName, profiles }) {
+async function report(q, { phone, staff, roomMgr, callerName, profiles, maon }) {
   const hung = q.hangup === "yes";
   const callId = String(q.ApiCallId || "");
 
   // בחור: תקלה אחת בשבוע לכל מספר טלפון (צוות ואחראי חדרים – בלי הגבלה)
-  const limited = !staff && !roomMgr;
+  const limited = !staff && !roomMgr && !maon;
   if (limited) {
     if (phone.length < 9) return hung ? "noop=hangup" : end("המספר שלכם חסוי", "כדי לדווח על תקלה יש להתקשר ממספר מזוהה", "להתראות");
     const weekLog = (await loadKey(KEYS.ivrReports, [])) || [];
@@ -350,26 +363,29 @@ async function report(q, { phone, staff, roomMgr, callerName, profiles }) {
     if (hung) return "noop=hangup";
     if (rec.idx >= 1) return end("לא התקבלה הקלטה", "להתראות");
     // 1 שם, 2 לא להשתמש בקודם, 3 הקלטה, 4 תיקייה, 5 שם קובץ, 6 אישור מיידי בסולמית, 7 לשמור גם בניתוק, 8 לא לשרשר, 9 מינימום שניות, 10 מקסימום
-    return `read=${say(limited ? "שימו לב אפשר לדווח על תקלה אחת בשבוע" : "", "לאחר הצליל ספרו מה התקלה", "אם היא בחדר אמרו גם את מספר החדר", "ובסיום הקישו סולמית")}=${rec.nextName},no,record,${extPath(q)},${file},no,yes,no,1,90`;
+    const intro = maon
+      ? [rec.idx < 0 ? `שלום ${maon.name || ""}` : "", "דיווח תקלה במעון", "לאחר הצליל ספרו מה התקלה ובסיום הקישו סולמית"]
+      : [limited ? "שימו לב אפשר לדווח על תקלה אחת בשבוע" : "", "לאחר הצליל ספרו מה התקלה", "אם היא בחדר אמרו גם את מספר החדר", "ובסיום הקישו סולמית"];
+    return `read=${say(...intro)}=${rec.nextName},no,record,${extPath(q)},${file},no,yes,no,1,90`;
   }
   const recPath = recPathOf(q, rec.val, file);
 
   // פתיחת המשימה (בלי כפילות אם ימות שולח שוב את אותה בקשה)
   const tasks = (await loadKey(KEYS.tasks, [])) || [];
   if (!callId || !tasks.some((t) => t && t.ivrCallId === callId)) {
-    const { text: raw, err } = await transcribe(recPath, FAULT_PROMPT);
+    const { text: raw, err } = await transcribe(recPath, maon ? MAON_PROMPT : FAULT_PROMPT);
     if (err) console.error("transcribe:", err, recPath);
     // ג'מיני מחזיר "חדר: <מספר או ריק>" ובשורה הבאה "תקלה: <תיאור>"
     const mRoom = String(raw || "").match(/חדר\s*:\s*(\d{1,4})/);
     const mText = String(raw || "").match(/תקלה\s*:\s*([\s\S]*)/);
     let text = (mText ? mText[1] : raw || "").replace(/\s+/g, " ").trim();
     if (text === "ריק") text = "";
-    const said = mRoom ? String(Number(mRoom[1])) : "";
+    const said = mRoom && !maon ? String(Number(mRoom[1])) : "";
     const room = said && (roomNums.size === 0 || roomNums.has(said)) ? said : "";
     // מספר שנאמר אבל לא קיים ברשימת החדרים – נשאר בתיאור ולא נרשם כחדר
     if (said && !room && text && !text.includes(said)) text += ` (נאמר חדר ${said})`;
     const short = text ? text.split(" ").slice(0, 6).join(" ") : "תקלה (הקלטה)";
-    const title = room ? `חדר ${room} · ${short}` : short;
+    const title = maon ? `מעון · ${short}` : room ? `חדר ${room} · ${short}` : short;
     const reporter = callerName || `טלפון ${phone}`;
     const task = {
       id: genId(),
@@ -377,7 +393,7 @@ async function report(q, { phone, staff, roomMgr, callerName, profiles }) {
       description: `${text || `לא הצלחנו לתמלל את ההקלטה (${err}). לשמיעה: בקו, שלוחת התקלות, הקשה 4.`}\n\nדווח בטלפון ע"י ${reporter}${phone ? ` (${phone})` : ""}`,
       assignedToId: "",
       priority: "normal",
-      location: room ? `חדר ${room}` : "",
+      location: maon ? "מעון" : room ? `חדר ${room}` : "",
       locationId: "",
       categoryId: "",
       status: "open",
