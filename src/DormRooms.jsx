@@ -18,6 +18,7 @@ export const DORM_KEYS = {
   deletes: "dorm-deletes",
   ivrAuth: "dorm-ivr-auth",
   ivrLog: "dorm-ivr-log",
+  maonPhones: "ivr-maon-phones",
 };
 
 const fmtWhen = (ts) => {
@@ -318,6 +319,7 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
   const [importData, setImportData] = useState(null);
   const [ivrLog, setIvrLog] = useState([]);
   const [ivrAuth, setIvrAuth] = useState([]);
+  const [maonPhones, setMaonPhones] = useState([]);
   const isAdmin = currentUser?.role === "manager";
 
   const toast = (m) => (showToast ? showToast(m) : alert(m));
@@ -337,7 +339,8 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
       console.error("dorm load failed", e);
     }
     try {
-      const [lg, au] = await Promise.all([loadKey(DORM_KEYS.ivrLog, []), loadKey(DORM_KEYS.ivrAuth, [])]);
+      const [lg, au, mp] = await Promise.all([loadKey(DORM_KEYS.ivrLog, []), loadKey(DORM_KEYS.ivrAuth, []), loadKey(DORM_KEYS.maonPhones, [])]);
+      setMaonPhones(Array.isArray(mp) ? mp.filter(Boolean) : []);
       setIvrLog(Array.isArray(lg) ? lg.filter(Boolean) : []);
       setIvrAuth(Array.isArray(au) ? au.filter(Boolean) : []);
     } catch (e) { console.error("dorm ivr load failed", e); }
@@ -518,6 +521,14 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
     return run(async () => {
       await saveKey(DORM_KEYS.ivrAuth, next);
       setIvrAuth(next);
+      toast("נשמר");
+    });
+  }
+
+  function saveMaonPhones(next) {
+    return run(async () => {
+      await saveKey(DORM_KEYS.maonPhones, next);
+      setMaonPhones(next);
       toast("נשמר");
     });
   }
@@ -771,7 +782,7 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
         <ListView {...{ C, card, input, btn, students, sortedRooms, roomByNum, wingOf, roomInfo, wings, setEditStudent, updateStudent, canEdit, dupIds }} />
       )}
       {view === "phone" && (
-        <PhoneView {...{ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, canEdit, busy, markSeen, saveIvrAuth, setEditStudent, toast }} />
+        <PhoneView {...{ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, canEdit, busy, markSeen, saveIvrAuth, setEditStudent, toast, maonPhones, saveMaonPhones }} />
       )}
       {view === "rooms" && (
         <RoomsView {...{ C, card, input, btn, sortedRooms, roomInfo, saveRoom, deleteRoom, canEdit, handleImportFile, exportExcel, printByRooms, printMap, busy }} />
@@ -1349,7 +1360,18 @@ const randomCode = (taken) => {
   return String(Math.floor(100000 + Math.random() * 900000));
 };
 
-function PhoneView({ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, canEdit, busy, markSeen, saveIvrAuth, setEditStudent, toast }) {
+function PhoneView({ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, canEdit, busy, markSeen, saveIvrAuth, setEditStudent, toast, maonPhones = [], saveMaonPhones }) {
+  const [maonEdit, setMaonEdit] = useState(null);
+  function saveMaon() {
+    const name = cleanName(maonEdit.name);
+    const phone = String(maonEdit.phone || "").replace(/[^\d+]/g, "");
+    if (phone.replace(/\D/g, "").length < 9) { toast("יש לרשום מספר טלפון מלא"); return; }
+    const norm = (p) => { let d = String(p || "").replace(/\D/g, ""); if (d.startsWith("972")) d = "0" + d.slice(3); return d; };
+    if (maonPhones.some((m) => m.id !== maonEdit.id && norm(m.phone) === norm(phone))) { toast("המספר הזה כבר ברשימה"); return; }
+    const row = { id: maonEdit.id || uid(), name, phone, active: maonEdit.active !== false, updatedAt: Date.now() };
+    const next = maonEdit.id ? maonPhones.map((m) => (m.id === maonEdit.id ? { ...m, ...row } : m)) : [...maonPhones, { ...row, createdAt: Date.now() }];
+    saveMaonPhones(next).then((ok) => ok && setMaonEdit(null));
+  }
   const pending = students.filter(ivrPending).sort((a, b) => (b.ivr.at || 0) - (a.ivr.at || 0));
   const [edit, setEdit] = useState(null);
   const [showCodes, setShowCodes] = useState(false);
@@ -1444,8 +1466,8 @@ function PhoneView({ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, ca
               onClick={() => setEdit({ name: "", phone: "", code: randomCode(new Set(ivrAuth.map((a) => String(a.code)))), active: true })}>+ הוספה</button>
           </div>
           <div className="text-xs mb-3" style={{ color: C.steel }}>
-            רק מי שרשום כאן ייכנס לתפריט החדרים בטלפון: מקישים 2 בתפריט הראשי ואז את הקוד האישי וסולמית.
-            בפנים: 1 חדרים פנויים, 2 שיבוץ בחור במיטה פנויה (לפי הטלפון של הבחור, או אמירת השם בקול).
+            רק מי שרשום כאן ייכנס לתפריט החדרים בטלפון. מי שמתקשר מהמספר הרשום כאן מגיע ישר לתפריט החדרים ומקיש את הקוד שלו.
+            בפנים: 1 חדרים פנויים, 2 שיבוץ בחור במיטה פנויה (לפי הטלפון של הבחור, או אמירת השם בקול), 3 דיווח תקלה.
             כל שיבוץ נרשם ביומן ומסומן ☎️ בטבלאות עד שמסמנים "נבדק". בחורים יכולים רק לדווח על תקלות - תקלה אחת בשבוע לכל מספר טלפון.
           </div>
           {!ivrAuth.length ? (
@@ -1482,6 +1504,62 @@ function PhoneView({ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, ca
         </div>
       )}
 
+      {isAdmin && (
+        <div className="p-4" style={card}>
+          <div className="flex items-center justify-between mb-2">
+            <div className="wh-display font-black">🏠 מספרי המעון</div>
+            <button className="px-4 py-2 text-sm font-bold" style={btn(true)} onClick={() => setMaonEdit({ name: "", phone: "", active: true })}>+ הוספה</button>
+          </div>
+          <div className="text-xs mb-3" style={{ color: C.steel }}>
+            מי שמתקשר לקו מאחד המספרים האלה מגיע ישר להקלטת תקלה במעון, בלי התפריט של הישיבה ובלי הגבלה שבועית.
+            המשימה נפתחת ברשימת המשימות הרגילה עם הכותרת "מעון · ..." והמיקום "מעון".
+          </div>
+          {!maonPhones.length ? (
+            <div className="text-sm" style={{ color: C.steel }}>עדיין לא נוספו מספרים של המעון.</div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" style={{ borderCollapse: "collapse", minWidth: 320 }}>
+                <thead><tr style={{ color: C.steel }}><th className="text-right py-1">שם</th><th className="text-right">טלפון</th><th>פעיל</th><th></th></tr></thead>
+                <tbody>
+                  {maonPhones.map((m) => (
+                    <tr key={m.id} style={{ borderTop: `1px solid ${C.kraftDark}`, opacity: m.active === false ? 0.5 : 1 }}>
+                      <td className="py-1.5 font-bold">{m.name || "—"}</td>
+                      <td dir="ltr" style={{ textAlign: "right" }}>{m.phone}</td>
+                      <td className="text-center">
+                        <input type="checkbox" checked={m.active !== false} disabled={busy}
+                          onChange={(e) => saveMaonPhones(maonPhones.map((x) => (x.id === m.id ? { ...x, active: e.target.checked, updatedAt: Date.now() } : x)))} />
+                      </td>
+                      <td className="text-left whitespace-nowrap">
+                        <button className="px-2 text-xs" onClick={() => setMaonEdit({ ...m })}>✏️</button>
+                        <button className="px-2 text-xs" onClick={() => { if (window.confirm(`להסיר את ${m.name || m.phone} ממספרי המעון?`)) saveMaonPhones(maonPhones.filter((x) => x.id !== m.id)); }}>🗑️</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {maonEdit && (
+        <Modal C={C} card={card} onClose={() => setMaonEdit(null)}>
+          <div className="wh-display font-black text-lg mb-3">{maonEdit.id ? "עריכת מספר מעון" : "מספר מעון חדש"}</div>
+          <div className="flex flex-col gap-2">
+            <label className="text-xs" style={{ color: C.steel }}>שם (יוקרא בטלפון וייכתב במשימה)
+              <input value={maonEdit.name} onChange={(e) => setMaonEdit({ ...maonEdit, name: e.target.value })} className="w-full px-3 py-2 text-sm mt-1" style={input} />
+            </label>
+            <label className="text-xs" style={{ color: C.steel }}>טלפון
+              <input dir="ltr" inputMode="tel" value={maonEdit.phone} onChange={(e) => setMaonEdit({ ...maonEdit, phone: e.target.value })} className="w-full px-3 py-2 text-sm mt-1" style={input} />
+            </label>
+          </div>
+          <div className="flex gap-2 mt-4">
+            <button className="flex-1 py-2.5 text-sm font-bold" style={btn(true)} disabled={busy} onClick={saveMaon}>שמירה</button>
+            <button className="px-4 py-2.5 text-sm" style={btn(false)} onClick={() => setMaonEdit(null)}>ביטול</button>
+          </div>
+        </Modal>
+      )}
+
       {edit && (
         <Modal C={C} card={card} onClose={() => setEdit(null)}>
           <div className="wh-display font-black text-lg mb-3">{edit.id ? `עריכת ${edit.name}` : "אחראי חדרים חדש"}</div>
@@ -1489,7 +1567,7 @@ function PhoneView({ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, ca
             <label className="text-xs" style={{ color: C.steel }}>שם (יוקרא בטלפון וייכתב ביומן)
               <input value={edit.name} onChange={(e) => setEdit({ ...edit, name: e.target.value })} className="w-full px-3 py-2 text-sm mt-1" style={input} />
             </label>
-            <label className="text-xs" style={{ color: C.steel }}>טלפון (לא חובה - כדי שהתפריט יציע לו "אחראי חדרים")
+            <label className="text-xs" style={{ color: C.steel }}>טלפון (מהמספר הזה הוא יגיע ישר לתפריט החדרים)
               <input dir="ltr" value={edit.phone} onChange={(e) => setEdit({ ...edit, phone: e.target.value })} className="w-full px-3 py-2 text-sm mt-1" style={input} />
             </label>
             <label className="text-xs" style={{ color: C.steel }}>קוד אישי (4-6 ספרות)
