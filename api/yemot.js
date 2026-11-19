@@ -1,7 +1,8 @@
 /* ============================================================
    ישיבוס ← ימות המשיח (שלוחת API, type=api)
    קו טלפוני לבחורים ולצוות:
-     מספרים של המעון (רשומים באפליקציה) – ישר לדיווח תקלה במעון; המשימה נפתחת עם "מעון ·" ומיקום "מעון".
+     מספרים של המעון (רשומים באפליקציה) – ישר לדיווח תקלה במעון: בוחרים כיתה (מהמיקומים בקבוצת "מעון" באפליקציה, 0 = אחר), מקליטים,
+       והמשימה נפתחת עם הכיתה כמיקום (או "מעון" אם בחרו 0).
      1 - דיווח תקלה: הקלטה חופשית (אם אומרים מספר חדר – הוא מזוהה לבד), ותמלול לטקסט בג'מיני (נפתחת משימה באפליקציה + התראה למנהלים)
          בחור יכול לדווח פעם אחת בשבוע (ראשון עד שבת), לפי מספר הטלפון שממנו התקשר. צוות ואחראי חדרים – בלי הגבלה.
      2 - אחראי חדרים (רק עם קוד אישי שמוגדר באפליקציה: ניהול חדרים ← טלפון):
@@ -57,7 +58,8 @@ const KEYS = {
   ivrLog: "dorm-ivr-log",         // יומן פעולות חדרים מהטלפון
   ivrReports: "ivr-report-log",   // מי דיווח תקלה מתי (להגבלה של פעם בשבוע)
   ivrCache: "ivr-cache",          // תמלולים זמניים בתוך שיחה
-  maonPhones: "ivr-maon-phones",  // מספרי המעון: [{ id, name, phone, active }] – מנוהל באפליקציה (ניהול חדרים ← טלפון)
+  maonPhones: "ivr-maon-phones",
+  locations: "kitchen-locations",  // המיקומים של האפליקציה – הכיתות של המעון הן הקבוצה שבשמה "מעון"  // מספרי המעון: [{ id, name, phone, active }] – מנוהל באפליקציה (ניהול חדרים ← טלפון)
 };
 
 /* ---------- Supabase (REST, בלי ספריות) ---------- */
@@ -356,6 +358,26 @@ async function report(q, { phone, staff, roomMgr, callerName, profiles, maon }) 
   const rooms = (await loadKey(KEYS.dormRooms, [])) || [];
   const roomNums = new Set(rooms.map((r) => String(Number(r.num))));
 
+  // מעון: בחירת כיתה מתוך המיקומים של קבוצת המעון באפליקציה (0 = מקום אחר במעון)
+  let maonLoc = null;
+  if (maon) {
+    const locs = ((await loadKey(KEYS.locations, [])) || []).filter((l) => l && l.name && /מעון/.test(String(l.group || "")));
+    if (locs.length) {
+      const c = lastVal(q, "MClass");
+      const n = c.val && /^\d+$/.test(c.val) ? Number(c.val) : -1;
+      if (n < 0 || n > locs.length) {
+        if (hung) return "noop=hangup";
+        if (c.idx >= 2) return end("לא נבחרה כיתה", "להתראות");
+        const digits = String(locs.length).length;
+        const opts = locs.map((l, i) => `ל${String(l.name).replace(/[()]/g, " ")} הקישו ${i + 1}`);
+        return ask(say(c.idx < 0 ? `שלום ${maon.name || ""}` : "", c.val ? "הבחירה לא קיימת" : "", "דיווח תקלה במעון", ...opts, "למקום אחר במעון הקישו 0", digits > 1 ? "ולאחר מכן סולמית" : ""),
+          c.nextName, { max: digits, timeout: 15, allowed: digits > 1 ? "" : "0123456789".slice(0, locs.length + 1) });
+      }
+      maonLoc = n === 0 ? null : locs[n - 1];
+      if (maonLoc) maonLoc = { id: maonLoc.id, name: maonLoc.name, group: maonLoc.group, label: `${maonLoc.group || "מעון"} · ${maonLoc.name}` };
+    }
+  }
+
   // הקלטת התקלה – נשמרת בימות, ואז מתומללת בג'מיני
   const rec = lastVal(q, "Rec");
   const file = recFile(q, "T", 0);
@@ -364,7 +386,9 @@ async function report(q, { phone, staff, roomMgr, callerName, profiles, maon }) 
     if (rec.idx >= 1) return end("לא התקבלה הקלטה", "להתראות");
     // 1 שם, 2 לא להשתמש בקודם, 3 הקלטה, 4 תיקייה, 5 שם קובץ, 6 אישור מיידי בסולמית, 7 לשמור גם בניתוק, 8 לא לשרשר, 9 מינימום שניות, 10 מקסימום
     const intro = maon
-      ? [rec.idx < 0 ? `שלום ${maon.name || ""}` : "", "דיווח תקלה במעון", "לאחר הצליל ספרו מה התקלה ובסיום הקישו סולמית"]
+      ? (maonLoc
+        ? [maonLoc.name.replace(/[()]/g, " "), "לאחר הצליל ספרו מה התקלה ובסיום הקישו סולמית"]
+        : [rec.idx < 0 && lastVal(q, "MClass").idx < 0 ? `שלום ${maon.name || ""}` : "", "דיווח תקלה במעון", "לאחר הצליל ספרו מה התקלה ובסיום הקישו סולמית"])
       : [limited ? "שימו לב אפשר לדווח על תקלה אחת בשבוע" : "", "לאחר הצליל ספרו מה התקלה", "אם היא בחדר אמרו גם את מספר החדר", "ובסיום הקישו סולמית"];
     return `read=${say(...intro)}=${rec.nextName},no,record,${extPath(q)},${file},no,yes,no,1,90`;
   }
@@ -385,7 +409,7 @@ async function report(q, { phone, staff, roomMgr, callerName, profiles, maon }) 
     // מספר שנאמר אבל לא קיים ברשימת החדרים – נשאר בתיאור ולא נרשם כחדר
     if (said && !room && text && !text.includes(said)) text += ` (נאמר חדר ${said})`;
     const short = text ? text.split(" ").slice(0, 6).join(" ") : "תקלה (הקלטה)";
-    const title = maon ? `מעון · ${short}` : room ? `חדר ${room} · ${short}` : short;
+    const title = maonLoc ? `${maonLoc.name} · ${short}` : maon ? `מעון · ${short}` : room ? `חדר ${room} · ${short}` : short;
     const reporter = callerName || `טלפון ${phone}`;
     const task = {
       id: genId(),
@@ -393,8 +417,8 @@ async function report(q, { phone, staff, roomMgr, callerName, profiles, maon }) 
       description: `${text || `לא הצלחנו לתמלל את ההקלטה (${err}). לשמיעה: בקו, שלוחת התקלות, הקשה 4.`}\n\nדווח בטלפון ע"י ${reporter}${phone ? ` (${phone})` : ""}`,
       assignedToId: "",
       priority: "normal",
-      location: maon ? "מעון" : room ? `חדר ${room}` : "",
-      locationId: "",
+      location: maonLoc ? maonLoc.label : maon ? "מעון" : room ? `חדר ${room}` : "",
+      locationId: maonLoc ? maonLoc.id : "",
       categoryId: "",
       status: "open",
       createdAt: Date.now(),
