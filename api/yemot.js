@@ -433,13 +433,15 @@ async function report(q, { phone, staff, roomMgr, callerName, profiles, maon }) 
     // קודם המשימה עצמה – ורק אחר כך שאר הרישומים
     const fresh = (await loadKey(KEYS.tasks, [])) || [];
     if (!callId || !fresh.some((t) => t && t.ivrCallId === callId)) {
+      // מספר רץ למשימה – כמו באפליקציה (הבא אחרי הגבוה ביותר)
+      task.num = fresh.reduce((m, t) => Math.max(m, Number(t && t.num) || 0), 0) + 1;
       await saveKey(KEYS.tasks, [task, ...fresh]);
       try {
         const weekLog = (await loadKey(KEYS.ivrReports, [])) || [];
         const keep = weekLog.filter((e) => e && Date.now() - (e.at || 0) < 21 * 86400000);
         await saveKey(KEYS.ivrReports, [{ phone, at: task.createdAt, callId, taskId: task.id }, ...keep]);
       } catch (e) { console.error("report log", e); }
-      await notifyManagers(profiles, `☎️ דיווח טלפוני מ${reporter}: ${title}`, { tab: "tasks", taskId: task.id }, `/?tab=tasks&taskId=${task.id}&org=${ORG}`);
+      await notifyManagers(profiles, `☎️ דיווח טלפוני מ${reporter} (#${task.num}): ${title}`, { tab: "tasks", taskId: task.id }, `/?tab=tasks&taskId=${task.id}&org=${ORG}`);
     }
   }
   return hung ? "noop=hangup" : end("התקלה נקלטה ותטופל בעזרת השם", "תודה ולהתראות");

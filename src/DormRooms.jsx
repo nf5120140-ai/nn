@@ -318,8 +318,6 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
   const [editStudent, setEditStudent] = useState(null);
   const [importData, setImportData] = useState(null);
   const [ivrLog, setIvrLog] = useState([]);
-  const [ivrAuth, setIvrAuth] = useState([]);
-  const [maonPhones, setMaonPhones] = useState([]);
   const isAdmin = currentUser?.role === "manager";
 
   const toast = (m) => (showToast ? showToast(m) : alert(m));
@@ -339,10 +337,8 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
       console.error("dorm load failed", e);
     }
     try {
-      const [lg, au, mp] = await Promise.all([loadKey(DORM_KEYS.ivrLog, []), loadKey(DORM_KEYS.ivrAuth, []), loadKey(DORM_KEYS.maonPhones, [])]);
-      setMaonPhones(Array.isArray(mp) ? mp.filter(Boolean) : []);
+      const lg = await loadKey(DORM_KEYS.ivrLog, []);
       setIvrLog(Array.isArray(lg) ? lg.filter(Boolean) : []);
-      setIvrAuth(Array.isArray(au) ? au.filter(Boolean) : []);
     } catch (e) { console.error("dorm ivr load failed", e); }
     setLoaded(true);
   }
@@ -514,22 +510,6 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
     return run(async () => {
       await mutateStudents((list) => list.map((s) => (set.has(s.id) && s.ivr ? { ...s, ivr: { ...s.ivr, seen: true, seenBy: currentUser?.name || currentUser?.display_name || "", seenAt: Date.now() } } : s)));
       toast(set.size === 1 ? "סומן כנבדק" : `${set.size} סומנו כנבדקו`);
-    });
-  }
-
-  function saveIvrAuth(next) {
-    return run(async () => {
-      await saveKey(DORM_KEYS.ivrAuth, next);
-      setIvrAuth(next);
-      toast("נשמר");
-    });
-  }
-
-  function saveMaonPhones(next) {
-    return run(async () => {
-      await saveKey(DORM_KEYS.maonPhones, next);
-      setMaonPhones(next);
-      toast("נשמר");
     });
   }
 
@@ -782,7 +762,7 @@ export default function DormRoomsTab({ C, currentUser, showToast, loadKey, saveK
         <ListView {...{ C, card, input, btn, students, sortedRooms, roomByNum, wingOf, roomInfo, wings, setEditStudent, updateStudent, canEdit, dupIds }} />
       )}
       {view === "phone" && (
-        <PhoneView {...{ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, canEdit, busy, markSeen, saveIvrAuth, setEditStudent, toast, maonPhones, saveMaonPhones }} />
+        <PhoneView {...{ C, card, input, btn, students, ivrLog, isAdmin, canEdit, busy, markSeen, setEditStudent }} />
       )}
       {view === "rooms" && (
         <RoomsView {...{ C, card, input, btn, sortedRooms, roomInfo, saveRoom, deleteRoom, canEdit, handleImportFile, exportExcel, printByRooms, printMap, busy }} />
@@ -1360,36 +1340,11 @@ const randomCode = (taken) => {
   return String(Math.floor(100000 + Math.random() * 900000));
 };
 
-function PhoneView({ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, canEdit, busy, markSeen, saveIvrAuth, setEditStudent, toast, maonPhones = [], saveMaonPhones }) {
-  const [maonEdit, setMaonEdit] = useState(null);
-  function saveMaon() {
-    const name = cleanName(maonEdit.name);
-    const phone = String(maonEdit.phone || "").replace(/[^\d+]/g, "");
-    if (phone.replace(/\D/g, "").length < 9) { toast("יש לרשום מספר טלפון מלא"); return; }
-    const norm = (p) => { let d = String(p || "").replace(/\D/g, ""); if (d.startsWith("972")) d = "0" + d.slice(3); return d; };
-    if (maonPhones.some((m) => m.id !== maonEdit.id && norm(m.phone) === norm(phone))) { toast("המספר הזה כבר ברשימה"); return; }
-    const row = { id: maonEdit.id || uid(), name, phone, active: maonEdit.active !== false, updatedAt: Date.now() };
-    const next = maonEdit.id ? maonPhones.map((m) => (m.id === maonEdit.id ? { ...m, ...row } : m)) : [...maonPhones, { ...row, createdAt: Date.now() }];
-    saveMaonPhones(next).then((ok) => ok && setMaonEdit(null));
-  }
+function PhoneView({ C, card, input, btn, students, ivrLog, isAdmin, canEdit, busy, markSeen, setEditStudent }) {
   const pending = students.filter(ivrPending).sort((a, b) => (b.ivr.at || 0) - (a.ivr.at || 0));
-  const [edit, setEdit] = useState(null);
-  const [showCodes, setShowCodes] = useState(false);
   const [logLimit, setLogLimit] = useState(40);
   const byId = useMemo(() => new Map(students.map((s) => [s.id, s])), [students]);
   const log = useMemo(() => [...ivrLog].sort((a, b) => (b.at || 0) - (a.at || 0)), [ivrLog]);
-
-  function saveEdit() {
-    const name = cleanName(edit.name);
-    const code = String(edit.code || "").replace(/\D/g, "");
-    const phone = String(edit.phone || "").replace(/[^\d+]/g, "");
-    if (!name) { toast("יש לרשום שם"); return; }
-    if (code.length < 4 || code.length > 6) { toast("הקוד צריך להיות 4 עד 6 ספרות"); return; }
-    if (ivrAuth.some((a) => a.id !== edit.id && String(a.code) === code)) { toast("הקוד הזה כבר שייך למישהו אחר - בחר קוד אחר"); return; }
-    const row = { id: edit.id || uid(), name, phone, code, active: edit.active !== false, updatedAt: Date.now() };
-    const next = edit.id ? ivrAuth.map((a) => (a.id === edit.id ? { ...a, ...row } : a)) : [...ivrAuth, { ...row, createdAt: Date.now() }];
-    saveIvrAuth(next).then((ok) => ok && setEdit(null));
-  }
 
   const logLine = (e) => {
     if (e.action === "badcode") return { icon: "🔒", text: `קוד שגוי${e.callerPhone ? ` מהמספר ${e.callerPhone}` : " ממספר חסוי"}`, warn: true };
@@ -1458,6 +1413,78 @@ function PhoneView({ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, ca
         )}
       </div>
 
+      {isAdmin && (
+        <div className="text-xs px-1" style={{ color: C.steel }}>
+          קודי אחראי החדרים ומספרי המעון נמצאים בתפריט ניהול ← "☎️ קו טלפוני".
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------- ניהול הקו הטלפוני (במסך "ניהול" של האפליקציה, רק למנהל) ----------
+   אחראי חדרים עם קוד אישי, ומספרי המעון. נשמר ב-kv_store באותם מפתחות שהקו (api/yemot.js) קורא. */
+export function PhoneAdmin({ C, currentUser, showToast, loadKey, saveKey }) {
+  const card = { background: C.kraft, border: `1px solid ${C.kraftDark}`, borderRadius: 20 };
+  const input = { background: C.paper, color: C.ink, border: `1px solid ${C.kraftDark}`, borderRadius: 12 };
+  const btn = (primary) => ({ background: primary ? C.brand : C.paper, color: primary ? "#fff" : C.ink, border: `1px solid ${primary ? C.brand : C.kraftDark}`, borderRadius: 14 });
+  const toast = (m) => showToast && showToast(m);
+  const isAdmin = currentUser?.role === "manager";
+  const [ivrAuth, setIvrAuth] = useState([]);
+  const [maonPhones, setMaonPhones] = useState([]);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const [au, mp] = await Promise.all([loadKey(DORM_KEYS.ivrAuth, []), loadKey(DORM_KEYS.maonPhones, [])]);
+        if (!alive) return;
+        setIvrAuth(Array.isArray(au) ? au.filter(Boolean) : []);
+        setMaonPhones(Array.isArray(mp) ? mp.filter(Boolean) : []);
+      } catch (e) { console.error("phone admin load", e); }
+      if (alive) setLoaded(true);
+    })();
+    return () => { alive = false; };
+  }, []);
+  async function save(key, next, setter) {
+    if (busy) return false;
+    setBusy(true);
+    try { await saveKey(key, next); setter(next); toast("נשמר"); return true; }
+    catch (e) { console.error(e); toast("השמירה נכשלה"); return false; }
+    finally { setBusy(false); }
+  }
+  const saveIvrAuth = (next) => save(DORM_KEYS.ivrAuth, next, setIvrAuth);
+  const saveMaonPhones = (next) => save(DORM_KEYS.maonPhones, next, setMaonPhones);
+  const [edit, setEdit] = useState(null);
+  const [showCodes, setShowCodes] = useState(false);
+  const [maonEdit, setMaonEdit] = useState(null);
+  function saveMaon() {
+    const name = cleanName(maonEdit.name);
+    const phone = String(maonEdit.phone || "").replace(/[^\d+]/g, "");
+    if (phone.replace(/\D/g, "").length < 9) { toast("יש לרשום מספר טלפון מלא"); return; }
+    const norm = (p) => { let d = String(p || "").replace(/\D/g, ""); if (d.startsWith("972")) d = "0" + d.slice(3); return d; };
+    if (maonPhones.some((m) => m.id !== maonEdit.id && norm(m.phone) === norm(phone))) { toast("המספר הזה כבר ברשימה"); return; }
+    const row = { id: maonEdit.id || uid(), name, phone, active: maonEdit.active !== false, updatedAt: Date.now() };
+    const next = maonEdit.id ? maonPhones.map((m) => (m.id === maonEdit.id ? { ...m, ...row } : m)) : [...maonPhones, { ...row, createdAt: Date.now() }];
+    saveMaonPhones(next).then((ok) => ok && setMaonEdit(null));
+  }
+  function saveEdit() {
+    const name = cleanName(edit.name);
+    const code = String(edit.code || "").replace(/\D/g, "");
+    const phone = String(edit.phone || "").replace(/[^\d+]/g, "");
+    if (!name) { toast("יש לרשום שם"); return; }
+    if (code.length < 4 || code.length > 6) { toast("הקוד צריך להיות 4 עד 6 ספרות"); return; }
+    if (ivrAuth.some((a) => a.id !== edit.id && String(a.code) === code)) { toast("הקוד הזה כבר שייך למישהו אחר - בחר קוד אחר"); return; }
+    const row = { id: edit.id || uid(), name, phone, code, active: edit.active !== false, updatedAt: Date.now() };
+    const next = edit.id ? ivrAuth.map((a) => (a.id === edit.id ? { ...a, ...row } : a)) : [...ivrAuth, { ...row, createdAt: Date.now() }];
+    saveIvrAuth(next).then((ok) => ok && setEdit(null));
+  }
+
+  if (!isAdmin) return <p className="text-sm text-center py-8" style={{ color: C.steel }}>רק מנהל יכול לנהל את הקו הטלפוני.</p>;
+  if (!loaded) return <p className="text-sm text-center py-8" style={{ color: C.steel }}>טוען...</p>;
+  return (
+    <div className="flex flex-col gap-4" dir="rtl">
       {isAdmin && (
         <div className="p-4" style={card}>
           <div className="flex items-center justify-between mb-2">
@@ -1589,6 +1616,7 @@ function PhoneView({ C, card, input, btn, students, ivrLog, ivrAuth, isAdmin, ca
     </div>
   );
 }
+
 
 function ChatanBadge() {
   return (

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import * as XLSX from "xlsx";
-import DormRoomsTab, { DORM_KEYS } from "./DormRooms";
+import DormRoomsTab, { DORM_KEYS, PhoneAdmin } from "./DormRooms";
 
 /* ---------- Design tokens ---------- */
 const C = {
@@ -578,6 +578,38 @@ async function flushPendingWrites() {
 }
 
 const genId = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+
+/**
+ * מספר רץ לכל משימה (num), כדי לזהות כפילויות ולדבר על משימה לפי מספר.
+ * משימה בלי מספר מקבלת את הבא בתור (לפי סדר הפתיחה). אם שני מכשירים נתנו בטעות אותו מספר,
+ * המשימה הוותיקה שומרת אותו והשנייה מקבלת מספר חדש.
+ */
+function numberTasks(list) {
+  if (!Array.isArray(list)) return list;
+  const seen = new Map();
+  let max = 0;
+  list.forEach((t) => { if (t && Number(t.num) > max) max = Number(t.num); });
+  const byAge = list.filter(Boolean).slice().sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0) || String(a.id).localeCompare(String(b.id)));
+  const fix = new Map();
+  byAge.forEach((t) => {
+    const n = Number(t.num) || 0;
+    if (n > 0 && !seen.has(n)) { seen.set(n, t.id); return; }
+    fix.set(t.id, ++max);
+  });
+  if (!fix.size) return list;
+  return list.map((t) => (t && fix.has(t.id) ? { ...t, num: fix.get(t.id) } : t));
+}
+
+/** תגית קטנה עם מספר המשימה */
+function TaskNum({ task, style }) {
+  if (!task || !task.num) return null;
+  return (
+    <span className="text-xs font-bold px-1.5 py-0.5 rounded-full whitespace-nowrap" dir="ltr"
+      style={{ background: C.paper, color: C.steel, border: `1px solid ${C.kraftDark}`, ...(style || {}) }}>
+      #{task.num}
+    </span>
+  );
+}
 const todayStr = () => new Date().toLocaleDateString("he-IL");
 
 /* ---------- Send channels (WhatsApp / SMS / Email) ---------- */
@@ -5627,8 +5659,9 @@ function App() {
   }
 
   async function persistTasks(next) {
-    setTasks(next);
-    await saveKey(KEYS.tasks, next);
+    const numbered = numberTasks(next);
+    setTasks(numbered);
+    await saveKey(KEYS.tasks, numbered);
   }
 
   // Auto-delete the photo of a task 5 days after it was closed. Runs once per app load,
@@ -7630,6 +7663,7 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
   // Placed AFTER all the order state declarations so its dependencies are initialized.
   const orderDraftKey = `kitchen-order-draft::${getActiveOrg() || "_"}`;
   const orderHydratedRef = useRef(false);
+  const [askOrderReset, setAskOrderReset] = useState(false);
   useEffect(() => {
     try {
       const raw = localStorage.getItem(orderDraftKey);
@@ -7643,8 +7677,14 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
         if (Array.isArray(d.adHocItems)) setAdHocItems(d.adHocItems);
         if (d.menuQtys) setMenuQtys(d.menuQtys);
         if (d.weekQtys) setWeekQtys(d.weekQtys);
+        // נשארה הזמנה מהפעם הקודמת? בכניסה הראשונה להזמנות באותה פתיחה של האפליקציה – שואלים אם לאפס
+        const filled = (o) => o && Object.values(o).some((v) => (typeof v === "object" && v ? Object.keys(v).length > 0 : Number(v) > 0 || v === true));
+        const hasContent = filled(d.qtys) || filled(d.menuQtys) || filled(d.weekQtys) || filled(d.orderExtras)
+          || (d.pickedIds || []).length > 0 || (d.selectedForOrder || []).length > 0 || (d.adHocItems || []).length > 0;
+        if (hasContent && !window.__orderResetAsked) setAskOrderReset(true);
       }
     } catch (e) {}
+    window.__orderResetAsked = true;
     orderHydratedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -9271,6 +9311,26 @@ function OrderTab({ lowStock, products, persistProducts, settings, persistSettin
 
   return (
     <div>
+      {askOrderReset && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4" style={{ background: "rgba(35,31,61,0.45)" }}>
+          <div className="w-full max-w-sm p-5 rounded-3xl wh-body" style={{ background: C.paper, boxShadow: "0 12px 40px rgba(0,0,0,0.25)" }} dir="rtl">
+            <div className="wh-display font-black text-lg mb-2" style={{ color: C.ink }}>🧾 יש הזמנה מהפעם הקודמת</div>
+            <div className="text-sm mb-4" style={{ color: C.steel }}>
+              נשארו כמויות וסימונים מהזמנה קודמת. לאפס ולהתחיל הזמנה חדשה, או להמשיך מאיפה שעצרת?
+            </div>
+            <div className="flex flex-col gap-2">
+              <button className="w-full py-3 rounded-2xl font-bold text-sm" style={{ background: C.stamp, color: "#fff" }}
+                onClick={() => { clearOrderDraft(); setSentSuppliers([]); setAskOrderReset(false); }}>
+                🗑️ אפס והתחל הזמנה חדשה
+              </button>
+              <button className="w-full py-3 rounded-2xl font-bold text-sm" style={{ background: C.kraft, color: C.ink, border: `1px solid ${C.kraftDark}` }}
+                onClick={() => setAskOrderReset(false)}>
+                ↩️ המשך את ההזמנה הקודמת
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {toBuyPanel()}
       {usagePanel()}
       {drafts.length > 0 && (
@@ -10612,7 +10672,7 @@ function TaskDetail({ task, users, currentUser, onSave, onClose, catById, notify
       >
         <div className="flex justify-between items-start mb-3">
           <div className="flex-1">
-            <div className="wh-display font-black text-lg" style={{ color: C.ink }}>{task.title}</div>
+            <div className="wh-display font-black text-lg" style={{ color: C.ink }}><TaskNum task={task} style={{ marginLeft: 6, verticalAlign: "middle" }} />{task.title}</div>
             <div className="text-xs mt-1" style={{ color: C.steel }}>
               {cat && `${cat.icon || "📋"} ${cat.name} · `}
               {assignee?.name || "לא משויך"}
@@ -11261,7 +11321,7 @@ function MapTab({ mapRooms, persistMapRooms, deleteMapRoomById, tasks, persistTa
                             className="flex-1 text-right"
                             style={{ background: "none", border: "none", cursor: "pointer" }}
                           >
-                            <div className="text-sm font-bold" style={{ color: C.accent, textDecoration: "underline" }}>{t.title}</div>
+                            <div className="text-sm font-bold" style={{ color: C.accent, textDecoration: "underline" }}>{t.num ? `#${t.num} ` : ""}{t.title}</div>
                             {t.assignedToId ? null : <div className="text-xs" style={{ color: C.steel }}>לא משויך</div>}
                           </button>
                           <button
@@ -11826,6 +11886,7 @@ function TasksTab({ tasks, persistTasks, deleteTasksById, users, currentUser, sh
               <div className="flex justify-between items-start">
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
+                    <TaskNum task={t} />
                     <div className="wh-display font-bold" style={{ color: C.ink }}>{t.title}</div>
                     {(() => {
                       const cat = catById(t.categoryId);
@@ -13090,6 +13151,7 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
     ["analytics", "ניתוח"],
     ["personal", "קניות פרטיות"],
     ["settings", "הגדרות וספקים"],
+    ["phone", "☎️ קו טלפוני"],
     ["backup", "גיבוי ושחזור"],
   ];
   // A supervisor only sees the admin screens the manager granted them.
@@ -13223,6 +13285,9 @@ function AdminTab({ users, updateUserProfile, deleteUserProfile, currentUser, pr
       )}
       {section === "settings" && (
         <SuppliersAdmin settings={settings} persistSettings={persistSettings} showToast={showToast} />
+      )}
+      {section === "phone" && isManager(currentUser) && (
+        <PhoneAdmin C={C} currentUser={currentUser} showToast={showToast} loadKey={loadKey} saveKey={saveKey} />
       )}
       {section === "backup" && isManager(currentUser) && (
         <BackupAdmin currentUser={currentUser} showToast={showToast} />
@@ -13831,7 +13896,7 @@ function AnalyticsAdmin({ products, stockLog, tasks = [], orderHistory = [], uni
                 <ShelfTag key={t.id} accent={C.sage}>
                   <div className="flex justify-between items-center">
                     <div>
-                      <div className="font-bold text-sm" style={{ color: C.ink }}>{t.title}</div>
+                      <div className="font-bold text-sm" style={{ color: C.ink }}>{t.num ? `#${t.num} ` : ""}{t.title}</div>
                       <div className="text-xs" style={{ color: C.steel }}>{u?.name || "—"}</div>
                     </div>
                     <span className="text-xs" style={{ color: C.steel }}>
